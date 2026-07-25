@@ -1,0 +1,21 @@
+# This repository tracks only coordination files located directly at its root.
+#
+# Every immediate child directory is an independent repository, experiment,
+# local-only workspace, generated tree, or archive. The parent repository must
+# treat those directories as opaque and must never recursively stage them.
+/*/
+
+# Archive/quarantine names are called out explicitly for human readers. These
+# rules are redundant with /*/ at the root, but document the safety boundary.
+/_quarantine/
+/archive/
+/archives/
+
+# Root-local machine and editor debris. Add individual root files here only
+# when they should never be part of the coordination repository.
+/*.log
+/*.tmp
+/*.bak
+/*.zip
+/.DS_Store
+/Thumbs.db
