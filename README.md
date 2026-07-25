@@ -16,9 +16,9 @@ replacing, or publishing local-only files in child workspaces. It does **not**
 back up those files: each child repository or local data directory still needs
 its own backup policy.
 
-The currently configured remote points to an unrelated historical project. Do
-not push this coordination repository until that remote has been removed or
-replaced with a dedicated destination.
+This coordination repository currently has no remote. Its name and eventual
+destination are intentionally undecided. The unrelated Electrofluid remote belongs
+to the independent [`pcb/`](pcb/) repository.
 
 ## Current documentation priorities
 

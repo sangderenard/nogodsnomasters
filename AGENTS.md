@@ -10,14 +10,15 @@ not as parts of a monorepo.
 
 ## Git status of this directory
 
-This folder is a git repository (currently on branch `nogodsnomasters`), but
-its remote (`main` → `https://github.com/sangderenard/electrofluid.git`)
-belongs to a specific, unrelated project — not to "everything in this
-folder." Almost everything listed below is untracked. **Do not assume the
-contents of this directory should be committed or pushed as a unit.** Run
-`git status` before staging anything broad (`git add -A`/`git add .`), and
-when in doubt about whether a given subfolder belongs in this repo's
-history, ask rather than add it.
+This folder is a root-only coordination repository. It has no remote yet; its
+eventual name and destination are intentionally undecided. The repository tracks
+only files located directly at this level, while `.gitignore` treats every child
+directory as opaque. The unrelated Electrofluid repository and remote belong to
+`pcb/`.
+
+Do not force-add ignored directories or weaken the root-only ignore rule. Child
+projects retain their own Git histories and local-only files; this repository
+documents how they relate but does not own or back up their contents.
 
 ## Where agent behavior guidance actually lives
 
