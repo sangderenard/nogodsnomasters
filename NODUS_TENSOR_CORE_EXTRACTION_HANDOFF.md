@@ -1,4 +1,20 @@
-# Handoff: `nodus_tensor_core` substrate extraction (mid-build, not yet green)
+# Handoff: `nodus_tensor_core` substrate extraction
+
+> **Status update — 2026-07-26:** The linker blocker described below is
+> resolved. `src/common/thread_pool.cpp` is now part of `nodus_tensor_core`,
+> excluded from the two canvas amalgams, and
+> `build/Release/nodus_tensor_core.dll` exists. Canonical-op generation,
+> canonical-op/Turing agreement, the Tensor Calculator bridge, edge/backend
+> coordination, memory manifest, tensor registry, pool torture, and Kpath
+> raster tests pass.
+>
+> One focused regression was found after extraction:
+> `tensor_backend_smoke_test` asserted that destroying and recreating a tensor
+> must return the identical virtual address. The default pool explicitly does
+> not cache handles and delegates reuse to the backend allocator, so address
+> identity is not contractual. The test has been corrected to retain its
+> actual allocation/map/persistence/wrap checks. A complete Release build now
+> confirms the corrected smoke test and the standalone Tensor Calculator test.
 
 **Date:** 2026-07-25
 **Title:** Extracting nodus's tensor-subsystem singletons into a single shared library

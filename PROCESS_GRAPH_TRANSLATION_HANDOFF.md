@@ -73,7 +73,11 @@ Commits:
 
 - Turing `5ce2d29` — semantic ProcessGraph and BitOps/SSA spine.
 - Turing `d2456d8` — BitBit accounting and Nodus GraphIR export.
+- Turing `61a4b30` — metadata-rich SSA to shared C/GLSL primitive programs.
+- Turing `f5f8a1e` — C indexed assignment and composed sliced solve.
+- Turing `5d787b1` — fused GLSL backend and five-way parity benchmark.
 - Nodus `fc3c6f9` — AbstractTensor tool-graph receiver.
+- Nodus `0f5aa7e` — 66 canonical IDs and corrected KernelIR BitOps selectors.
 
 ## BitBit quanta and provenance contract
 
@@ -116,7 +120,10 @@ not preserve constants, kwargs, argument roles beyond ordering, tensor
 descriptors, device/backend, multiple outputs, source spans, names, basic
 blocks, branch targets, or lexical scope.
 
-It emits the node label verbatim. Symbolic labels, SSA `Handler` spellings,
+Legacy nodes still emit their label verbatim. Semantic `ProcessOp` nodes carry
+canonical names, roles, scalar constants, attributes, source spans, tensor
+dtype/shape/device, and BitBit accounting into SSA. Symbolic labels, SSA
+`Handler` spellings,
 AbstractTensor operation names, C opcodes, and Nodus KernelIR opcodes are
 related but not identical. Canonical operation identity must be attached to
 each node before SSA emission.
@@ -127,6 +134,20 @@ Nodus GraphIR receives the exported graph and emits AbstractTensor tool nodes
 and ports. Its scalar `GraphIrValue` still cannot natively carry full tensor
 descriptors, multi-output bundles, source spans, or control-flow blocks; the
 current bridge encodes structured attributes as stable strings where needed.
+
+## C and GLSL execution bridge
+
+Metadata-rich SSA now lowers into the same `PrimitiveProgram` already consumed
+by the one-call C executor and fused GLSL backend. Numeric scalar constants,
+operand reversal, canonical unary/binary operations, `nand`, and tensor
+`select` are supported. The C path is executed in tests; the same result adapts
+to a validated fused GLSL shader.
+
+The equal-shape packet cannot honestly represent `zeros`, `concat`, `slice`,
+`sigma_L`, `sigma_R`, or general BitBit `mu` when their shapes differ. These
+produce structured `LoweringIssue` records and no executable program. The next
+backend packet must add views/regions and shape descriptors rather than hiding
+those boundaries.
 
 `ToolIR` is a callback bundle, not a computational IR. The table tensor tool is
 currently a runtime placeholder. A tensor node therefore needs a generated
