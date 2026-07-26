@@ -15,6 +15,12 @@
 > identity is not contractual. The test has been corrected to retain its
 > actual allocation/map/persistence/wrap checks. A complete Release build now
 > confirms the corrected smoke test and the standalone Tensor Calculator test.
+>
+> The diagnosis and failed-link transcript below are retained as an execution
+> record, not as current instructions. The current Nodus tree also has a
+> TensorMath-backed persistent calculator, canonical AbstractTensor ToolIR
+> registrations, and versioned ingestion of Turing's equal-shape
+> `FusedProgram` transport.
 
 **Date:** 2026-07-25
 **Title:** Extracting nodus's tensor-subsystem singletons into a single shared library
@@ -24,11 +30,9 @@ repo's agent-ecosystem documentation pattern), placed here at the top level per 
 existing `NODUS_PLUCK_HANDOFF.md` precedent, since this work is itself the direct
 prerequisite for the nodus↔turing/pluck effort that doc coordinates.
 
-**If you are picking this up:** the build is currently **red** (known, diagnosed, one
-more file needed). Do not assume it's done. Full research context lives in
-[research/12_substrate_blocker.md](research/12_substrate_blocker.md) — read that first,
-it has the diagnosis and the fix rationale. This doc is the "what's actually been typed
-so far and what breaks right now" companion to it.
+**If you are picking this up:** the extraction is green; do not repeat the
+linker-fix steps in the historical sections below. Full research context lives
+in [research/12_substrate_blocker.md](research/12_substrate_blocker.md).
 
 ## Overview
 
@@ -90,9 +94,10 @@ pattern, etc.) is untouched.
      the backend" picture in the original research docs. Moving it is also a **net build
      time win**: it currently compiles twice, once per amalgam; now once.)
 
-## Observed behaviour (current error, not yet fixed)
+## Historical linker failure (resolved)
 
-The isolated build of `nodus_tensor_core` (with the 7 files above) fails with **4
+The isolated build of `nodus_tensor_core` (with the 7 files above) originally
+failed with **4
 unresolved externals**, all from `tensor_math.obj`, all pointing at one missing file:
 
 ```
@@ -104,10 +109,10 @@ tensor_math.obj : error LNK2019: unresolved external symbol
   (all referenced from tensor_math.cpp's dyadic_mt_bitmask_algo<...>)
 ```
 
-Traced to `src/common/thread_pool.cpp` / `include/common/thread_pool.h` (110 + 86 lines,
-confirmed via grep to have zero SDL/Eigen/PNG/HarfBuzz/Torch includes — safe to add).
-**This file has not yet been added to the `nodus_tensor_core` target or excluded from
-`auto_sources.cmake`.** That's the very next edit.
+This was traced to `src/common/thread_pool.cpp` /
+`include/common/thread_pool.h`. That source is now included in
+`nodus_tensor_core` and excluded from the duplicate amalgam compilation; the
+isolated target and its downstream tests link successfully.
 
 ## Lessons learned
 
@@ -116,11 +121,9 @@ confirmed via grep to have zero SDL/Eigen/PNG/HarfBuzz/Torch includes — safe t
   `tensor_math.cpp`, `thread_pool.cpp`) was found this way, not by static analysis. Static
   analysis (grep/read) missed the `default_tensor_pool()` singleton and the two-way
   `tensor_math` coupling entirely.
-- **Build the new small target in isolation before touching the big amalgam.** Nobody has
-  yet tried building `canvas_tables`/`canvas_tables_static`/any plugin against
-  `nodus_tensor_core` — that's still ahead, and may surface its own issues (e.g. does
-  anything else outside these 8 files define a conflicting symbol now that
-  `WINDOWS_EXPORT_ALL_SYMBOLS` exports everything from this DLL?).
+- **Build the new small target in isolation before touching the big amalgam.**
+  That sequence exposed the dependency closure cleanly; the downstream
+  `canvas_tables` builds and regression targets were run afterward.
 - A background shell command from earlier in this session (`b6fi16bxq`, an old kpath
   rebuild, already superseded/irrelevant) came back with `status: stopped` / "no
   completion record" on a later check — a reminder that this environment's background
@@ -129,34 +132,31 @@ confirmed via grep to have zero SDL/Eigen/PNG/HarfBuzz/Torch includes — safe t
   handoff's "Observed behaviour" section is grounded in (the actual log content, not a
   remembered exit code).
 
-## Next steps
+## Historical resolution checklist
 
-1. Add `src/common/thread_pool.cpp` to `nodus_tensor_core`'s source list in
+1. **Completed:** add `src/common/thread_pool.cpp` to `nodus_tensor_core`'s source list in
    `nodus/CMakeLists.txt`, and add the matching exclude regex to
    `nodus/cmake/auto_sources.cmake` (mirror the existing entries — `thread_pool` lives at
    `src/common/thread_pool.cpp`, not under `abstraction/`, so it needs its own regex line,
    not a suffix added to the existing `tensors/abstraction/(...)\.cpp$` one).
-2. Rebuild `nodus_tensor_core` in isolation again; iterate on any further link errors the
-   same way (isolated build → read → add exactly what's missing, nothing more).
-3. Once `nodus_tensor_core` links clean standalone, build `canvas_tables` and
+2. **Completed:** rebuild `nodus_tensor_core` in isolation and resolve its
+   dependency closure.
+3. **Completed:** build `canvas_tables` and
    `canvas_tables_static` against it (`cmake --build build --config Release --target
    canvas_tables canvas_tables_static`), then the full regression suite already used to
    validate the earlier mem-backend fix: `test_mem_backend_manifest`,
    `test_edge_backend_coordination`, `test_repo_package`, `test_tool_dll`,
    `test_tensor_backend_smoke`, `tensor_registry_test`, `abstract_tensor_pool_torture`,
    plus `test_kpath_raster_tool` (the one that motivated all of this).
-4. **Then** write the actual verification this whole extraction is *for*: a new test where
-   a plugin DLL creates an `AbstractTensor` via `default_backend()` and a
-   `canvas_tables_static`-linked host reads the handle back correctly. This is the
-   positive proof that tensor *data* (not programs — the user was explicit: data-passing
-   correctness first, program-level IR work is explicitly parked, see the "Prompt History"
-   below) now faithfully crosses the module boundary. Doc 12's suggested repro-first
-   sequencing was skipped this round in favor of going straight to the fix (structural
-   evidence was already airtight); this step is where that gets closed out with a real
-   green test rather than inference.
-5. Only after that: reconsider whether the deferred FS-backend map split (Doc 12, still
-   latent/no current crash) and the high-level C++ program IR work (parked explicitly,
-   see below) are worth picking back up.
+4. **Still useful as a narrower regression:** add the exact plugin-DLL
+   `AbstractTensor` creation → static-host read scenario if no existing plugin
+   test names that boundary explicitly. Current handle-transfer, registry,
+   tool-DLL, and package tests cover the surrounding substrate, but should not
+   be mislabeled as this exact case.
+5. **Current frontier:** the deferred FS-backend map split remains a separate
+   latent concern. Program interchange is no longer wholly parked:
+   ProcessGraph → Nodus GraphIR/ToolIR and equal-shape FusedProgram → prepared
+   Tensor Calculator paths are both implemented and tested.
 
 ## Prompt History (verbatim instructions that shaped this work, most recent first)
 

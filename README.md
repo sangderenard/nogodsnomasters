@@ -16,9 +16,10 @@ replacing, or publishing local-only files in child workspaces. It does **not**
 back up those files: each child repository or local data directory still needs
 its own backup policy.
 
-This coordination repository currently has no remote. Its name and eventual
-destination are intentionally undecided. The unrelated Electrofluid remote belongs
-to the independent [`pcb/`](pcb/) repository.
+This coordination repository is published as
+[`sangderenard/nogodsnomasters`](https://github.com/sangderenard/nogodsnomasters)
+on branch `nogodsnomasters`. The unrelated Electrofluid remote belongs to the
+independent [`pcb/`](pcb/) repository.
 
 ## Current documentation priorities
 
@@ -39,8 +40,8 @@ snapshot. Active Transmogrifier development lives in
 - [`NODUS_PLUCK_HANDOFF.md`](NODUS_PLUCK_HANDOFF.md) records the Nodus ↔ Pluck
   integration boundary.
 - [`NODUS_TENSOR_CORE_EXTRACTION_HANDOFF.md`](NODUS_TENSOR_CORE_EXTRACTION_HANDOFF.md)
-  records the current tensor-substrate extraction. Treat it as a dated handoff,
-  and verify its status against the Nodus working tree and build results.
+  records the now-green tensor-substrate extraction and its historical linker
+  diagnosis.
 - [`research/`](research/) contains orientation and architectural analysis. It is
   not, by itself, an implementation specification.
 

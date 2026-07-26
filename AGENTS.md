@@ -10,11 +10,12 @@ not as parts of a monorepo.
 
 ## Git status of this directory
 
-This folder is a root-only coordination repository. It has no remote yet; its
-eventual name and destination are intentionally undecided. The repository tracks
-only files located directly at this level, while `.gitignore` treats every child
-directory as opaque. The unrelated Electrofluid repository and remote belong to
-`pcb/`.
+This folder is a root-only coordination repository on branch
+`nogodsnomasters`, with `origin` at
+`https://github.com/sangderenard/nogodsnomasters.git`. The repository tracks
+only files located directly at this level, while `.gitignore` treats every
+child directory as opaque. The unrelated Electrofluid repository and remote
+belong to `pcb/`.
 
 Do not force-add ignored directories or weaken the root-only ignore rule. Child
 projects retain their own Git histories and local-only files; this repository
@@ -40,7 +41,7 @@ one of those, its local file governs that folder, not this one.
 | `.claude/` | Claude Code local settings for this directory. |
 | `.git/` | Git metadata for this folder's repo (see remote note above). |
 | `NODUS_PLUCK_HANDOFF.md` | Cross-project coordination doc for the active `nodus` ↔ `spectral-analyzer` integration effort — the one file at this level that's actually meant to tie two subfolders together. |
-| `NODUS_TENSOR_CORE_EXTRACTION_HANDOFF.md` | **Live, not-yet-green handoff** (2026-07-25) for the `nodus_tensor_core` substrate-fix build (see `research/12_substrate_blocker.md`). If you're picking up nodus tensor work, read this first — it has the exact current build error and the next edit to make. |
+| `NODUS_TENSOR_CORE_EXTRACTION_HANDOFF.md` | Resolved `nodus_tensor_core` substrate-extraction record (2026-07-25, green update 2026-07-26). The historical linker failure is retained for archaeology; its opening status block describes the current tensor/calculator boundary. |
 | `research/` | Cross-repo research library on abstract-tensor→any-language translation (turing ↔ nodus), the tensor-subsystem substrate, and the UI-as-structure architecture rationale. Start at `research/README.md`. |
 | `_quarantine/` | Noise, orphaned archives, third-party tool checkouts, and superseded duplicates moved out of the way (2026-07-25). Not part of the ecosystem — see the section below. Nothing depends on it; it can be deleted once you're sure you don't want any of it back. |
 | `amp/` | Python/C audio graph runtime ("AudioGraph" control-history driven). Has its own `AGENTS.md` with a strict no-ad-hoc-smoke-test policy. |
