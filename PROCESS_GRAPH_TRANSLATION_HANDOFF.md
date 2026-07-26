@@ -76,8 +76,10 @@ Commits:
 - Turing `61a4b30` — metadata-rich SSA to shared C/GLSL primitive programs.
 - Turing `f5f8a1e` — C indexed assignment and composed sliced solve.
 - Turing `5d787b1` — fused GLSL backend and five-way parity benchmark.
+- Turing `39183ef` — standalone ProcessGraph compiler documentation.
 - Nodus `fc3c6f9` — AbstractTensor tool-graph receiver.
 - Nodus `0f5aa7e` — 66 canonical IDs and corrected KernelIR BitOps selectors.
+- Nodus `e741e19` — standalone ProcessGraph interoperability documentation.
 
 ## BitBit quanta and provenance contract
 
@@ -148,6 +150,19 @@ The equal-shape packet cannot honestly represent `zeros`, `concat`, `slice`,
 produce structured `LoweringIssue` records and no executable program. The next
 backend packet must add views/regions and shape descriptors rather than hiding
 those boundaries.
+
+## Canonical ID correction
+
+The catalog previously generated `CanonicalOp` only for the 28 operations
+already present in CTensorOp, although it marked 56 operations as
+KernelIR-lowerable. Consequently operations such as shifts had no legal
+KernelIR `sub_op` value. Nodus BitOps also carried a private `BinaryOp` enum as
+an extra operand instead of using `sub_op`.
+
+Every one of the 66 catalog entries now receives an append-only canonical ID.
+The verified CTensorOp ordinal remains a separate backend-capability field.
+BitOps writes canonical IDs into `Instruction.sub_op`, and instruction operands
+contain only values or immediates.
 
 `ToolIR` is a callback bundle, not a computational IR. The table tensor tool is
 currently a runtime placeholder. A tensor node therefore needs a generated
