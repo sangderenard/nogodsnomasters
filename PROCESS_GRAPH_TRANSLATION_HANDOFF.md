@@ -1,266 +1,217 @@
 # ProcessGraph translation frontier
 
-Status: active audit and implementation handoff, 2026-07-26.
+Status: active, verified 2026-07-27.
 
-## Intended routes
+## The governing idea
 
-```text
-Python AST
-    -> Turing ProcessGraph
-    -> BitOps-expanded ProcessGraph
-    -> SSA
-    -> C / GLSL / Nodus KernelIR
+`ProcessGraph` is the high-level claim about a program: mathematical,
+inspectable, role-aware, schedulable, and capable of a physical realization.
+SSA and `FusedProgram` are progressively lower views of selected regions.
+Execution tapes can supply evidence, profiling, and convenient straight-line
+captures, but they are not authoritative for source control flow they never
+observed.
 
-Turing ProcessGraph
-    -> Nodus graph of AbstractTensor tools
-```
-
-`ProcessGraph` should be the shared semantic and scheduling hub. BitOps is a
-lowering pass over that graph, not a competing graph format. SSA is a lowered
-execution form, not the place to recover metadata discarded earlier.
-
-## What is real today
-
-- `ProcessGraph.build_from_ast` accepts an AST, path, or source string and
-  structurally reflects Python nodes.
-- BitOps contains arithmetic built from the eight Turing primitives and records
-  those primitive calls into a `ProvenanceGraph`.
-- `process_graph_to_ssa_instrs` schedules a ProcessGraph and emits SSA.
-- `TapeCompiler` consumes that SSA for the eight primitive analog-tape
-  instructions: `nand`, `sigma_L`, `sigma_R`, `concat`, `slice`, `mu`,
-  `length`, and `zeros`.
-- The Nodus canonical operation catalog contains 66 tensor operations and is
-  verified against Turing's C opcode header.
-- Nodus has three useful receiving structures: `KernelIR` for executable
-  kernels; `GraphIR` / `AbstractOpGraph` for operator-driven graph edits; and
-  `ToolIR` plus table tools for executable graph UI components.
-- Nodus already has a real AbstractTensor implementation, in-memory backend,
-  tensor FIFO/edge infrastructure, tool stack execution, and KPath tools.
-
-The provenance-to-ProcessGraph bridge is now functional. It imports existing
-nodes and edges directly, preserving operation name, argument position, kwargs,
-argument object identities, and output identity. Compiler-only ProcessGraphs can
-now schedule without instantiating the experimental physical-memory substrate.
-The formerly expected-failing provenance -> ProcessGraph -> SSA -> tape tests
-are green.
-
-The first semantic vertical slice is also functional:
+The intended continuum is:
 
 ```text
-Python AST
-  -> semantic ProcessGraph + ProcessOp
-  -> symbolic BitOps ProcessGraph expansion using the real Turing algebra
-  -> metadata-preserving SSA
-  -> Nodus GraphIR AbstractTensor tool graph
+Python AST or SymPy mathematics
+        ↓
+semantic ProcessGraph
+  roles, source, control, domains, provenance, tensor and BitBit metadata
+        ↓
+optional Turing/BitOps proof expansion
+        ↓
+scheduled SSA and region selection
+        ↓
+AbstractTensor replay | one-call C | one-shader GLSL | Nodus GraphIR
+        ↓
+optional ProcessGraph physical materialization
 ```
 
-The current AST slice covers function arguments, constants, assignment,
-arithmetic/bitwise binary expressions, unary expressions, comparisons, calls,
-returns, and `if` value merging through `select`. Unsupported Python remains an
-explicit `opaque_python` node.
+The aim is not to make Turing and Nodus halves of one inseparable animal.
+Each remains capable on its own; when both are present, the same program and
+operation identity can travel between them.
 
-BitOps expansion currently handles `bitand`, `bitor`, `bitxor`, `invert`,
-`add`, `sub`, and `mul`. It invokes the existing `Turing` derived operations
-with a symbolic graph carrier, so NAND/ripple-add definitions still have one
-home. Unsupported nodes remain tagged `bitops_status=unexpanded`.
+## The recovered semantic/physical seam
 
-Nodus now supplies an AbstractTensor GraphIR operator set. Turing exports each
-ProcessGraph operation as an `abstract_tensor_tool` node with directional
-ports, named roles, and connections. Nodus validates canonical operation names
-against its generated catalog while retaining structural nodes explicitly.
+The original `ProcessGraph` is backed by `BitTensorMemoryGraph`. Process nodes,
+`DomainNode`s, interference graphs, allocation bins, the unified graph, and
+the resulting data-flow graph constitute a physical analogue of the program:
+atomic graphs in motion and communicating according to activity.
 
-Commits:
+Those structures are not obsolete allocator noise. They connect an
+inspectable mathematical program to material execution and quanta accounting.
 
-- Turing `5ce2d29` — semantic ProcessGraph and BitOps/SSA spine.
-- Turing `d2456d8` — BitBit accounting and Nodus GraphIR export.
-- Turing `61a4b30` — metadata-rich SSA to shared C/GLSL primitive programs.
-- Turing `f5f8a1e` — C indexed assignment and composed sliced solve.
-- Turing `5d787b1` — fused GLSL backend and five-way parity benchmark.
-- Turing `39183ef` — standalone ProcessGraph compiler documentation.
-- Nodus `fc3c6f9` — AbstractTensor tool-graph receiver.
-- Nodus `0f5aa7e` — 66 canonical IDs and corrected KernelIR BitOps selectors.
-- Nodus `e741e19` — standalone ProcessGraph interoperability documentation.
+The older `ProcessGraph.extract_full_process_graph()` is the remembered
+semantic projection. It exports node type, label, expression, role-bearing
+parents and children, schedule level, and roots without exporting the physical
+memory graph, domains, bins, or moving buffers.
 
-## BitBit quanta and provenance contract
+The newer `materialize_memory=False` option only lets compiler front ends defer
+physical construction. It does not replace the two-layer design.
 
-Bit-level lowering must not reduce BitBit storage to an anonymous integer
-width. `BitQuantaSpec` now carries:
+## What is working
 
-- mask-plane quantum count;
-- `bitsforbits` payload width per quantum;
-- PID provenance-domain labels;
-- source ProcessGraph node identities.
+### Source and mathematics
 
-It can describe a live `BitBitBuffer` without copying its mask plane, data
-plane, or UUID tables. Primitive BitOps nodes carry the accounting record;
-SSA values retain it; Nodus exports it as `bitbit.quanta`,
-`bitbit.bitsforbits`, and optional PID-domain metadata.
+- `ProcessGraph.build_from_ast` accepts an AST, source string, or file.
+- Its semantic mode establishes definition/use dataflow for the current Python
+  subset and records source spans, constants, ordered input roles, attributes,
+  tensor metadata, control metadata, and roots.
+- Arithmetic syntax and canonical tensor calls both enter the graph. For
+  example, `tanh((x + y).sin())` becomes
+  `input, input, add, sin, tanh, return`.
+- Simple `if` assignment is predicated into an explicit `select`.
+- Unsupported Python is retained as `opaque_python`, not silently executed or
+  discarded.
+- The original SymPy path, recombinatorics, `OperatorDef`, `Correlator`, and
+  handler registries remain important. They have not been superseded by the
+  Python importer.
 
-## The representations that still do not connect
+### BitOps and the physical bit calculus
 
-### AST -> ProcessGraph is structural, not yet a Python semantics compiler
+`Turing.Hooks` defines eight mechanics over an opaque bitstring carrier:
 
-It recognizes Python syntax through generic AST introspection, but does not yet
-establish symbol definition/use, lexical scope, branches, joins, or loop-carried
-values as semantic dataflow. BitOps has a second AST-to-`ProcDAG` experiment
-which recognizes only `Module`, `Assign`, `Name`, `BinOp`, `Constant`, `Call`,
-`FunctionDef`, and `Return`. These paths should be consolidated by teaching the
-ProcessGraph AST importer semantics, then deleting or adapting the private
-`ProcDAG`.
+`nand`, `sigma_L`, `sigma_R`, `concat`, `slice`, `mu`, `length`, and `zeros`.
 
-### ProcessGraph -> BitOps ProcessGraph is partial
+Every Boolean and integer operation is derived from those mechanics. The
+provenance wrapper records calls to the eight primitives, and the resulting
+graph can be imported into `ProcessGraph`.
 
-The new pass rewrites supported nodes into primitive ProcessGraph subgraphs.
-Division, modulus, dynamic shifts, comparisons, and general control-flow
-lowering remain. They require runtime-visible conditions or scalar parameters
-rather than compile-time Python branching.
+BitOps expansion currently replaces `bitand`, `bitor`, `bitxor`, `invert`,
+`add`, `sub`, and `mul` with those recorded primitive graphs. Other operations
+stay visible and are marked `bitops_status=unexpanded`.
 
-### ProcessGraph -> SSA currently loses information
+AbstractTensor is now a real BitOps carrier. Its hook adapter composes ordinary
+tensor arithmetic, concatenation, slicing, shape inspection, and same-backend
+construction; it adds no bit-specific tensor methods. Derived AND, XOR,
+ripple addition, and multiplication were verified on NumPy and the native C
+backend. ProcessGraph expansion can select this carrier through a translator
+factory.
 
-The emitter preserves scheduled operation order and graph value ids. It does
-not preserve constants, kwargs, argument roles beyond ordering, tensor
-descriptors, device/backend, multiple outputs, source spans, names, basic
-blocks, branch targets, or lexical scope.
+### SSA and execution
 
-Legacy nodes still emit their label verbatim. Semantic `ProcessOp` nodes carry
-canonical names, roles, scalar constants, attributes, source spans, tensor
-dtype/shape/device, and BitBit accounting into SSA. Symbolic labels, SSA
-`Handler` spellings,
-AbstractTensor operation names, C opcodes, and Nodus KernelIR opcodes are
-related but not identical. Canonical operation identity must be attached to
-each node before SSA emission.
+- `process_graph_to_ssa_instrs` preserves canonical operation names, ordered
+  roles, constants, scalar attributes, source spans, tensor dtype/shape/device,
+  and BitBit accounting.
+- `lower_ssa_to_fused_program` lowers compatible equal-shape regions into the
+  established backend-neutral `FusedProgram`.
+- The same `FusedProgram` can run through AbstractTensor, the one-boundary C
+  executor, the GLSL whole-program emitter, and the Nodus calculator transport.
+- `process_graph_to_nodus_graph_ir` separately exports high-level graph
+  structure as AbstractTensor operation tools, typed ports, and connections.
 
-### Nodus GraphIR bridge exists; execution binding remains
+A source-defined `add → sin → tanh` kernel was verified end to end:
 
-Nodus GraphIR receives the exported graph and emits AbstractTensor tool nodes
-and ports. Its scalar `GraphIrValue` still cannot natively carry full tensor
-descriptors, multi-output bundles, source spans, or control-flow blocks; the
-current bridge encodes structured attributes as stable strings where needed.
+```text
+Python source
+  → ProcessGraph
+  → SSA
+  → one FusedProgram
+  → NumPy AbstractTensor
+  → C AbstractTensor
+  → one GLSL compute dispatch on an RTX 3060
+```
 
-## C and GLSL execution bridge
+The GLSL output agreed with the numerical reference within about `3.1e-7`.
 
-Metadata-rich SSA now lowers into the same `PrimitiveProgram` already consumed
-by the one-call C executor and fused GLSL backend. Numeric scalar constants,
-operand reversal, canonical unary/binary operations, `nand`, and tensor
-`select` are supported. The C path is executed in tests; the same result adapts
-to a validated fused GLSL shader.
+## Operation-table state
 
-The equal-shape packet cannot honestly represent `zeros`, `concat`, `slice`,
-`sigma_L`, `sigma_R`, or general BitBit `mu` when their shapes differ. These
-produce structured `LoweringIssue` records and no executable program. The next
-backend packet must add views/regions and shape descriptors rather than hiding
-those boundaries.
+The universal table has two complementary faces:
 
-## Canonical ID correction
+- Turing `operator_definitions`: roles, signatures, parameters, concurrency,
+  in-place rules, and high-level handlers.
+- Nodus `canonical_ops.json`: append-only cross-language IDs and exact
+  correlations to Turing handlers, SymPy names, C operations, and KernelIR.
 
-The catalog previously generated `CanonicalOp` only for the 28 operations
-already present in CTensorOp, although it marked 56 operations as
-KernelIR-lowerable. Consequently operations such as shifts had no legal
-KernelIR `sub_op` value. Nodus BitOps also carried a private `BinaryOp` enum as
-an extra operand instead of using `sub_op`.
+Neither should be replaced by another private switch statement. They should
+eventually be generated or verified together.
 
-Every one of the 66 catalog entries now receives an append-only canonical ID.
-The verified CTensorOp ordinal remains a separate backend-capability field.
-BitOps writes canonical IDs into `Instruction.sub_op`, and instruction operands
-contain only values or immediates.
-
-`ToolIR` is a callback bundle, not a computational IR. The table tensor tool is
-currently a runtime placeholder. A tensor node therefore needs a generated
-tool wrapper around a canonical operation plus typed ports; ToolIR itself
-should not become the tensor instruction format. The `TranslationMatrix` is
-still an unused backend-name-to-callback stub.
-
-## Operation parity snapshot
-
-The executable audit, using Nodus's 66-operation canonical catalog, reports:
+Current verified counts:
 
 | Surface | Count |
 |---|---:|
-| canonical operations | 66 |
-| complete across audited C, GLSL, and Nodus lowering | 28 |
-| C-native | 40 |
-| GLSL | 28 |
-| Nodus KernelIR-lowerable | 56 |
+| Canonical cross-language operations | 66 |
+| GLSL canonical primitives | 56 |
+| Whole-program equal-shape fused operations | 40 |
+| CTensor opcodes reported by the catalog verifier | 40 |
+| Nodus KernelIR-lowerable operations | 56 |
 
-Missing in both C and GLSL:
+The ten canonical operations outside GLSL's primitive set are:
 
-`sign`, `invert`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`,
-`cosh`, `tanh`, `asinh`, `acosh`, `atanh`, `bitand`, `bitor`, `bitxor`,
-`shl`, `shr`, `logical_and`, `logical_or`, `int_trunc`, `zext`, `sext`,
-`fptoui`, and `uitofp`.
+`arange`, `cat`, `gather`, `log_softmax`, `matmul`, `mean`, `pad`, `stack`,
+`sum`, and `topk`.
 
-Missing only in GLSL among primitive/cast entries: `fptosi` and `sitofp`.
+Several already have standalone GLSL kernels. Their absence from the single
+elementwise packet is a region-composition frontier, not proof that the backend
+lacks them.
 
-Cataloged high-level operations not represented as one GLSL or Nodus KernelIR
-instruction:
+## What remains
 
-`matmul`, `sum`, `mean`, `topk`, `log_softmax`, `pad`, `stack`, `cat`,
-`gather`, and `arange`.
+### 1. Whole-program control flow
 
-Those high-level operations need not all become primitive opcodes. Many should
-remain canonical composite functions expanded into basic operators before
-backend lowering. The catalog needs an explicit distinction between
-“composite and expandable” and “unsupported”; its current `lowerable` boolean
-cannot express that.
+The repository already defines SSA `BasicBlock`, `Phi`, `Br`, `CondBr`, and
+`Ret`, and ProcessGraph has detailed structural AST role schemas. The active
+semantic importer still leaves `for` and `while` opaque, while the active SSA
+builder emits a linear instruction sequence.
 
-Beyond the 66-op catalog, the C backend hook comparison identifies these
-NumPy-shaped entry points as absent:
+The correct next step is to connect those existing structures. Do not invent a
+second control-flow graph and do not infer source control from a runtime tape.
 
-`allclose_`, `bool_`, `diag_`, `double_`, `einsum_`, `float_`, `fold2d_`,
-`int_`, `long_`, `nonzero_`, `pad_cat_`, and `unfold2d_`.
+### 2. Region partitioning
 
-This is not yet full AbstractTensor parity. A complete audit must add
-specialization modules and composite AbstractTensor methods, classify every
-entry as primitive/composite/backend-specific, and exercise dtype, shape, and
-device variants. Method-name equality alone overstates parity.
+The whole-program GLSL emitter elegantly folds compatible elementwise
+intermediates into shader locals: one dispatch, no intermediate buffers.
+Shape changes, views, reductions, matmul, and other structural operations need
+explicit neighboring regions.
 
-## Existing SSA vocabulary
+A ProcessGraph partitioner should:
 
-Turing's `Handler` enum contains 42 entries across arithmetic, bitwise,
-logical, comparison, memory/indexing, casts, control flow, and calls. Its name
-map is valuable but lossy:
+1. find maximal regions accepted by a backend;
+2. fuse those regions;
+3. route boundary nodes through existing specialized kernels;
+4. preserve roles, shapes, provenance, and source across region edges;
+5. allow a more capable backend to claim a larger region.
 
-- elementary math collapses to `Call`;
-- `floordiv` has no Handler;
-- floating `trunc` and integer-width `Trunc` must not be merged;
-- logical not and bitwise invert require dtype-aware lowering;
-- the SSA helper registry is empty until external decorators are imported.
+### 3. SymPy/Python convergence
 
-The canonical catalog already documents several of these traps. It should
-become the executable correlation source for ProcessGraph node annotation and
-SSA emission.
+SymPy recombinatorics and semantic Python import currently construct related
+but partially parallel ProcessGraph vocabularies. Both should resolve through
+the same operation definitions and correlation data so pure mathematics and
+ordinary tensor source become interchangeable front ends.
 
-## Ordered implementation plan
+### 4. Structural BitOps
 
-1. **Done for the vertical slice:** define a serializable `ProcessOp` payload:
-   canonical op id, ordered operands and roles, outputs, attributes, tensor
-   descriptors, constants, control metadata, and source span.
-2. **Partial:** make AST import semantic for expressions, assignment, call,
-   return, branch, and loop/phi. Keep unknown constructs as explicit opaque
-   nodes.
-3. **Partial:** adapt BitOps to rewrite ProcessGraph nodes into primitive
-   subgraphs, reusing its implementations and provenance recorder.
-4. **Partial:** upgrade SSA emission to consume `ProcessOp`, preserving constants,
-   attributes, types, blocks, and multiple results.
-5. **One of two connected:** add independent Nodus consumers:
-   - ProcessGraph/SSA -> KernelIR for fused backend execution;
-   - ProcessGraph -> GraphIR edits -> generated AbstractTensor tools and ports.
-6. Generate backend decisions from the canonical catalog. Composite ops expand
-   before the backend frontier; native ops remain eligible for fusion.
-7. Fill primitive C and GLSL holes, then use conformance vectors across NumPy,
-   Torch, C, GLSL, and Nodus for dtype, broadcast, indexing, and edge cases.
+Shape-changing primitives such as `zeros`, `concat`, `slice`, shifts, and
+general `mu` cannot be squeezed honestly into the current equal-shape packet.
+They already produce structured lowering issues. A region/view representation
+should describe storage ranges and shapes rather than hiding copies or
+flattening.
 
-## Immediate vertical test
+### 5. Nodus execution binding
 
-```python
-def kernel(x, y, n):
-    z = (x + y) * 3
-    if z > n:
-        z = z ^ n
-    return z
+Nodus receives both the narrow fused numerical transport and the richer
+GraphIR tool graph. The next milestone is execution of a ProcessGraph-derived
+multi-region program inside Nodus while retaining graph/tool inspectability,
+not just replaying one elementwise calculator packet.
+
+## Verification
+
+Focused Turing checks:
+
+```powershell
+python -m pytest tests/test_abstract_tensor_bitops.py tests/test_ast_process_graph.py tests/test_bitops_process_graph.py tests/test_ssa_primitive_lowering.py tests/test_nodus_graph_ir.py -q
 ```
 
-The test should assert preserved identity and metadata at AST, ProcessGraph,
-BitOps-expanded ProcessGraph, SSA, and Nodus graph/tool stages, then compare
-execution across NumPy, Torch, C, GLSL, and Nodus where supported. Unsupported
-lowering must be structured data, never silently replaced or skipped.
+Current result: **16 passed**.
+
+Relevant commits:
+
+- Turing `5ce2d29` — initial semantic ProcessGraph translation spine.
+- Turing `85659b6` — consolidation into the original ProcessGraph.
+- Turing `d2456d8` — BitBit accounting and Nodus GraphIR export.
+- Turing `a385d89` — AbstractTensor BitOps carrier, natural tensor-call import,
+  and verified source-to-GLSL route.
+
+The longer architectural record is in
+`research/16_process_graph_tensor_continuum.md`.
