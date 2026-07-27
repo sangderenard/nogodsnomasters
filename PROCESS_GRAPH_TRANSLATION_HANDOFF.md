@@ -23,7 +23,8 @@ optional Turing/BitOps proof expansion
         ↓
 scheduled SSA and region selection
         ↓
-AbstractTensor replay | one-call C | one-shader GLSL | Nodus GraphIR
+AbstractTensor replay | one-call C | one-shader GLSL
+        | torch.compile/TorchInductor | Nodus GraphIR
         ↓
 optional ProcessGraph physical materialization
 ```
@@ -115,6 +116,69 @@ Python source
 
 The GLSL output agreed with the numerical reference within about `3.1e-7`.
 
+### Backend region planning
+
+The first backend-neutral ProcessGraph fusion planner is now working. A
+backend supplies:
+
+- the operations it can fuse;
+- hard limits such as shader step and buffer-binding counts;
+- coarse launch, temporary-traffic, and binding costs.
+
+The planner returns inspectable connected dispatch regions, their external
+inputs, named outputs, binding count, score, and all uncovered boundary nodes.
+It contains no Mandelbrot, GLSL, C, or Torch algorithms.
+
+`FusedProgram` can be projected into semantic ProcessGraph form, planned, and
+one selected region lowered back into `FusedProgram`. This is a migration
+bridge for existing fixed-shape captures, not a claim that a runtime tape
+recovered source control flow.
+
+GLSL now accepts same-shape multi-output fused programs. One generated compute
+shader can write several resident SSBOs while sharing every intermediate.
+Single-output execution retains its established instrumentation seam.
+
+Torch has the matching ProcessGraph compiler:
+
+- the same planner selects Torch-capable regions;
+- the region lowers through the existing Torch primitive dispatcher;
+- `torch.compile` owns native graph capture and compilation;
+- CUDA feeds naturally select CUDA execution;
+- TorchInductor is the default compiler backend.
+
+The present Windows environment has CUDA Torch 2.5.1 but no working Triton, so
+TorchInductor correctly reports its missing compiler dependency. The same
+region was verified here with Torch's `cudagraphs` compiler backend; an
+`aot_eager` path is used for dependency-light unit verification.
+
+### Mandelbrot proof
+
+The recording path now captures the ordinary AbstractTensor Mandelbrot solve,
+palette, and RGB-to-YCbCr math, projects it through ProcessGraph, lets the GLSL
+profile select the region, and lowers it to one four-output shader:
+
+```text
+unit coordinates + camera/family/palette feeds
+        ↓
+one ProcessGraph-selected GLSL dispatch
+        ├── iteration-count field for the live renderer
+        ├── JPEG luminance plane
+        ├── JPEG blue-difference plane
+        └── JPEG red-difference plane
+```
+
+At six iterations the selected region contains 153 operations and 14 SSBO
+bindings. An RTX 3060 run produced an independently readable 64×64 RGB
+MJPEG/OpenDML frame. The count field matched NumPy exactly; at four iterations
+the largest Y/Cb/Cr difference was about `1.6e-5` on a 0–255 scale.
+
+This removes the RGB stack and duplicate color transform from recording. The
+rest of JPEG is not falsely described as one shader: block layout/DCT,
+quantization, coefficient events, global prefix work, variable-length Huffman
+compaction, byte stuffing, and AVI serialization remain visible neighboring
+regions or terminal I/O. A scalable entropy encoder needs cross-workgroup
+coordination that one ordinary compute dispatch does not provide.
+
 ## Operation-table state
 
 The universal table has two complementary faces:
@@ -158,20 +222,26 @@ builder emits a linear instruction sequence.
 The correct next step is to connect those existing structures. Do not invent a
 second control-flow graph and do not infer source control from a runtime tape.
 
-### 2. Region partitioning
+### 2. General region partitioning
 
 The whole-program GLSL emitter elegantly folds compatible elementwise
 intermediates into shader locals: one dispatch, no intermediate buffers.
 Shape changes, views, reductions, matmul, and other structural operations need
 explicit neighboring regions.
 
-A ProcessGraph partitioner should:
+The first connected elementwise partitioner now does steps 1–2 below. It must
+grow into a whole-program optimizer that can:
 
 1. find maximal regions accepted by a backend;
-2. fuse those regions;
+2. fuse and cost those regions;
 3. route boundary nodes through existing specialized kernels;
 4. preserve roles, shapes, provenance, and source across region edges;
 5. allow a more capable backend to claim a larger region.
+
+The immediate next improvement is splitting an oversized compatible component
+at the cheapest frontier instead of leaving it uncovered when a hard backend
+limit is exceeded. Profiling feedback should then refine the deliberately
+simple static cost model.
 
 ### 3. SymPy/Python convergence
 
@@ -203,7 +273,8 @@ Focused Turing checks:
 python -m pytest tests/test_abstract_tensor_bitops.py tests/test_ast_process_graph.py tests/test_bitops_process_graph.py tests/test_ssa_primitive_lowering.py tests/test_nodus_graph_ir.py -q
 ```
 
-Current result: **16 passed**.
+The ProcessGraph/GLSL/C/compression/Mandelbrot focused suite currently reports
+**209 passed**. The original narrow translation checks remain included.
 
 Relevant commits:
 
