@@ -7,7 +7,7 @@
 
 # The versioned GitHub Pages runtime is the one deliberate child directory:
 # index.html owns the public API while versioned WASM and source artifacts are
-# fetched lazily from site/v2/. Older versions remain additive history. All
+# fetched lazily from site/v3/. Older versions remain additive history. All
 # project/workspace directories remain opaque.
 !/site/
 
