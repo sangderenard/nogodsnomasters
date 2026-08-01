@@ -5,6 +5,11 @@
 # treat those directories as opaque and must never recursively stage them.
 /*/
 
+# The versioned GitHub Pages runtime is the one deliberate child directory:
+# index.html owns the public API while private WASM regions are fetched lazily
+# from site/v1/. All project/workspace directories remain opaque.
+!/site/
+
 # Archive/quarantine names are called out explicitly for human readers. These
 # rules are redundant with /*/ at the root, but document the safety boundary.
 /_quarantine/
