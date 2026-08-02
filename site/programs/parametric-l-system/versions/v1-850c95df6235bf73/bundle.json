@@ -1,0 +1,40 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "parametric-l-system",
+    "title": "Parametric L-System",
+    "entrypoint": "parametric_l_system",
+    "kind": "python-ast-inspection"
+  },
+  "version": {
+    "id": "v1-850c95df6235bf73",
+    "source_sha256": "a724ab76698ae1ba3fac5bebd07a6a152c85f09e436d8019760265fb2a88bf90",
+    "builder": "site-bundle-v1-ast"
+  },
+  "created_at": "2026-08-02T01:17:10.932171+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/parametric-l-system/versions/v1-850c95df6235bf73/index.html"
+  },
+  "source": {
+    "path": "source/python_source/parametric_l_system.py",
+    "filename": "parametric_l_system.py"
+  },
+  "compiler": {
+    "mode": "python-ast-inspection",
+    "source_kind": "file"
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 228548,
+      "sha256": "acedd6e01cf5a0dce4d58ca94c8595b58d912276200fa71ddef3e66aeff632b6"
+    },
+    {
+      "path": "source/python_source/parametric_l_system.py",
+      "bytes": 26414,
+      "sha256": "7e4d0170b3e5bd123a451a9b7f2fdd85db38770c5e97732fb58e51a7194c1270"
+    }
+  ]
+}

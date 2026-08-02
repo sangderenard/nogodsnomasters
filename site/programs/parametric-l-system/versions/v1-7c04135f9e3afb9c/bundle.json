@@ -1,0 +1,241 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "parametric-l-system",
+    "title": "Parametric L-System",
+    "entrypoint": "parametric_l_system",
+    "kind": "python-ast-inspection"
+  },
+  "version": {
+    "id": "v1-7c04135f9e3afb9c",
+    "source_sha256": "a724ab76698ae1ba3fac5bebd07a6a152c85f09e436d8019760265fb2a88bf90",
+    "builder": "site-bundle-v2-ast"
+  },
+  "created_at": "2026-08-02T02:02:03.745331+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/parametric-l-system/versions/v1-7c04135f9e3afb9c/index.html"
+  },
+  "source": {
+    "path": "source/python_source/parametric_l_system.py",
+    "filename": "parametric_l_system.py"
+  },
+  "compiler": {
+    "mode": "python-ast-inspection",
+    "source_kind": "file",
+    "callable_systems": 20
+  },
+  "artifacts": [
+    {
+      "path": "callables/parametriclsystem-action-names/index.html",
+      "bytes": 108134,
+      "sha256": "5b2f82696d712ceff84284607990081a0e0ff4af1c931bc221a2f27ae11af32c"
+    },
+    {
+      "path": "callables/parametriclsystem-action-names/source/parametriclsystem-action-names.py",
+      "bytes": 511,
+      "sha256": "6a7e063c30eaa6a0060f9117485056635efcb8b34d17c41c21bf0c647fbeb002"
+    },
+    {
+      "path": "callables/parametriclsystem-call/index.html",
+      "bytes": 98966,
+      "sha256": "d43a67967123ffc2b24ce4f54c897380222a31bcc823484e2e6d626aff37bf59"
+    },
+    {
+      "path": "callables/parametriclsystem-call/source/parametriclsystem-call.py",
+      "bytes": 136,
+      "sha256": "56f220b14393cda775280e262ec3ad9df7ae0be0434803a7afd842380ca5c8ed"
+    },
+    {
+      "path": "callables/parametriclsystem-choose-replacement/index.html",
+      "bytes": 115515,
+      "sha256": "1050120f0c92a458654aedda1b9fd98e6f8af13f842464ef847e5210579ad8ec"
+    },
+    {
+      "path": "callables/parametriclsystem-choose-replacement/source/parametriclsystem-choose-replacement.py",
+      "bytes": 796,
+      "sha256": "ab9e9d70f64084700b4e8b30e9be9c31bd42cc09ac0080018f4e9eff5bec019f"
+    },
+    {
+      "path": "callables/parametriclsystem-derive/index.html",
+      "bytes": 100145,
+      "sha256": "ed5f56a781445be574ee15a6aab2170d15149baabdac1fad0627476dadf531d7"
+    },
+    {
+      "path": "callables/parametriclsystem-derive/source/parametriclsystem-derive.py",
+      "bytes": 235,
+      "sha256": "c5bc53ff55bccd9dec3029a5d19da5e9a1b87bce51e69e309b271b375389594f"
+    },
+    {
+      "path": "callables/parametriclsystem-init/index.html",
+      "bytes": 175148,
+      "sha256": "de89ea3c6bc9fb7a342f677d972b758f6017142e85ba58bebd63f84480cdd3b0"
+    },
+    {
+      "path": "callables/parametriclsystem-init/source/parametriclsystem-init.py",
+      "bytes": 3306,
+      "sha256": "38db3e34dc681f04625fde28bd3a4fce3af6284210a1d1e4e4497691c191827c"
+    },
+    {
+      "path": "callables/parametriclsystem-interpret/index.html",
+      "bytes": 150119,
+      "sha256": "c44727477604ad222eba5ccbfcab0039447a3988e59342078a05bd81906a0890"
+    },
+    {
+      "path": "callables/parametriclsystem-interpret/source/parametriclsystem-interpret.py",
+      "bytes": 4786,
+      "sha256": "33b34a49d4be30247633c36f1b7848bb42ac8334d43106e5a53305903940d7c1"
+    },
+    {
+      "path": "callables/parametriclsystem-interpretation-seed/index.html",
+      "bytes": 99620,
+      "sha256": "9e62c3da52d3b2beda9fd021522b456b06b49dab81b7987189aa7ee7e20d77f2"
+    },
+    {
+      "path": "callables/parametriclsystem-interpretation-seed/source/parametriclsystem-interpretation-seed.py",
+      "bytes": 310,
+      "sha256": "fa1d964dfbcd0658c747be0920650d0dba576e0fb8be0aa0e8c5b1a662d61a72"
+    },
+    {
+      "path": "callables/parametriclsystem-iter-derivation/index.html",
+      "bytes": 104543,
+      "sha256": "3b902b6d09eb4c1b0a52cb265807afabfbbae6d34df1fa63893830b9a83c9cb7"
+    },
+    {
+      "path": "callables/parametriclsystem-iter-derivation/source/parametriclsystem-iter-derivation.py",
+      "bytes": 476,
+      "sha256": "e3bc11bc7bf2e4e291fa2bd487ebf9f7f95e4a131046a33c5671e3a0bc7daa9e"
+    },
+    {
+      "path": "callables/parametriclsystem-matching-rule/index.html",
+      "bytes": 116568,
+      "sha256": "312919368810caf812bb3615b0864975ccacbb48f315f08f74ef122e4ac22902"
+    },
+    {
+      "path": "callables/parametriclsystem-matching-rule/source/parametriclsystem-matching-rule.py",
+      "bytes": 1024,
+      "sha256": "f993174ef6544cc754c7491c8ab16132cc1b113337ca83a3d36650c98fe67487"
+    },
+    {
+      "path": "callables/parametriclsystem-neighbour/index.html",
+      "bytes": 106074,
+      "sha256": "b5c5a03a0afbe14e67dfba4d398a899d68fc5048408979fd29bc0141d8d7ed2e"
+    },
+    {
+      "path": "callables/parametriclsystem-neighbour/source/parametriclsystem-neighbour.py",
+      "bytes": 330,
+      "sha256": "b0c5a6771f9e4ff7605b1b31a7a69dbbcc4ff22be2c2e3fb596b97e130f5db8d"
+    },
+    {
+      "path": "callables/parametriclsystem-preset/index.html",
+      "bytes": 120798,
+      "sha256": "d1d261a281ec5ce9bc942b0a4cdd2ba38e03a5836e9cfa67c9fb945942f989e7"
+    },
+    {
+      "path": "callables/parametriclsystem-preset/source/parametriclsystem-preset.py",
+      "bytes": 2130,
+      "sha256": "328ae3e2265cc07ba9e3eb8d6a70ad902e9db49a0fd980fe35f61370ca085b3b"
+    },
+    {
+      "path": "callables/parametriclsystem-require-finite/index.html",
+      "bytes": 100743,
+      "sha256": "2d4f0d5a775e1a29c50d7359c609ee5bb2026125884a8f695c2f28830a52efa0"
+    },
+    {
+      "path": "callables/parametriclsystem-require-finite/source/parametriclsystem-require-finite.py",
+      "bytes": 154,
+      "sha256": "0bf304abef8a5d11e546979644cd80e6eb41092be924139e19647d2fa5fe1120"
+    },
+    {
+      "path": "callables/parametriclsystem-require-positive/index.html",
+      "bytes": 102483,
+      "sha256": "e1ccb525367cce229b6e0fd1fd66cac283e7815c80ab5107a9f333fdfeb9f84a"
+    },
+    {
+      "path": "callables/parametriclsystem-require-positive/source/parametriclsystem-require-positive.py",
+      "bytes": 184,
+      "sha256": "e2291a007cbd56050c1a75a250968b335c9b06d95397e68d80ba222e48ab1fb7"
+    },
+    {
+      "path": "callables/parametriclsystem-rewrite-once/index.html",
+      "bytes": 125846,
+      "sha256": "ae18476e0a1c122fc8e2e30b83fa4270258e57ca0cd88562e69ecede8830bfa9"
+    },
+    {
+      "path": "callables/parametriclsystem-rewrite-once/source/parametriclsystem-rewrite-once.py",
+      "bytes": 1799,
+      "sha256": "2371eeb8f1f69baa5270f996928af5421404c4473cca8cf4e566b93d42249301"
+    },
+    {
+      "path": "callables/parametriclsystem-trace/index.html",
+      "bytes": 99422,
+      "sha256": "1779e51d24e46ddeafa26fe707a893ece51f92728704aa9193f78bc8ee8aa160"
+    },
+    {
+      "path": "callables/parametriclsystem-trace/source/parametriclsystem-trace.py",
+      "bytes": 185,
+      "sha256": "03e856efa9141e1d84c101ad4774677edd68528f680cfe7cdd2a641dfb23579c"
+    },
+    {
+      "path": "callables/parametriclsystem-validate-actions/index.html",
+      "bytes": 104954,
+      "sha256": "ef4d1fe903215cd08ef60347441fe0bf353cf6e08b52e329ca4de2aff4a66cbb"
+    },
+    {
+      "path": "callables/parametriclsystem-validate-actions/source/parametriclsystem-validate-actions.py",
+      "bytes": 509,
+      "sha256": "60dc77b01c9eb17ba107eb92d190f131542c8d910400f0aa152cf9a5800822f2"
+    },
+    {
+      "path": "callables/parametriclsystem-validate-rule-result/index.html",
+      "bytes": 114678,
+      "sha256": "810f90aae5302cb331e24beae0c1288c7107ef53f7d47d91202f7a04cd0b6ac8"
+    },
+    {
+      "path": "callables/parametriclsystem-validate-rule-result/source/parametriclsystem-validate-rule-result.py",
+      "bytes": 1338,
+      "sha256": "675baf1530e486837fa7d3f91ff273fd781964db3330be27e8a21973232f3fe1"
+    },
+    {
+      "path": "callables/parametriclsystem-validate-rules/index.html",
+      "bytes": 110436,
+      "sha256": "0b656babb68b8d73eba61977aba03299db6104281d8e256362059a83a8620a0e"
+    },
+    {
+      "path": "callables/parametriclsystem-validate-rules/source/parametriclsystem-validate-rules.py",
+      "bytes": 889,
+      "sha256": "9d2fdb013999b7c1cd937ad9f60d405d3296b1c89af70031fdaa5c7a2adf9ec9"
+    },
+    {
+      "path": "callables/turtletrace-points/index.html",
+      "bytes": 100714,
+      "sha256": "66678994fc56c27201f5742df1123b7712f189808e8145bda6830f0cfef254ae"
+    },
+    {
+      "path": "callables/turtletrace-points/source/turtletrace-points.py",
+      "bytes": 350,
+      "sha256": "3bf932ceee55abc41f22aaec19d84e95a668fbb72f09d00c3be5434ea452f5a1"
+    },
+    {
+      "path": "callables/turtletrace-svg-path/index.html",
+      "bytes": 108749,
+      "sha256": "a724c9c562015f151816d6a4d3ac6c1ca46d7e0dd427fa077565bb1eca8c2562"
+    },
+    {
+      "path": "callables/turtletrace-svg-path/source/turtletrace-svg-path.py",
+      "bytes": 520,
+      "sha256": "e56188470905b45e8a1e1d62661728dabac27b7647fc2e4a34614fde3ebaaa8b"
+    },
+    {
+      "path": "index.html",
+      "bytes": 299594,
+      "sha256": "890210f38a1823566be006cdfdc6eeffe523eeb2bf2d8731f369a102c8529dd0"
+    },
+    {
+      "path": "source/python_source/parametric_l_system.py",
+      "bytes": 26414,
+      "sha256": "7e4d0170b3e5bd123a451a9b7f2fdd85db38770c5e97732fb58e51a7194c1270"
+    }
+  ]
+}

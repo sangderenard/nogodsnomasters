@@ -52,5 +52,42 @@ snapshot. Active Transmogrifier development lives in
 3. Run Git commands inside the intended repository and inspect status before staging.
 4. Treat `_quarantine/` as reversible storage, not as part of the active ecosystem.
 
+## Local compiler-page server
+
+The root repository also owns the small loopback-only server for the published
+compiler inspection page:
+
+```powershell
+go run .
+```
+
+Open `http://localhost:8787`. The page can upload a trusted `.py` file to the
+local Turing compiler and browse every page bundle already prepared beneath
+`site/programs/`. Generation is deliberately restricted to loopback clients;
+compiling Python source is a trusted local operation, not a public web service.
+
+Generated programs use one standard, content-versioned layout:
+
+```text
+site/programs/<slug>/versions/<version>/
+  bundle.json
+  index.html
+  source/python_source/<upload>.py
+  source/<backend>/<artifact>
+  wasm/<module>.wasm
+  math/sympy-process-model.json
+  build/compiler.log
+```
+
+The Turing page-builder commands default to this repository root, even when
+launched from inside `turing/`. They reject `turing/` itself as a gallery
+destination so generated pages cannot silently split across both repositories.
+
+The server derives the gallery by walking valid `bundle.json` files in this
+tree. There is no hand-maintained gallery index. A source may provide a literal
+`TURING_PAGE` dictionary for `entrypoint`, `title`, `slug`, probe `feeds`, feed
+expressions, dimensions, and compiler loop options; the upload form can override
+the common identity and probe fields.
+
 For the detailed directory inventory and agent routing rules, see
 [`AGENTS.md`](AGENTS.md).
