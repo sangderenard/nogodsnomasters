@@ -1,0 +1,147 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "affine-field",
+    "title": "Affine Field",
+    "entrypoint": "render"
+  },
+  "version": {
+    "id": "v1-3bb9bc2da7f8edf2",
+    "source_sha256": "9d1d5a0fd829d7d94ffc5e1678d54bea6dd6792f11a0c0485c27e6d44bf47f89",
+    "builder": "site-bundle-v10"
+  },
+  "created_at": "2026-08-02T12:11:15.007751+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/affine-field/versions/v1-3bb9bc2da7f8edf2/index.html"
+  },
+  "source": {
+    "path": "source/python_source/site_bundle_example.py",
+    "filename": "site_bundle_example.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "mathematics_error": "",
+    "fortran_verification": {
+      "passed": true,
+      "case_count": 3,
+      "source_sha256": "776337ab20692b8d3b26d556003181b0ceaaeeb417ba8a658bbfd9923cbc44a8",
+      "url": "verification/fortran-fidelity.json"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 125833,
+      "sha256": "6cf06878669107801f845af671c30558b0bb07379d2b17e3be02f341775a1840"
+    },
+    {
+      "path": "math/sympy-process-model.json",
+      "bytes": 3408,
+      "sha256": "98c52798f9fd1c08938b45a9e153f8b3c2aa12f174d3bb3b5cc961fd60da36bb"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.api.yaml",
+      "bytes": 2710,
+      "sha256": "6e97edc31e0c43bb739f1fa4ca58af9b10a7115c9277e0e371574cf8434a0422"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.dll",
+      "bytes": 91436,
+      "sha256": "e7d167b3a2b7fb852280447c06ada55a5434020e0c0b60ad5b86540cdd96b953"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.f90",
+      "bytes": 1748,
+      "sha256": "776337ab20692b8d3b26d556003181b0ceaaeeb417ba8a658bbfd9923cbc44a8"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.mod",
+      "bytes": 2944,
+      "sha256": "a0acaa4f5f6d55cabca7a2f365c82ea017c92219d06c02380affd9000a5f5ed3"
+    },
+    {
+      "path": "source/abstract_tensor/abstract_tensor.py",
+      "bytes": 148,
+      "sha256": "1ffb72c0025cad226f1dcf3da1f51d525b6c1a8bb3c1069ef9c32c1b8b4fc256"
+    },
+    {
+      "path": "source/fortran/fortran.api.yaml",
+      "bytes": 2710,
+      "sha256": "6e97edc31e0c43bb739f1fa4ca58af9b10a7115c9277e0e371574cf8434a0422"
+    },
+    {
+      "path": "source/fortran/fortran.f90",
+      "bytes": 1748,
+      "sha256": "776337ab20692b8d3b26d556003181b0ceaaeeb417ba8a658bbfd9923cbc44a8"
+    },
+    {
+      "path": "source/glsl/glsl.comp.glsl",
+      "bytes": 1303,
+      "sha256": "caaf5f7692b03ee119b26c7e504692f4b19d43c43ba910577d9aa51b76b8b99f"
+    },
+    {
+      "path": "source/numpy/numpy.py",
+      "bytes": 148,
+      "sha256": "1ffb72c0025cad226f1dcf3da1f51d525b6c1a8bb3c1069ef9c32c1b8b4fc256"
+    },
+    {
+      "path": "source/python_source/site_bundle_example.py",
+      "bytes": 563,
+      "sha256": "9d1d5a0fd829d7d94ffc5e1678d54bea6dd6792f11a0c0485c27e6d44bf47f89"
+    },
+    {
+      "path": "source/spirv/spirv.spvasm",
+      "bytes": 6390,
+      "sha256": "ad1faf19f1cc8d8972c6a7faf52f469c8cb8b14f7e1ff024fa2d6c46a036dcbf"
+    },
+    {
+      "path": "source/ssa/ssa.ssa",
+      "bytes": 4394,
+      "sha256": "f1d6d0f04c508e10b1af305bdfb1b40bb6af0c11aea5a362bf82ed7637e92474"
+    },
+    {
+      "path": "source/torch/torch.py",
+      "bytes": 148,
+      "sha256": "1ffb72c0025cad226f1dcf3da1f51d525b6c1a8bb3c1069ef9c32c1b8b4fc256"
+    },
+    {
+      "path": "source/wat/wat.wat",
+      "bytes": 1615,
+      "sha256": "6ba4f5e768f4b584f77014d3bef303b53b11a3c0e5b7f41872ee8f9b504a14c4"
+    },
+    {
+      "path": "source/webgl/webgl.txt",
+      "bytes": 940,
+      "sha256": "1b5803967bb58505994b69fce6a1f24c1481211469cbe01600684500d9f8eee5"
+    },
+    {
+      "path": "verification/fortran-fidelity.json",
+      "bytes": 4076,
+      "sha256": "c98e7381576b9d5f1b768e08236b0e18db6df506b2598c2b97f1ac082de7bf45"
+    },
+    {
+      "path": "wasm/render.wasm",
+      "bytes": 181,
+      "sha256": "1160d0c87602e0d5180e951e5ee05dfcbf56428634ae7e6ef267bd0f4bfbc94a"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 581,
+      "sha256": "97542b15b9740a9c07a67236cac927347c7994cae256edc45e65ec05bdec1501"
+    },
+    {
+      "path": "wasm/size-2000/render__0.wasm",
+      "bytes": 193,
+      "sha256": "f601eae53d0f2e9a8652fac9871051d42f948bdfb0de207c5e56488006edb883"
+    },
+    {
+      "path": "wasm/size-2000/render_coordinator_2000.wasm",
+      "bytes": 131,
+      "sha256": "205068f1dc6b2e4a26e32fa103bf020c2f2f6f319e9381b80e53b86f6ea023c7"
+    }
+  ]
+}

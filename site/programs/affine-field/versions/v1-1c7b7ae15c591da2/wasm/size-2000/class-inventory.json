@@ -1,0 +1,37 @@
+{
+  "abi": "turing.class-memory-inventory.v1",
+  "field_slots": [
+    {
+      "index": 0,
+      "key": "in::unit_x"
+    },
+    {
+      "index": 1,
+      "key": "in::gain"
+    },
+    {
+      "index": 2,
+      "key": "in::unit_y"
+    },
+    {
+      "index": 3,
+      "key": "out::render__0::result_0"
+    }
+  ],
+  "methods": [
+    {
+      "index": 0,
+      "module": "render__0",
+      "entry": "run",
+      "input_slots": [
+        0,
+        1,
+        2
+      ],
+      "output_slots": [
+        3
+      ],
+      "parameter_count": 5
+    }
+  ]
+}

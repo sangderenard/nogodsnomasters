@@ -1,0 +1,21 @@
+#version 300 es
+precision highp float;
+precision highp int;
+
+uniform sampler2D turing_feed_2601241082064;
+uniform sampler2D turing_feed_2601267349840;
+uniform sampler2D turing_feed_2601267353168;
+layout(location = 0) out vec4 turing_output_0;
+
+void main() {
+    ivec2 turing_coordinate = ivec2(gl_FragCoord.xy);
+    float v_2601241082064 = texelFetch(turing_feed_2601241082064, turing_coordinate, 0).r;
+    float v_2601267349840 = texelFetch(turing_feed_2601267349840, turing_coordinate, 0).r;
+    float v_2601267353168 = texelFetch(turing_feed_2601267353168, turing_coordinate, 0).r;
+    float v_2601247245008 = v_2601241082064 * v_2601267353168;
+    float v_2601267360080 = 1.0 - v_2601267353168;
+    float v_2601267841936 = v_2601267349840 * v_2601267360080;
+    float v_2601267850896 = v_2601247245008 + v_2601267841936;
+    float v_2601267846032 = v_2601267850896 * 255.0;
+    turing_output_0 = vec4(v_2601267846032, 0.0, 0.0, 1.0);
+}

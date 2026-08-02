@@ -1,0 +1,159 @@
+{
+  "schema": "turing-fortran-fidelity-v1",
+  "passed": true,
+  "entrypoint": "render",
+  "source_sha256": "43ac4121c650c3d94be1ff83092f9501ceb31bb0ddc3a7118f8d6cbc5b444bbb",
+  "native_library": "kernel_fortran.dll",
+  "compiler": {
+    "path": "C:\\msys64\\mingw64\\bin\\gfortran.exe",
+    "version": "GNU Fortran (Rev5, Built by MSYS2 project) 16.1.0"
+  },
+  "tolerances": {
+    "relative": 1e-11,
+    "absolute": 1e-12
+  },
+  "case_count": 3,
+  "cases": [
+    {
+      "name": "captured-probe",
+      "inputs": {
+        "2601241082064": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "2601267349840": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "2601267353168": [
+          0.8,
+          0.8,
+          0.8,
+          0.8
+        ]
+      },
+      "outputs": [
+        {
+          "name": "result_0",
+          "value_id": 2601267846032,
+          "shape": [
+            4
+          ],
+          "reference": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "fortran": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_absolute_error": 0.0,
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "reversed-probe",
+      "inputs": {
+        "2601241082064": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "2601267349840": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "2601267353168": [
+          0.8,
+          0.8,
+          0.8,
+          0.8
+        ]
+      },
+      "outputs": [
+        {
+          "name": "result_0",
+          "value_id": 2601267846032,
+          "shape": [
+            4
+          ],
+          "reference": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "fortran": [
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "max_absolute_error": 0.0,
+          "passed": true
+        }
+      ],
+      "passed": true
+    },
+    {
+      "name": "deterministic-sweep",
+      "inputs": {
+        "2601241082064": [
+          -0.75,
+          -0.08333333333333337,
+          0.5833333333333333,
+          1.25
+        ],
+        "2601267349840": [
+          -0.625,
+          0.04166666666666663,
+          0.7083333333333333,
+          1.375
+        ],
+        "2601267353168": [
+          -0.5,
+          0.16666666666666663,
+          0.8333333333333333,
+          1.5
+        ]
+      },
+      "outputs": [
+        {
+          "name": "result_0",
+          "value_id": 2601267846032,
+          "shape": [
+            4
+          ],
+          "reference": [
+            -143.4375,
+            5.312499999999993,
+            154.0625,
+            302.8125
+          ],
+          "fortran": [
+            -143.4375,
+            5.312499999999993,
+            154.0625,
+            302.8125
+          ],
+          "max_absolute_error": 0.0,
+          "passed": true
+        }
+      ],
+      "passed": true
+    }
+  ]
+}

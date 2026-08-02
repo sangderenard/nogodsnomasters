@@ -1,0 +1,156 @@
+OpCapability Float64
+OpCapability Linkage
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpDecorate %render LinkageAttributes "render" Export
+%void = OpTypeVoid
+%float64 = OpTypeFloat 64
+%uint = OpTypeInt 32 0
+%cu1 = OpConstant %uint 4
+%arrty2 = OpTypeArray %float64 %cu1
+%ptrty3 = OpTypePointer Function %arrty2
+%fnty4 = OpTypeFunction %void %ptrty3 %ptrty3 %ptrty3
+%cu5 = OpConstant %uint 0
+%ptrty6 = OpTypePointer Function %float64
+%cu13 = OpConstant %uint 1
+%cu20 = OpConstant %uint 2
+%cu27 = OpConstant %uint 3
+%c36 = OpConstant %float64 1.0
+%c101 = OpConstant %float64 255.0
+
+%render = OpFunction %void None %fnty4
+%t2601241082064 = OpFunctionParameter %ptrty3
+%t2601267349840 = OpFunctionParameter %ptrty3
+%t2601267353168 = OpFunctionParameter %ptrty3
+%render_entry = OpLabel
+%t2601247245008_arr = OpVariable %ptrty3 Function
+%t2601267360080_arr = OpVariable %ptrty3 Function
+%t2601267841936_arr = OpVariable %ptrty3 Function
+%t2601267850896_arr = OpVariable %ptrty3 Function
+%t2601267846032_arr = OpVariable %ptrty3 Function
+    %ap7 = OpAccessChain %ptrty6 %t2601241082064 %cu5
+    %v8 = OpLoad %float64 %ap7
+    %ap9 = OpAccessChain %ptrty6 %t2601267353168 %cu5
+    %v10 = OpLoad %float64 %ap9
+    %v11 = OpFMul %float64 %v8 %v10
+    %ap12 = OpAccessChain %ptrty6 %t2601247245008_arr %cu5
+    OpStore %ap12 %v11
+    %ap14 = OpAccessChain %ptrty6 %t2601241082064 %cu13
+    %v15 = OpLoad %float64 %ap14
+    %ap16 = OpAccessChain %ptrty6 %t2601267353168 %cu13
+    %v17 = OpLoad %float64 %ap16
+    %v18 = OpFMul %float64 %v15 %v17
+    %ap19 = OpAccessChain %ptrty6 %t2601247245008_arr %cu13
+    OpStore %ap19 %v18
+    %ap21 = OpAccessChain %ptrty6 %t2601241082064 %cu20
+    %v22 = OpLoad %float64 %ap21
+    %ap23 = OpAccessChain %ptrty6 %t2601267353168 %cu20
+    %v24 = OpLoad %float64 %ap23
+    %v25 = OpFMul %float64 %v22 %v24
+    %ap26 = OpAccessChain %ptrty6 %t2601247245008_arr %cu20
+    OpStore %ap26 %v25
+    %ap28 = OpAccessChain %ptrty6 %t2601241082064 %cu27
+    %v29 = OpLoad %float64 %ap28
+    %ap30 = OpAccessChain %ptrty6 %t2601267353168 %cu27
+    %v31 = OpLoad %float64 %ap30
+    %v32 = OpFMul %float64 %v29 %v31
+    %ap33 = OpAccessChain %ptrty6 %t2601247245008_arr %cu27
+    OpStore %ap33 %v32
+    %ap34 = OpAccessChain %ptrty6 %t2601267353168 %cu5
+    %v35 = OpLoad %float64 %ap34
+    %v37 = OpFSub %float64 %c36 %v35
+    %ap38 = OpAccessChain %ptrty6 %t2601267360080_arr %cu5
+    OpStore %ap38 %v37
+    %ap39 = OpAccessChain %ptrty6 %t2601267353168 %cu13
+    %v40 = OpLoad %float64 %ap39
+    %v41 = OpFSub %float64 %c36 %v40
+    %ap42 = OpAccessChain %ptrty6 %t2601267360080_arr %cu13
+    OpStore %ap42 %v41
+    %ap43 = OpAccessChain %ptrty6 %t2601267353168 %cu20
+    %v44 = OpLoad %float64 %ap43
+    %v45 = OpFSub %float64 %c36 %v44
+    %ap46 = OpAccessChain %ptrty6 %t2601267360080_arr %cu20
+    OpStore %ap46 %v45
+    %ap47 = OpAccessChain %ptrty6 %t2601267353168 %cu27
+    %v48 = OpLoad %float64 %ap47
+    %v49 = OpFSub %float64 %c36 %v48
+    %ap50 = OpAccessChain %ptrty6 %t2601267360080_arr %cu27
+    OpStore %ap50 %v49
+    %ap51 = OpAccessChain %ptrty6 %t2601267349840 %cu5
+    %v52 = OpLoad %float64 %ap51
+    %ap53 = OpAccessChain %ptrty6 %t2601267360080_arr %cu5
+    %v54 = OpLoad %float64 %ap53
+    %v55 = OpFMul %float64 %v52 %v54
+    %ap56 = OpAccessChain %ptrty6 %t2601267841936_arr %cu5
+    OpStore %ap56 %v55
+    %ap57 = OpAccessChain %ptrty6 %t2601267349840 %cu13
+    %v58 = OpLoad %float64 %ap57
+    %ap59 = OpAccessChain %ptrty6 %t2601267360080_arr %cu13
+    %v60 = OpLoad %float64 %ap59
+    %v61 = OpFMul %float64 %v58 %v60
+    %ap62 = OpAccessChain %ptrty6 %t2601267841936_arr %cu13
+    OpStore %ap62 %v61
+    %ap63 = OpAccessChain %ptrty6 %t2601267349840 %cu20
+    %v64 = OpLoad %float64 %ap63
+    %ap65 = OpAccessChain %ptrty6 %t2601267360080_arr %cu20
+    %v66 = OpLoad %float64 %ap65
+    %v67 = OpFMul %float64 %v64 %v66
+    %ap68 = OpAccessChain %ptrty6 %t2601267841936_arr %cu20
+    OpStore %ap68 %v67
+    %ap69 = OpAccessChain %ptrty6 %t2601267349840 %cu27
+    %v70 = OpLoad %float64 %ap69
+    %ap71 = OpAccessChain %ptrty6 %t2601267360080_arr %cu27
+    %v72 = OpLoad %float64 %ap71
+    %v73 = OpFMul %float64 %v70 %v72
+    %ap74 = OpAccessChain %ptrty6 %t2601267841936_arr %cu27
+    OpStore %ap74 %v73
+    %ap75 = OpAccessChain %ptrty6 %t2601247245008_arr %cu5
+    %v76 = OpLoad %float64 %ap75
+    %ap77 = OpAccessChain %ptrty6 %t2601267841936_arr %cu5
+    %v78 = OpLoad %float64 %ap77
+    %v79 = OpFAdd %float64 %v76 %v78
+    %ap80 = OpAccessChain %ptrty6 %t2601267850896_arr %cu5
+    OpStore %ap80 %v79
+    %ap81 = OpAccessChain %ptrty6 %t2601247245008_arr %cu13
+    %v82 = OpLoad %float64 %ap81
+    %ap83 = OpAccessChain %ptrty6 %t2601267841936_arr %cu13
+    %v84 = OpLoad %float64 %ap83
+    %v85 = OpFAdd %float64 %v82 %v84
+    %ap86 = OpAccessChain %ptrty6 %t2601267850896_arr %cu13
+    OpStore %ap86 %v85
+    %ap87 = OpAccessChain %ptrty6 %t2601247245008_arr %cu20
+    %v88 = OpLoad %float64 %ap87
+    %ap89 = OpAccessChain %ptrty6 %t2601267841936_arr %cu20
+    %v90 = OpLoad %float64 %ap89
+    %v91 = OpFAdd %float64 %v88 %v90
+    %ap92 = OpAccessChain %ptrty6 %t2601267850896_arr %cu20
+    OpStore %ap92 %v91
+    %ap93 = OpAccessChain %ptrty6 %t2601247245008_arr %cu27
+    %v94 = OpLoad %float64 %ap93
+    %ap95 = OpAccessChain %ptrty6 %t2601267841936_arr %cu27
+    %v96 = OpLoad %float64 %ap95
+    %v97 = OpFAdd %float64 %v94 %v96
+    %ap98 = OpAccessChain %ptrty6 %t2601267850896_arr %cu27
+    OpStore %ap98 %v97
+    %ap99 = OpAccessChain %ptrty6 %t2601267850896_arr %cu5
+    %v100 = OpLoad %float64 %ap99
+    %v102 = OpFMul %float64 %v100 %c101
+    %ap103 = OpAccessChain %ptrty6 %t2601267846032_arr %cu5
+    OpStore %ap103 %v102
+    %ap104 = OpAccessChain %ptrty6 %t2601267850896_arr %cu13
+    %v105 = OpLoad %float64 %ap104
+    %v106 = OpFMul %float64 %v105 %c101
+    %ap107 = OpAccessChain %ptrty6 %t2601267846032_arr %cu13
+    OpStore %ap107 %v106
+    %ap108 = OpAccessChain %ptrty6 %t2601267850896_arr %cu20
+    %v109 = OpLoad %float64 %ap108
+    %v110 = OpFMul %float64 %v109 %c101
+    %ap111 = OpAccessChain %ptrty6 %t2601267846032_arr %cu20
+    OpStore %ap111 %v110
+    %ap112 = OpAccessChain %ptrty6 %t2601267850896_arr %cu27
+    %v113 = OpLoad %float64 %ap112
+    %v114 = OpFMul %float64 %v113 %c101
+    %ap115 = OpAccessChain %ptrty6 %t2601267846032_arr %cu27
+    OpStore %ap115 %v114
+    OpReturn
+OpFunctionEnd

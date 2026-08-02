@@ -1,0 +1,51 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "turing-program-bundle-builder",
+    "title": "Turing Program Bundle Builder",
+    "entrypoint": "build_program_bundle",
+    "kind": "python-ast-inspection"
+  },
+  "version": {
+    "id": "v1-4a1b2b5945270e88",
+    "source_sha256": "ff4fbb831b4a1f37310ad704f30b95427a38630d6fbd73884f3349d7b2fa8a2f",
+    "builder": "site-bundle-v8-ast"
+  },
+  "created_at": "2026-08-02T11:49:57.043174+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/turing-program-bundle-builder/versions/v1-4a1b2b5945270e88/index.html"
+  },
+  "source": {
+    "path": "source/python_source/site_bundle.py",
+    "filename": "site_bundle.py"
+  },
+  "compiler": {
+    "mode": "python-ast-inspection",
+    "source_kind": "method",
+    "callable_systems": 1
+  },
+  "artifacts": [
+    {
+      "path": "callables/build-program-bundle/index.html",
+      "bytes": 179401,
+      "sha256": "41a1ba73791f2f6d4629e2ce606aabbe50a1eb89b4f8fde0d3bc0cfe482539b9"
+    },
+    {
+      "path": "callables/build-program-bundle/source/build-program-bundle.py",
+      "bytes": 8706,
+      "sha256": "40fc4f065d55d0f0858c213936e8793229e7a88262de5dc1c57bb2b5c6bc25af"
+    },
+    {
+      "path": "index.html",
+      "bytes": 183511,
+      "sha256": "b1daab685092fd02cb5af939bbf21e5f82415acef893f6f8da86ad6c5132e2b7"
+    },
+    {
+      "path": "source/python_source/site_bundle.py",
+      "bytes": 8708,
+      "sha256": "49448c296d9371a2c2b2c8e14cc5885a9660a784a9fa41dc2d8e554cf498989d"
+    }
+  ]
+}

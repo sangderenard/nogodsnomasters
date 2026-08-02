@@ -1,0 +1,138 @@
+schema: turing-compiled-program-api-v1
+module: kernel_fortran
+language: fortran
+entry: render_control
+metadata:
+  dtype: float64
+entry_points:
+- name: render
+  symbol: render
+  kind: numerical
+  parameters:
+  - name: extent_4
+    role: extent
+    dtype: int32
+    c_type: int32_t
+    ctypes: c_int32
+    passing: value
+  - name: t2725003784144
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t2725003787152
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t2725003787536
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t2725023979984
+    role: output
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+- name: render_control
+  symbol: render_control
+  kind: control
+  parameters:
+  - name: extent_4
+    role: extent
+    dtype: int32
+    c_type: int32_t
+    ctypes: c_int32
+    passing: value
+  - name: t0
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t1
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t2
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  note: 'call this one: a program whose control shell has a loop iterates here, and
+    calling the numerical subroutine directly runs the loop body once'
+- name: numerical_region_0
+  symbol: numerical_region_0
+  kind: region
+  parameters:
+  - name: extent_4
+    role: extent
+    dtype: int32
+    c_type: int32_t
+    ctypes: c_int32
+    passing: value
+  - name: t0
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t1
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t2
+    role: input
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
+  - name: t9
+    role: output
+    dtype: float64
+    c_type: double
+    ctypes: c_double
+    passing: reference
+    shape:
+    - 4
+    extent: extent_4
