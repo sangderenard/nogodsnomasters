@@ -1,0 +1,119 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "elastic-dom-surface",
+    "title": "Elastic DOM Surface",
+    "entrypoint": "elastic_dom_page"
+  },
+  "version": {
+    "id": "v1-32c5db29b628cdf8",
+    "source_sha256": "7d11c236b9e8cc8d7f8f79d68d5aff448f5c6a38da2fb795a82b4e2b27a1b6cd",
+    "builder": "site-bundle-v16"
+  },
+  "created_at": "2026-08-03T04:00:54.812929+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/elastic-dom-surface/versions/v1-32c5db29b628cdf8/index.html",
+    "mode": "shader-execution",
+    "shader": {
+      "url": "source/roles/shader-surface/surface.frag.glsl",
+      "language": "webgl2-glsl-es",
+      "stage": "fragment",
+      "role": "shader-surface",
+      "autostart": true,
+      "execution": {
+        "continuous": true,
+        "prefer_contiguous": true
+      },
+      "configuration": {
+        "dom_surface": true,
+        "max_elements": 256,
+        "dom_io": {
+          "inputs": {
+            "position_x": "position_x",
+            "position_y": "position_y",
+            "velocity_x": "velocity_x",
+            "velocity_y": "velocity_y",
+            "anchor_x": "anchor_x",
+            "anchor_y": "anchor_y",
+            "extent_x": "extent_x",
+            "extent_y": "extent_y",
+            "pointer_x": "pointer_x",
+            "pointer_y": "pointer_y",
+            "pointer_buttons": "pointer_buttons",
+            "button_latch": "button_latch",
+            "score": "score",
+            "window_dt": "window_dt"
+          },
+          "outputs": {
+            "position_x": 0,
+            "position_y": 1,
+            "velocity_x": 2,
+            "velocity_y": 3,
+            "button_latch": 4,
+            "score": 5,
+            "activity": 6,
+            "rejected_steps": 7,
+            "advanced_time": 8,
+            "remaining_time": 9
+          }
+        },
+        "document_url": "source/roles/shader-document/index.html"
+      }
+    }
+  },
+  "source": {
+    "path": "source/python_source/elastic_dom_page.py",
+    "filename": "elastic_dom_page.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "mathematics_error": "",
+    "fortran_verification": null
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 232012,
+      "sha256": "cb97cd0e505e727b91f7b8c42a31844a744fe91d75868bb6f80ccdc476b7a3c6"
+    },
+    {
+      "path": "source/python_source/elastic_dom_page.py",
+      "bytes": 34758,
+      "sha256": "7d11c236b9e8cc8d7f8f79d68d5aff448f5c6a38da2fb795a82b4e2b27a1b6cd"
+    },
+    {
+      "path": "source/roles/shader-document/index.html",
+      "bytes": 2023,
+      "sha256": "6bcc15b597ca516f5b6ae5c72e7c9aa9cc50accbe89c4b904432f480b446a8a2"
+    },
+    {
+      "path": "source/roles/shader-surface/surface.frag.glsl",
+      "bytes": 3661,
+      "sha256": "7262421d19d2200c6861c109439575f7de6fd967f6038eb6e4e4479fab8db986"
+    },
+    {
+      "path": "wasm/elastic_dom_page.wasm",
+      "bytes": 12913,
+      "sha256": "a1fabb027cb82ad45c37ff927d8bb2d25784b280255f4485dba55b38401f7f65"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 2439,
+      "sha256": "aa638e6c66148418f74821d282cb9d22b89613711003f55d4053c657c6e77dde"
+    },
+    {
+      "path": "wasm/size-2000/elastic_dom_page__0.wasm",
+      "bytes": 15414,
+      "sha256": "7f1bee30bc1a2c47ff37a447fb0e863f360d2041574bb45695165b076c4d569b"
+    },
+    {
+      "path": "wasm/size-2000/elastic_dom_page_coordinator_2000.wasm",
+      "bytes": 263,
+      "sha256": "b8f433e3098235af823adf5317a543a595457e51d2bae967386ea46e5f9e1e4d"
+    }
+  ]
+}
