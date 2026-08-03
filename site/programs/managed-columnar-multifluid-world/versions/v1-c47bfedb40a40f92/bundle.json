@@ -1,0 +1,180 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "managed-columnar-multifluid-world",
+    "title": "Managed Columnar Multifluid World",
+    "entrypoint": "columnar_multifluid_rgb_step"
+  },
+  "version": {
+    "id": "v1-c47bfedb40a40f92",
+    "source_sha256": "7803ba9d064df3b6ef4fc3548be60f5b7cae54d79ce6425c42733a9a4a21d95e",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-03T11:41:46.174279+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/managed-columnar-multifluid-world/versions/v1-c47bfedb40a40f92/index.html",
+    "mode": "shader-execution",
+    "shader": {
+      "url": "source/roles/shader-surface/surface.frag.glsl",
+      "language": "webgl2-glsl-es",
+      "stage": "fragment",
+      "role": "shader-surface",
+      "autostart": true,
+      "execution": {
+        "continuous": true,
+        "prefer_contiguous": true
+      },
+      "configuration": {
+        "output_feed_bindings": {
+          "turing_feed_0": "red",
+          "turing_feed_1": "green",
+          "turing_feed_2": "blue"
+        }
+      }
+    },
+    "audio": {
+      "audio_url": "audio/managed-time-source.wav",
+      "features_url": "audio/spectral-features.json",
+      "sample_rate": 24000,
+      "feature_fps": 30,
+      "duration": 8.0,
+      "managed_time_output": "next_time",
+      "pan_output": "next_entity_x",
+      "pan_range": [
+        0.0,
+        10.0
+      ]
+    }
+  },
+  "source": {
+    "path": "source/python_source/columnar_multifluid_web_demo.py",
+    "filename": "columnar_multifluid_web_demo.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "implementation_sha256": "a765b62f982ad5c472d2c3e2ffd44a796cd583681f5d1a7c74a652f722a56de5",
+    "mathematics_error": "",
+    "fortran_verification": {
+      "passed": true,
+      "case_count": 3,
+      "source_sha256": "c729be58dc7389de711334f2fdf0af7e9500097697b4ba512cf742ebf48507eb",
+      "url": "verification/fortran-fidelity.json"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "audio/managed-time-source.wav",
+      "bytes": 384044,
+      "sha256": "34fc6631cca5a240bc5ef7b457a51272b244217ebf7ffb80efe3081e0b9c87ff"
+    },
+    {
+      "path": "audio/spectral-features.json",
+      "bytes": 18491,
+      "sha256": "2596a4c9c6d5c84645b726376265b3f01614e09c1156823b2fc2cea9f4625d87"
+    },
+    {
+      "path": "index.html",
+      "bytes": 294895,
+      "sha256": "2b53f626712107d97db0c89fe92081dcb1ec6a5aef1649830fb0be00081e295c"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.api.yaml",
+      "bytes": 39349,
+      "sha256": "a22e0ae258ee65005711e8f9f858451bae19236b6f7b842f266416992365f285"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.dll",
+      "bytes": 539045,
+      "sha256": "9c0a5d5308d8b6ae51357f74b7f746689959bd4efaf9b8120f12a66c53b57025"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.f90",
+      "bytes": 56251,
+      "sha256": "c729be58dc7389de711334f2fdf0af7e9500097697b4ba512cf742ebf48507eb"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.mod",
+      "bytes": 4850,
+      "sha256": "5c24b9c16cad242d86f76434fe3415b4fd4bc2d7b782612758702ab88e5cbafe"
+    },
+    {
+      "path": "source/abstract_tensor/abstract_tensor.py",
+      "bytes": 20155,
+      "sha256": "94d2230b73a1534cbd587da8a9d9a75b099020dca33431c92859470bc18eb18e"
+    },
+    {
+      "path": "source/fortran/fortran.api.yaml",
+      "bytes": 39349,
+      "sha256": "a22e0ae258ee65005711e8f9f858451bae19236b6f7b842f266416992365f285"
+    },
+    {
+      "path": "source/fortran/fortran.f90",
+      "bytes": 56251,
+      "sha256": "c729be58dc7389de711334f2fdf0af7e9500097697b4ba512cf742ebf48507eb"
+    },
+    {
+      "path": "source/numpy/numpy.py",
+      "bytes": 20659,
+      "sha256": "ee2117054ff780f87d3eb0ed47b3716b5b3ac22a9db80489e07b56139517d9fc"
+    },
+    {
+      "path": "source/python_source/columnar_multifluid_web_demo.py",
+      "bytes": 24728,
+      "sha256": "7803ba9d064df3b6ef4fc3548be60f5b7cae54d79ce6425c42733a9a4a21d95e"
+    },
+    {
+      "path": "source/roles/shader-surface/surface.frag.glsl",
+      "bytes": 661,
+      "sha256": "affd7d5041bf642cc25620f035a36ae21107968e014b8bc9c40d9e14c0afd617"
+    },
+    {
+      "path": "source/spirv/spirv.spvasm",
+      "bytes": 3275194,
+      "sha256": "9b56f97a596774993448c8b513eebf720462e6f9b89d388e30fb5c20f7da47af"
+    },
+    {
+      "path": "source/ssa/ssa.ssa",
+      "bytes": 361259,
+      "sha256": "56b184e14983e17c4c1477dca4e5e63df5396d8fa98b3183e35e692d2943f237"
+    },
+    {
+      "path": "source/torch/torch.py",
+      "bytes": 20635,
+      "sha256": "054a033a3c1e1b195fbecce8365609bf7f9a30ba851b4de533a34255d1d0de7c"
+    },
+    {
+      "path": "source/wat/wat.wat",
+      "bytes": 174,
+      "sha256": "b7ffe0de473a49df31d6494172283ecc6f3a7d1c74923c9ecadb8446edc8a255"
+    },
+    {
+      "path": "verification/fortran-fidelity.json",
+      "bytes": 162759,
+      "sha256": "49db672ebf78b55bd939ef0968c9e358520d069e9204e0cf35a23662e3faba7f"
+    },
+    {
+      "path": "wasm/columnar_multifluid_rgb_step_control_2000.wasm",
+      "bytes": 546,
+      "sha256": "896f0b7d3eb564b87ad3fbc4305a2c5c4b3d9ada07541bd7cc08bbe3cc238a7a"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 6686,
+      "sha256": "69c00cb52040553368eecacb91eb59e8019b20cda6ec34c8c4d01e6a3f1b2edc"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step_control_2000.wasm",
+      "bytes": 546,
+      "sha256": "896f0b7d3eb564b87ad3fbc4305a2c5c4b3d9ada07541bd7cc08bbe3cc238a7a"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step_region_0.wasm",
+      "bytes": 4346069,
+      "sha256": "b5a8d6d2e1851f4687a7732f2baf8a96054b34a18dbba0e822d3374cfaf8e541"
+    }
+  ]
+}
