@@ -1,0 +1,158 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "managed-columnar-multifluid-world-fortran",
+    "title": "Managed Columnar Multifluid World \u2014 Native Fortran",
+    "entrypoint": "columnar_multifluid_rgb_step"
+  },
+  "version": {
+    "id": "v1-b47cd5b866227f4b",
+    "source_sha256": "1b32147cf36cc134e360bf2e587e6d2b221d8348e256fb379073c9557c50f3e3",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-03T11:06:44.548944+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/managed-columnar-multifluid-world-fortran/versions/v1-b47cd5b866227f4b/index.html",
+    "mode": "inspection",
+    "shader": null,
+    "audio": {
+      "audio_url": "audio/managed-time-source.wav",
+      "features_url": "audio/spectral-features.json",
+      "sample_rate": 24000,
+      "feature_fps": 30,
+      "duration": 8.0,
+      "managed_time_output": "next_time",
+      "pan_output": "next_entity_x",
+      "pan_range": [
+        0.0,
+        10.0
+      ]
+    }
+  },
+  "source": {
+    "path": "source/python_source/columnar_multifluid_fortran_demo.py",
+    "filename": "columnar_multifluid_fortran_demo.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "implementation_sha256": "dec25f44846e6c1ac4305b0431dfa0ca7c17d949bd5060488a87dd627deedd87",
+    "mathematics_error": "",
+    "fortran_verification": {
+      "passed": true,
+      "case_count": 3,
+      "source_sha256": "a6d0b1595b7213fdc18f630c6cdbd4ca563657ef94e9881cbf1b74641500a01c",
+      "url": "verification/fortran-fidelity.json"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "audio/managed-time-source.wav",
+      "bytes": 384044,
+      "sha256": "34fc6631cca5a240bc5ef7b457a51272b244217ebf7ffb80efe3081e0b9c87ff"
+    },
+    {
+      "path": "audio/spectral-features.json",
+      "bytes": 18491,
+      "sha256": "2596a4c9c6d5c84645b726376265b3f01614e09c1156823b2fc2cea9f4625d87"
+    },
+    {
+      "path": "index.html",
+      "bytes": 271120,
+      "sha256": "14ffce8b7d99818833286b14f5a23b431bb7e2b235448d40446565a8502add58"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.api.yaml",
+      "bytes": 39357,
+      "sha256": "babae7ecc320362e75bf6922b8a80b1fd4e652bc3a9c0c8683b00e87bf5b0bb3"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.dll",
+      "bytes": 538021,
+      "sha256": "0825dbb429c5278959a2463445de1ae163a363ef6021a68a469813cca4e73088"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.f90",
+      "bytes": 57047,
+      "sha256": "a6d0b1595b7213fdc18f630c6cdbd4ca563657ef94e9881cbf1b74641500a01c"
+    },
+    {
+      "path": "native/fortran/kernel_fortran.mod",
+      "bytes": 4848,
+      "sha256": "c8874ae178b79b121293aeb7de87ae6801f912883871dba3a33919cdc4596cb7"
+    },
+    {
+      "path": "source/abstract_tensor/abstract_tensor.py",
+      "bytes": 21299,
+      "sha256": "beeed6421c1cf45364d5b2f26e10f8b4ca499aa56e3f7eb57c0f071c734ef688"
+    },
+    {
+      "path": "source/fortran/fortran.api.yaml",
+      "bytes": 39357,
+      "sha256": "babae7ecc320362e75bf6922b8a80b1fd4e652bc3a9c0c8683b00e87bf5b0bb3"
+    },
+    {
+      "path": "source/fortran/fortran.f90",
+      "bytes": 57047,
+      "sha256": "a6d0b1595b7213fdc18f630c6cdbd4ca563657ef94e9881cbf1b74641500a01c"
+    },
+    {
+      "path": "source/numpy/numpy.py",
+      "bytes": 21811,
+      "sha256": "5323ee799b10610010ff870a506043274a817c148e0f2f4448097868e04e6365"
+    },
+    {
+      "path": "source/python_source/columnar_multifluid_fortran_demo.py",
+      "bytes": 24212,
+      "sha256": "1b32147cf36cc134e360bf2e587e6d2b221d8348e256fb379073c9557c50f3e3"
+    },
+    {
+      "path": "source/spirv/spirv.spvasm",
+      "bytes": 3421865,
+      "sha256": "5f60b5cb460c2e5b1feac00cfc70cd55219eb19e5280d6fd925dfdabe85de459"
+    },
+    {
+      "path": "source/ssa/ssa.ssa",
+      "bytes": 379981,
+      "sha256": "70c822676812f1bcb644bed1b24bd12ac0bfd3c60f4d6fb8f269a7abdca8d3a6"
+    },
+    {
+      "path": "source/torch/torch.py",
+      "bytes": 21799,
+      "sha256": "4d2f1c3af48de263653315a27fd64438e99969d6fb3711fe001795fb35927474"
+    },
+    {
+      "path": "source/wat/wat.wat",
+      "bytes": 174,
+      "sha256": "b7ffe0de473a49df31d6494172283ecc6f3a7d1c74923c9ecadb8446edc8a255"
+    },
+    {
+      "path": "verification/fortran-fidelity.json",
+      "bytes": 162734,
+      "sha256": "b273e963fcaa7f8836325b529796f16030af750f143fd6e25e61765fdc748de0"
+    },
+    {
+      "path": "wasm/columnar_multifluid_rgb_step_control_2000.wasm",
+      "bytes": 546,
+      "sha256": "896f0b7d3eb564b87ad3fbc4305a2c5c4b3d9ada07541bd7cc08bbe3cc238a7a"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 6688,
+      "sha256": "8651b8e63eec71096fe2700d6af9c93890122a4c7afe3e44f7c819bfd405533a"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step_control_2000.wasm",
+      "bytes": 546,
+      "sha256": "896f0b7d3eb564b87ad3fbc4305a2c5c4b3d9ada07541bd7cc08bbe3cc238a7a"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step_region_0.wasm",
+      "bytes": 4351972,
+      "sha256": "2658e5dc91077c5a4453abb034c32868ad96b58691168f6f587496347377b4fc"
+    }
+  ]
+}
