@@ -1,0 +1,88 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "elastic-dom-surface",
+    "title": "Elastic DOM Surface",
+    "entrypoint": "dom_surface_step"
+  },
+  "version": {
+    "id": "v1-46cf144b9a4ca0e7",
+    "source_sha256": "d681125f5124e4106100cdef00e0fae3e8f44277dad701fcc4c4e763401680e8",
+    "builder": "site-bundle-v16"
+  },
+  "created_at": "2026-08-03T03:34:52.404292+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/elastic-dom-surface/versions/v1-46cf144b9a4ca0e7/index.html",
+    "mode": "shader-execution",
+    "shader": {
+      "url": "source/roles/shader-surface/surface.frag.glsl",
+      "language": "webgl2-glsl-es",
+      "stage": "fragment",
+      "role": "shader-surface",
+      "autostart": true,
+      "execution": {
+        "continuous": true,
+        "prefer_contiguous": true
+      },
+      "configuration": {
+        "dom_surface": true,
+        "document_url": "source/roles/shader-document/index.html"
+      }
+    }
+  },
+  "source": {
+    "path": "source/python_source/dom_shader_demo.py",
+    "filename": "dom_shader_demo.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "mathematics_error": "",
+    "fortran_verification": null
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 191366,
+      "sha256": "b4af5cfcdcefaf7a1c6c7b71a0eec0b85007df336ead144b5cd7b43c8ad669bc"
+    },
+    {
+      "path": "source/python_source/dom_shader_demo.py",
+      "bytes": 2144,
+      "sha256": "d681125f5124e4106100cdef00e0fae3e8f44277dad701fcc4c4e763401680e8"
+    },
+    {
+      "path": "source/roles/shader-document/index.html",
+      "bytes": 2498,
+      "sha256": "1f1aba231b7fe4562a765076b21237b0c2ae442325e184b5f12a1ccd397cd222"
+    },
+    {
+      "path": "source/roles/shader-surface/surface.frag.glsl",
+      "bytes": 2233,
+      "sha256": "90c1569f8dbf826b0124e6c99be5ba4bda3e42313112cb4cb549e6c2f5490eb1"
+    },
+    {
+      "path": "wasm/dom_surface_step.wasm",
+      "bytes": 754,
+      "sha256": "6a1f4b320d1cee15c384df14ac45a46291fd195fbfaa87648bd4b32026fc5b3d"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 1754,
+      "sha256": "3a88b529f5a853afd93d5c78d9a313a889a888c7149b58d239999daf8812147e"
+    },
+    {
+      "path": "wasm/size-2000/dom_surface_step__0.wasm",
+      "bytes": 758,
+      "sha256": "3b5d797e4c0774e4fc19caf14e63146d0d9a98e834cfaa99fcf4bd41163f2b0a"
+    },
+    {
+      "path": "wasm/size-2000/dom_surface_step_coordinator_2000.wasm",
+      "bytes": 219,
+      "sha256": "03f91086364755328980f9f703c6817bc93deeee4ca16e8986f2aad6126a65be"
+    }
+  ]
+}

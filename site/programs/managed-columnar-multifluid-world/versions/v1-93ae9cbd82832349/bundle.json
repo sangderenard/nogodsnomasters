@@ -1,0 +1,88 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "managed-columnar-multifluid-world",
+    "title": "Managed Columnar Multifluid World",
+    "entrypoint": "columnar_multifluid_rgb_step"
+  },
+  "version": {
+    "id": "v1-93ae9cbd82832349",
+    "source_sha256": "7b2c4551e3cf0c212454a664f294ff53b3b9202f3d45a3456c7dd843ea47ce99",
+    "builder": "site-bundle-v16"
+  },
+  "created_at": "2026-08-03T03:34:33.950819+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/managed-columnar-multifluid-world/versions/v1-93ae9cbd82832349/index.html",
+    "mode": "shader-execution",
+    "shader": {
+      "url": "source/roles/shader-surface/surface.frag.glsl",
+      "language": "webgl2-glsl-es",
+      "stage": "fragment",
+      "role": "shader-surface",
+      "autostart": true,
+      "execution": {
+        "continuous": true,
+        "prefer_contiguous": true
+      },
+      "configuration": {
+        "output_texture": {
+          "channels": [
+            "red",
+            "green",
+            "blue"
+          ]
+        }
+      }
+    }
+  },
+  "source": {
+    "path": "source/python_source/columnar_multifluid_web_demo.py",
+    "filename": "columnar_multifluid_web_demo.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "mathematics_error": "",
+    "fortran_verification": null
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 219567,
+      "sha256": "2e921a5a6dbf25db0263ded5af803fe3b06c2b14bbc720a49df4b7a25256a55a"
+    },
+    {
+      "path": "source/python_source/columnar_multifluid_web_demo.py",
+      "bytes": 6126,
+      "sha256": "7b2c4551e3cf0c212454a664f294ff53b3b9202f3d45a3456c7dd843ea47ce99"
+    },
+    {
+      "path": "source/roles/shader-surface/surface.frag.glsl",
+      "bytes": 352,
+      "sha256": "ce4b652c6d642d21fbed6ac5b0d76756a8e514caef2a65c81c7f452ede9a261f"
+    },
+    {
+      "path": "wasm/columnar_multifluid_rgb_step.wasm",
+      "bytes": 4264941,
+      "sha256": "4cfb09bd777950db9c449da2f3f2b2f502234751eea0e580bd12f782df2e44e6"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 2703,
+      "sha256": "9e4ccac192b6a6c07d53d66974d501abccc2e4627d640c841cd324dc79952997"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step__0.wasm",
+      "bytes": 4264958,
+      "sha256": "8b4e78f9f2774bc8c3a672eb632965dcab3e181233cf1847467a65b2dc52d126"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step_coordinator_2000.wasm",
+      "bytes": 281,
+      "sha256": "3f84b40138cb3e081a10396371e5fb7011274263a4df45cc48ef69891b262e96"
+    }
+  ]
+}
