@@ -1,0 +1,103 @@
+{
+  "abi": "turing.class-memory-inventory.v1",
+  "field_slots": [
+    {
+      "index": 0,
+      "key": "in::extent_x"
+    },
+    {
+      "index": 1,
+      "key": "in::extent_y"
+    },
+    {
+      "index": 2,
+      "key": "in::position_x"
+    },
+    {
+      "index": 3,
+      "key": "in::pointer_x"
+    },
+    {
+      "index": 4,
+      "key": "in::position_y"
+    },
+    {
+      "index": 5,
+      "key": "in::pointer_y"
+    },
+    {
+      "index": 6,
+      "key": "in::pointer_buttons"
+    },
+    {
+      "index": 7,
+      "key": "in::anchor_x"
+    },
+    {
+      "index": 8,
+      "key": "in::anchor_y"
+    },
+    {
+      "index": 9,
+      "key": "in::velocity_x"
+    },
+    {
+      "index": 10,
+      "key": "in::velocity_y"
+    },
+    {
+      "index": 11,
+      "key": "in::dt"
+    },
+    {
+      "index": 12,
+      "key": "out::dom_surface_step__0::next_velocity_x"
+    },
+    {
+      "index": 13,
+      "key": "out::dom_surface_step__0::next_velocity_y"
+    },
+    {
+      "index": 14,
+      "key": "out::dom_surface_step__0::next_position_x"
+    },
+    {
+      "index": 15,
+      "key": "out::dom_surface_step__0::next_position_y"
+    },
+    {
+      "index": 16,
+      "key": "out::dom_surface_step__0::activity"
+    }
+  ],
+  "storage_redirects": [],
+  "methods": [
+    {
+      "index": 0,
+      "module": "dom_surface_step__0",
+      "entry": "run",
+      "input_slots": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11
+      ],
+      "output_slots": [
+        12,
+        13,
+        14,
+        15,
+        16
+      ],
+      "parameter_count": 18
+    }
+  ]
+}
