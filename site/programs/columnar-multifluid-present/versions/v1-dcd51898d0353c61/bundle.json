@@ -1,0 +1,72 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "columnar-multifluid-present",
+    "title": "Columnar Multifluid Present",
+    "entrypoint": "columnar_multifluid_present"
+  },
+  "version": {
+    "id": "v1-dcd51898d0353c61",
+    "source_sha256": "b23e008a25cf1b1ab23d35489caf0ebbcbcb4c8ee8af7c392c59b625fcd47a1d",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-03T16:07:32.688370+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/columnar-multifluid-present/versions/v1-dcd51898d0353c61/index.html",
+    "mode": "inspection",
+    "shader": null,
+    "audio": null
+  },
+  "source": {
+    "path": "source/python_source/columnar_multifluid_web_demo.py",
+    "filename": "columnar_multifluid_web_demo.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "bake_mode": "whole_program",
+    "schedule_preference": "alap",
+    "program_record_mode": "full",
+    "constant_map": {},
+    "mutable_parameters": [],
+    "thread_topology": null,
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "implementation_sha256": "57f22914c21a74f33d25bdb29281dee4d8b0510cf1d272b1e78963323915bec6",
+    "mathematics_error": "",
+    "fortran_verification": null
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 337727,
+      "sha256": "15643f89add45949401c398d7b2c99a0ea0c4306f504c89362eb202f303b0193"
+    },
+    {
+      "path": "source/python_source/columnar_multifluid_web_demo.py",
+      "bytes": 7339,
+      "sha256": "b23e008a25cf1b1ab23d35489caf0ebbcbcb4c8ee8af7c392c59b625fcd47a1d"
+    },
+    {
+      "path": "wasm/columnar_multifluid_present_control_2000.wasm",
+      "bytes": 156,
+      "sha256": "eecf1b91dd6954f9c088f964c4b6ab74124e8d6ce0342b801d13e0fd38a99ebc"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 884,
+      "sha256": "4104cbbdb9ce49e1395b35c49a724357c5a7041c80806aadad2958e2c2097dce"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_present_control_2000.wasm",
+      "bytes": 156,
+      "sha256": "eecf1b91dd6954f9c088f964c4b6ab74124e8d6ce0342b801d13e0fd38a99ebc"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_present_region_0.wasm",
+      "bytes": 218,
+      "sha256": "275c8792c4b4e6b26cce2c873841bc03d3630aa461940ed35f849ae1e0ffd399"
+    }
+  ]
+}
