@@ -1,0 +1,111 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "managed-columnar-multifluid-world",
+    "title": "Managed Columnar Multifluid World",
+    "entrypoint": "columnar_multifluid_rgb_step"
+  },
+  "version": {
+    "id": "v1-46f93b08eda0c10b",
+    "source_sha256": "7803ba9d064df3b6ef4fc3548be60f5b7cae54d79ce6425c42733a9a4a21d95e",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-03T12:13:35.385782+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/managed-columnar-multifluid-world/versions/v1-46f93b08eda0c10b/index.html",
+    "mode": "shader-execution",
+    "shader": {
+      "url": "source/roles/shader-surface/surface.frag.glsl",
+      "language": "webgl2-glsl-es",
+      "stage": "fragment",
+      "role": "shader-surface",
+      "autostart": true,
+      "execution": {
+        "continuous": true,
+        "prefer_contiguous": true
+      },
+      "configuration": {
+        "output_feed_bindings": {
+          "turing_feed_0": "red",
+          "turing_feed_1": "green",
+          "turing_feed_2": "blue"
+        }
+      }
+    },
+    "audio": {
+      "audio_url": "audio/managed-time-source.wav",
+      "features_url": "audio/spectral-features.json",
+      "sample_rate": 24000,
+      "feature_fps": 30,
+      "duration": 8.0,
+      "managed_time_output": "next_time",
+      "pan_output": "next_entity_x",
+      "pan_range": [
+        0.0,
+        10.0
+      ]
+    }
+  },
+  "source": {
+    "path": "source/python_source/columnar_multifluid_web_demo.py",
+    "filename": "columnar_multifluid_web_demo.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "bake_mode": "whole_program",
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "implementation_sha256": "d26d250e38ab8d6196f3b0887a32bd128d8cf48a5c150b7e16bcbe96379e0ab0",
+    "mathematics_error": "",
+    "fortran_verification": null
+  },
+  "artifacts": [
+    {
+      "path": "audio/managed-time-source.wav",
+      "bytes": 384044,
+      "sha256": "34fc6631cca5a240bc5ef7b457a51272b244217ebf7ffb80efe3081e0b9c87ff"
+    },
+    {
+      "path": "audio/spectral-features.json",
+      "bytes": 18491,
+      "sha256": "2596a4c9c6d5c84645b726376265b3f01614e09c1156823b2fc2cea9f4625d87"
+    },
+    {
+      "path": "index.html",
+      "bytes": 289968,
+      "sha256": "972e556bf906fd2a6443df8bd99b0a2027a467171808d3d527bde4307942747f"
+    },
+    {
+      "path": "source/python_source/columnar_multifluid_web_demo.py",
+      "bytes": 24728,
+      "sha256": "7803ba9d064df3b6ef4fc3548be60f5b7cae54d79ce6425c42733a9a4a21d95e"
+    },
+    {
+      "path": "source/roles/shader-surface/surface.frag.glsl",
+      "bytes": 661,
+      "sha256": "affd7d5041bf642cc25620f035a36ae21107968e014b8bc9c40d9e14c0afd617"
+    },
+    {
+      "path": "wasm/columnar_multifluid_rgb_step_control_2000.wasm",
+      "bytes": 546,
+      "sha256": "896f0b7d3eb564b87ad3fbc4305a2c5c4b3d9ada07541bd7cc08bbe3cc238a7a"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 6686,
+      "sha256": "e537e2ccda5d902ab6f8fb38332f175c4b22eee49098dfccef06a5fe2f782b7b"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step_control_2000.wasm",
+      "bytes": 546,
+      "sha256": "896f0b7d3eb564b87ad3fbc4305a2c5c4b3d9ada07541bd7cc08bbe3cc238a7a"
+    },
+    {
+      "path": "wasm/size-2000/columnar_multifluid_rgb_step_region_0.wasm",
+      "bytes": 4346069,
+      "sha256": "52f86c6ea42a03b2f92833504e37efb6c82601645f70ea0940f94ca63a9b879f"
+    }
+  ]
+}
