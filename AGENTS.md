@@ -34,6 +34,16 @@ A few other subfolders (`amp/`, `ampgit/`, `geometry/`, `turing/`, `codex/`,
 `codex-personal/`) also carry their own `AGENTS.md` — when working inside
 one of those, its local file governs that folder, not this one.
 
+Before starting nontrivial work anywhere in this tree, check
+[`speaktome/AGENTS/experience_reports/`](speaktome/AGENTS/experience_reports/)
+for prior agents' reports. It's `speaktome`'s own guest book, but past
+agents have used it to record findings, decisions, and prompt history for
+work that touched other subfolders too (`turing/`, `nodus/`, cross-project
+handoffs) — it's the closest thing this workspace has to a shared memory
+across the junk drawer. Skim it for anything relevant to the folder you're
+about to work in, then defer to that folder's own `AGENTS.md` for the local
+rules that actually govern it.
+
 ## Subfolder / root-file profile
 
 | Path | What it is |
