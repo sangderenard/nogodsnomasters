@@ -4,7 +4,7 @@ The active reversible Windows AMD64 machine and Dream Document HTML-shell demo
 live in the independent `turing/` repository. The generated live-site artifact
 is owned by this root repository at:
 
-`site/programs/reversible-binary-machine/versions/v1-71a8fe88b7967fd7/`
+`site/programs/reversible-binary-machine/versions/v1-c3ea746e025b4feb/`
 
 The durable cross-session report is:
 
@@ -21,6 +21,12 @@ executor snapshots for finite forward/backward interaction on static GitHub
 Pages. Arbitrary binaries, terminal/system activity, and unbounded execution
 still require the Python loopback owner; compiling that owner into browser Wasm
 remains future work.
+
+The current version additionally carries and executes a provenance-bound Wasm
+recompilation of the subject entry block. Its browser bootstrap verifies the
+emitted journal against the original instruction address, semantic ID, and byte
+digest before displaying `WASM BLOCK · AUTHENTICATED`. The following top-level
+RET remains an explicit lifecycle-tier shortfall.
 
 The root repository owns the versioned site bundle but does not own or force-add
 the `turing/` or `speaktome/` child repositories.
