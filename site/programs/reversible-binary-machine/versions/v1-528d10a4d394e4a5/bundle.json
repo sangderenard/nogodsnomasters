@@ -1,0 +1,135 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "reversible-binary-machine",
+    "title": "Reversible Binary Machine",
+    "entrypoint": "load_subject"
+  },
+  "version": {
+    "id": "v1-528d10a4d394e4a5",
+    "source_sha256": "bac5f39343f8020f1c8f1876a236f8afbb6cdf5579ad76ce5ad7158546987ab1",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-05T15:07:19.690738+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/reversible-binary-machine/versions/v1-528d10a4d394e4a5/index.html"
+  },
+  "source": {
+    "path": "source/dream/reversible_chip_simulator.dream",
+    "filename": "dream/reversible_chip_simulator.dream"
+  },
+  "compiler": {
+    "backend": "prebuilt-program-interior"
+  },
+  "runtime": {
+    "schema": "turing.reversible-machine-runtime.v1",
+    "document_digest": "bac5f39343f8020f1c8f1876a236f8afbb6cdf5579ad76ce5ad7158546987ab1",
+    "shell_digest": "ae959897f7f196b63256c59f5369e422e619241bcc6f143d27c4ab9772fedfe3",
+    "display_owner": "program-interior",
+    "system_ports": {
+      "subject": "/subject",
+      "terminal_input": "/input",
+      "machine_control": "/control",
+      "snapshots": "/snapshot"
+    },
+    "controls": [
+      "pause",
+      "forward",
+      "backward",
+      "step_forward",
+      "step_backward",
+      "speed"
+    ],
+    "snapshot_abi": "TMSNAP01",
+    "memory_page_bytes": 4096,
+    "static_preview": true,
+    "static_replay_frames": 2,
+    "published_subject": {
+      "path": "subject/reversible-demo-amd64.pe",
+      "format": "PE32+",
+      "isa": "AMD64",
+      "sha256": "52a7823da5d9f5d83046d3d7a54c3d4e13e332a60009893acfa5703d5356f6a1",
+      "entry_code_hex": "90c3",
+      "license": "project-authored fixture"
+    },
+    "recompiled_machine_block": {
+      "schema": "turing.machine-block-browser-bootstrap.v1",
+      "module": "machine/recompiled-entry/block.wasm",
+      "wat": "machine/recompiled-entry/block.wat",
+      "state": "machine/recompiled-entry/initial-state.bin",
+      "guest": "machine/recompiled-entry/guest-window.bin",
+      "plan": "machine/recompiled-entry/dispatch-plan.json",
+      "journal_bytes": 512,
+      "journal_stride": 512,
+      "journal_state_offset": 24,
+      "journal_effect_offset": 432,
+      "covered_operation_count": 1,
+      "guest_memory_base": 0,
+      "entry_address": 5368713216,
+      "block_digest": "f4248d96ec80b7d5bdba7b54539084be881836b607bb00c0f672b97f14d4d6bf",
+      "expected_first_witness": {
+        "address": 5368713216,
+        "semantic_id": 19,
+        "digest_prefix": "9e076ceaf246b600"
+      },
+      "complete": false,
+      "shortfalls": [
+        {
+          "operation_index": 1,
+          "address": 5368713217,
+          "semantic": "RETURN",
+          "reason": "specialized call/return must begin its compiled block"
+        }
+      ]
+    }
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 11469764,
+      "sha256": "ae959897f7f196b63256c59f5369e422e619241bcc6f143d27c4ab9772fedfe3"
+    },
+    {
+      "path": "machine/recompiled-entry/block.wasm",
+      "bytes": 1232,
+      "sha256": "7bd950f5c65ba1877391fe5847907b4b8100bba9cdc53275125c59f37af5493d"
+    },
+    {
+      "path": "machine/recompiled-entry/block.wat",
+      "bytes": 8641,
+      "sha256": "d7729a5b8ce21fedf5260e324f9d99d3befe13c679bf13fe6b20c769886db44e"
+    },
+    {
+      "path": "machine/recompiled-entry/dispatch-plan.json",
+      "bytes": 1864,
+      "sha256": "44b3c3d633329837b5c199facd17c1b4f484145f5b900c3978c68d3bb2ec19ec"
+    },
+    {
+      "path": "machine/recompiled-entry/guest-window.bin",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "machine/recompiled-entry/initial-state.bin",
+      "bytes": 408,
+      "sha256": "1097fcbcc110666a2cfad0ac59a0c3f3a11043c438399c4491d40e38aaf91dad"
+    },
+    {
+      "path": "source/dream/reversible_chip_simulator.dream",
+      "bytes": 22227,
+      "sha256": "bac5f39343f8020f1c8f1876a236f8afbb6cdf5579ad76ce5ad7158546987ab1"
+    },
+    {
+      "path": "source/python_source/reversible_demo_subject.py",
+      "bytes": 1769,
+      "sha256": "ae0fd193f280237afa7075869f34545021fd316a65cb4ef6d664d4ef48fd8eec"
+    },
+    {
+      "path": "subject/reversible-demo-amd64.pe",
+      "bytes": 2048,
+      "sha256": "52a7823da5d9f5d83046d3d7a54c3d4e13e332a60009893acfa5703d5356f6a1"
+    }
+  ]
+}

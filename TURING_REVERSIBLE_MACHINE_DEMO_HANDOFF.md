@@ -4,7 +4,7 @@ The active reversible Windows AMD64 machine and Dream Document HTML-shell demo
 live in the independent `turing/` repository. The generated live-site artifact
 is owned by this root repository at:
 
-`site/programs/reversible-binary-machine/versions/v1-c3ea746e025b4feb/`
+`site/programs/reversible-binary-machine/versions/v1-528d10a4d394e4a5/`
 
 The durable cross-session report is:
 
@@ -27,6 +27,12 @@ recompilation of the subject entry block. Its browser bootstrap verifies the
 emitted journal against the original instruction address, semantic ID, and byte
 digest before displaying `WASM BLOCK · AUTHENTICATED`. The following top-level
 RET remains an explicit lifecycle-tier shortfall.
+
+For register-only prefixes, authenticated journal states now replace the static
+forward replay frames. The deterministic `?recompiled-step=1` route proves RIP
+`0x140001000 -> 0x140001001`, architectural steps `0 -> 1`, and one displayed
+flip from the browser-executed journal. Effectful journals still retain the
+known-good frames until browser memory/device commit exists.
 
 The root repository owns the versioned site bundle but does not own or force-add
 the `turing/` or `speaktome/` child repositories.
