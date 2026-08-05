@@ -1,0 +1,80 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "reversible-binary-machine",
+    "title": "Reversible Binary Machine",
+    "entrypoint": "load_subject"
+  },
+  "version": {
+    "id": "v1-71a8fe88b7967fd7",
+    "source_sha256": "88e696a35466e2379c6fea16c5c35b0245d416c550905ddc1831fa849dd80e3b",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-05T14:40:49.224358+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/reversible-binary-machine/versions/v1-71a8fe88b7967fd7/index.html"
+  },
+  "source": {
+    "path": "source/dream/reversible_chip_simulator.dream",
+    "filename": "dream/reversible_chip_simulator.dream"
+  },
+  "compiler": {
+    "backend": "prebuilt-program-interior"
+  },
+  "runtime": {
+    "schema": "turing.reversible-machine-runtime.v1",
+    "document_digest": "88e696a35466e2379c6fea16c5c35b0245d416c550905ddc1831fa849dd80e3b",
+    "shell_digest": "37ccf3ae9a0c4ca72709d9fcf1cfb92b94054990e8e626bf8005db85721a4892",
+    "display_owner": "program-interior",
+    "system_ports": {
+      "subject": "/subject",
+      "terminal_input": "/input",
+      "machine_control": "/control",
+      "snapshots": "/snapshot"
+    },
+    "controls": [
+      "pause",
+      "forward",
+      "backward",
+      "step_forward",
+      "step_backward",
+      "speed"
+    ],
+    "snapshot_abi": "TMSNAP01",
+    "memory_page_bytes": 4096,
+    "static_preview": true,
+    "static_replay_frames": 2,
+    "published_subject": {
+      "path": "subject/reversible-demo-amd64.pe",
+      "format": "PE32+",
+      "isa": "AMD64",
+      "sha256": "52a7823da5d9f5d83046d3d7a54c3d4e13e332a60009893acfa5703d5356f6a1",
+      "entry_code_hex": "90c3",
+      "license": "project-authored fixture"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 11460607,
+      "sha256": "37ccf3ae9a0c4ca72709d9fcf1cfb92b94054990e8e626bf8005db85721a4892"
+    },
+    {
+      "path": "source/dream/reversible_chip_simulator.dream",
+      "bytes": 21373,
+      "sha256": "88e696a35466e2379c6fea16c5c35b0245d416c550905ddc1831fa849dd80e3b"
+    },
+    {
+      "path": "source/python_source/reversible_demo_subject.py",
+      "bytes": 1769,
+      "sha256": "ae0fd193f280237afa7075869f34545021fd316a65cb4ef6d664d4ef48fd8eec"
+    },
+    {
+      "path": "subject/reversible-demo-amd64.pe",
+      "bytes": 2048,
+      "sha256": "52a7823da5d9f5d83046d3d7a54c3d4e13e332a60009893acfa5703d5356f6a1"
+    }
+  ]
+}
