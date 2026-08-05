@@ -28,7 +28,10 @@ emitted journal against the original instruction address, semantic ID, and byte
 digest before displaying `WASM BLOCK · AUTHENTICATED`. The following top-level
 RET remains an explicit lifecycle-tier shortfall. The common dispatch-plan and
 snapshot projection path now carries three instruction witnesses rather than a
-bespoke single-NOP proof.
+bespoke single-NOP proof. `build_machine_web_publication` owns the reusable
+recompile, preview, bootstrap, asset and runtime-contract assembly; the example
+script now only supplies its subject metadata and generator source before the
+generic immutable site publisher runs.
 
 For register-only prefixes, authenticated journal states now replace the static
 forward replay frames. The deterministic `?recompiled-step=3` route proves RAX
