@@ -180,10 +180,66 @@ Concretely, not yet written:
 
 ---
 
-## 6. Concrete next steps, in order
+## 6. Concrete next steps, in order (superseded by Section 7 — read that first)
 
-1. Implement Section 3.4: `REFERENCE_OPERATORS` fusible-set, unscored contiguity selection in `plan_process_graph_dispatches`, and the tensor/tensor-free branch in `dispatch_region_to_fused_program`.
-2. Re-run the real `Counter` `build_program_bundle` probe (pattern established this session: a small standalone script with `progress_sink=print`, not a reimplementation of the pipeline) and confirm `region_programs` is non-empty and the Section 2.3 refusal no longer fires.
-3. Once `Counter` builds end-to-end: verify in a browser that `counter.value` actually increments across calls, per this project's standing rule that UI/browser-observable changes need real browser verification, not just a successful compile.
-4. Separately, consider the still-open `_source_static_literal` `Attribute`-case gap (Section 4) and the `_expand_python_static_bindings` scoping hardening flagged in the *prior* transition doc — both real, both deliberately deferred, neither blocking.
-5. Resume `machine_fork_exploration`/`MachinePathForest` (flagged in the prior transition doc) only after the above are solid.
+Section 3.4's plan below (implementing `REFERENCE_OPERATORS` in `process_graph_fusion.py`) was **attempted and abandoned**: that module's `dispatch_region_to_fused_program`/`plan_process_graph_dispatches` turned out not to be reachable from `build_program_bundle`'s actual AOT path at all (it belongs to a separate JIT/order-based route — `program_order.py`/`torch_process_graph.py`). The real entrance was found and used instead; see Section 7.
+
+1. ~~Implement Section 3.4...~~ — wrong file; superseded.
+2. ~~Re-run the real `Counter` probe...~~ — done, repeatedly; see Section 7 for the actual sequence of fixes and the final, precise blocker found.
+3. Not yet reached — no successful build yet to verify in a browser.
+4. Still open, still deliberately deferred, still not blocking.
+5. Still correctly gated on the above landing first.
+
+---
+
+## 7. What actually happened after Section 6 was written (same session, direct continuation)
+
+The real entrance, found by tracing where `region_programs` actually comes from for the AOT path (not the JIT path Section 3.4 targeted): `_observe_process_graph_node` (`glsl_deployment_strategy.py`, module-level, called by GraphDeepCompiler-generated numeric-kernel source at the exact point each operation executes) and the consolidation point `target.captured_region_programs = dict(zip(target.compiled_region_indices, target.compiled_tapes))` (~line 12596), which is what `aot.region_programs` is ultimately built from.
+
+### 7.1. The accounting mechanism, built and landed
+
+- `ProcessGraphGLSLDeployment.__init__` gained `self.reference_operator_sequence = []` — a plain, ordered list. Not a strategy, not a region planner: append-only, in exact execution order, because these are sequential memory operations with real causality that reordering or fusing would break (the user's framing, verbatim, driving this design).
+- `evaluate_node`'s `SetAttr` and `GetAttr` branches append their own node id to it as they execute.
+- `_observe_process_graph_node` — the tape/tensor-primitive-correlation observer — gained an unconditional branch: **any** non-`AbstractTensor` result it observes gets appended to `shell.reference_operator_sequence` too, impartially, not scoped to field access specifically. This is deliberate, per explicit user correction: "make your system impartially document the operations in order for things that aren't fully tensor" — no special-casing, no scoping decision. The tape's own tensor-correlation logic (everything below this branch) is untouched and still exists for genuine tensor ambiguity.
+- At the `captured_region_programs` consolidation point, `reference_operator_sequence` (deduplicated, order preserved) gets packaged into one `FusedProgram`/`CapturedFusedProgram` — one `OpStep` per recorded node, transcribed directly from the already-correct `ProcessGraph` structure (`op`/`type`, `parents`, `attributes`, plus `field_ref` pulled in explicitly since it's stored as an attribute, not a `parents` edge). No fusion, no algebraic simplification, no launch-cost scoring — a direct structural transcription.
+- `OpStep`/`FusedProgram`/`CapturedFusedProgram` had to be added to the generated `ProcessGraphGLSLDeployment` class's `exec()` namespace dict explicitly — that generated class runs in its own namespace, separate from this module's own top-level imports.
+
+### 7.2. Two real, non-obvious bugs found and fixed via direct instrumentation (not inference)
+
+**`field_ref` going stale across node-id relabeling.** `field_ref` (Section 3.4/earlier work — the `Input`-node reference `SetAttr`/`GetAttr` carry) is a bare node-id value stored inside a node's `attributes` dict, not a `parents`/edge relationship. `topological_reducer.py`'s reduction pass relabels every node id to a small monotonic sequence (`mapping = {node_id: value_id for value_id, node_id in enumerate(ordered)}`, `nx.relabel_nodes`) — `identity_table` and several other attribute-embedded references (`loop_carried_bindings`, etc.) are manually remapped through `mapping` right after, in the same loop; `field_ref` was not. Fixed by adding it to that same per-node remap loop (~`topological_reducer.py:2541`), dropping it if its target didn't survive reduction rather than leaving a dangling id. Verified: the field's `Input` node went from resolving to nothing (`type=None, attributes=None`) to resolving correctly (`type='Input', binding_name='counter.value', binding_kind='field'`).
+
+**The identity-aliasing check intercepting plain arithmetic.** `_observe_process_graph_node`'s existing aliasing logic (`if result is parent_value: ... return result`, treating the node as an SSA alias rather than a new computation) ran *before* the new non-tensor recording branch. CPython interns small integers, so `0 + 1` producing `1` satisfies `result is parent_value` against the literal `1` operand by cache coincidence — a pure implementation detail, meaningful only for tensors (where identity means shared storage), not for plain values. This silently made the `Add` node between a field's `GetAttr` and `SetAttr` invisible — it looked like an alias, not a computation, so it was dropped, and its result surfaced as a phantom external feed instead of an internal step. Fixed by moving the non-tensor check ahead of the aliasing logic. Found by direct instrumentation after three other candidate call sites were checked and ruled out (`evaluate_node`'s "structural binary operator" `isinstance(expression, (ast.BinOp, ast.AugAssign))` branch, `evaluate_reduced_control_expression`, the `AugAssign` scalar-source-update shortcut) — none of them were where `counter.value + 1` actually executes; it runs through GraphDeepCompiler-generated source calling `_observe_process_graph_node` directly, not through `evaluate_node`'s interpreted branches at all.
+
+**A known-unfixed defensive patch, not root-caused:** `field_ref`'s remap fix can still, in principle, produce an id belonging to a *different* shell's numbering than the one currently consolidating `reference_operator_sequence` — a `KeyError: 18` was observed once (a stale/foreign node id, not in `target.process_graph.G`). Fixed defensively (`if node_id in target.process_graph.G`, filtering rather than crashing) but the actual source of the mismatch was not traced. Revisit if state ever looks incomplete/wrong rather than absent.
+
+### 7.3. The corrected ABI gate
+
+The Section 2.3 refusal (`site_bundle.py`) originally required `aot.shell_control_program.region_indices` to be non-empty. Traced precisely: that field names *planned GPU-shader-dispatch regions* specifically — a tensor-shaped concept, populated by shader-region planning (`function(**bound_inputs)`, `deployment_outputs`/`deployment_store_nodes` — all genuinely GPU-dispatch machinery) *before* discovery even runs. Class-shaped state with no tensor content is never planned as one of those regions and structurally never will be; requiring it was forcing tensor-shaped machinery onto content that was never tensor-shaped — the exact category error the refusal exists to prevent elsewhere. Relaxed to `navigable_regions = bool(aot.region_programs)` — the real signal, holding whatever was actually captured regardless of shape.
+
+### 7.4. Verified end state, and the final, precise remaining blocker
+
+Confirmed via direct instrumentation of the actual object reaching `emit_wasm_module` (not inference): the full causal chain is captured correctly.
+
+```
+program.feeds   = {3, 13, 15}
+program.outputs = {'counter.value': 17}
+program.steps   = [('GetAttr', [13, 3], 14), ('Add', [14, 15], 16), ('setattr', [13, 16, 3], 17)]
+program.extras  = {'capture_feed_origins': {3: {'binding_name': 'counter.value'}, 13: {'binding_name': 'counter'}}}
+```
+
+Node 3 is the field's `Input` node (correctly named `counter.value`), node 13 is `counter` itself (a `Phi` node from the `if counter is None:` branch), node 14/16/17 are the read/arithmetic/write steps. `project_public_numerical_program` selects this exact program and correctly rebuilds `capture_feed_origins` onto its returned copy (`aot_compile.py:414-420`) — verified intact on the object that reaches `emit_wasm_module`.
+
+**The build still fails**, with the same-shaped error as when this document was first written: `missing inputs=['counter.value']`. The cause is now exact and final, not a mystery: `fused_program_wasm_backend.py`'s `feed_names()` does `if not candidate.isidentifier(): candidate = f"feed{index}"`. `"counter.value".isidentifier()` is `False` — a dot is not valid in a Python identifier — so the correctly-captured, correctly-named feed is silently renamed to `"feed0"` at the exact last step before the WASM parameter list is built, and the ABI check (which looks for the literal string `"counter.value"`) correctly reports it missing.
+
+**Do not loosen `isidentifier()` to fix this.** That was this session's own conclusion, reached and then re-confirmed by hitting the actual mechanism: `emit_wasm_module`'s `run(count, feed0, ..., out0, ...)` convention is the single-function flat ABI — the same one Section 3's whole architectural discussion concluded field-shaped state must never be forced through, because it structurally cannot represent per-object identity. Patching the name check would "fix" this one symptom by re-entrenching exactly the mistake the reference-operator work exists to route around.
+
+**The actual remaining task:** this program needs to reach `wasm_class_coordinator.py`'s field-slot/byte-address ABI instead — "one memory, an ordered inventory of callable methods, and field slots containing byte addresses in that memory," already built, already tested (the segmented Mandelbrot deployment is its first client), explicitly designed to be "the receiving side of future OOP lowering." That connection — routing a tensor-free, class-shaped `FusedProgram` like the one now correctly captured here into the coordinator's inventory/field-slot construction instead of into `emit_wasm_module` — does not exist yet. It is a real, scoped integration task, not a design question; the hard parts (capturing the right operations, in the right order, with the right identities) are done and verified.
+
+### 7.5. Explicit state of the repository at end of session
+
+Three commits landed this session beyond what Sections 1-6 describe, all on `codex/recursive-reduction-bridge`:
+1. `field_ref` stale-across-relabeling fix + the corrected `navigable_regions` ABI gate (Section 7.2/7.3).
+2. The `reference_operator_sequence` accounting mechanism itself (Section 7.1) — this was actually landed *before* commit 1 chronologically but is described after it here since 7.1 is the mechanism and 7.2/7.3 are bugs found while testing it; check `git log` on this branch for exact order if it matters.
+3. The aliasing-check reorder fix + defensive `field_ref` foreign-id filtering (Section 7.2, second bug).
+
+**Not run this session:** the broader test suite, against any of commits in Section 7. Only the single `Counter`/`build_program_bundle` probe was used throughout (repeatedly, as the error signature changed). This is a real, stated risk, not an oversight — the observer hook in particular (`_observe_process_graph_node`'s new branch) fires for *any* non-tensor value anywhere in the compiler, not just `Counter`'s fields, and could affect other, unrelated compiled programs' region capture in ways not yet checked. **Run the full relevant suite before trusting these commits are safe**, the same way Section 1's fixes were verified against it.
