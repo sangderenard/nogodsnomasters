@@ -10,6 +10,7 @@
 # fetched lazily from site/v3/. Older versions remain additive history. All
 # project/workspace directories remain opaque.
 !/site/
+/site/programs/*/versions/.building-*/
 
 # Archive/quarantine names are called out explicitly for human readers. These
 # rules are redundant with /*/ at the root, but document the safety boundary.
