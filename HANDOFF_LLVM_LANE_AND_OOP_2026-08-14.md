@@ -519,3 +519,275 @@ contract fingerprint invalidates AOT checkpoints and the live launcher accepts
 `range`, `float`, and `print` no longer entered source/decompile pursuit. Live
 labels now report `contract depth N/512` instead of claiming an unbounded
 search. Focused verification: 37 tests passed.
+
+---
+
+## 12. Mandatory SymPy-authored simulation continuation — 2026-08-15
+
+The requested cross-backend fluid/current-and-wave demonstration is **not**
+an ordinary Python, NumPy, AbstractTensor, fused-program, or handwritten
+backend-kernel exercise. Its source of authority must be a set of pure
+mathematical expressions and equations constructed as SymPy objects and
+processed by Turing's existing SymPy compiler route:
+
+```text
+SymPy symbols/equations
+  -> symbolic_process_graph.ingest_sympy_expression
+  -> canonical ProcessGraph
+  -> ssa_builder.process_graph_to_ssa_instrs
+  -> repository SSA
+  -> C / LLVM / Fortran / WebAssembly
+```
+
+This is an acceptance requirement, not a preferred implementation detail:
+
+1. Governing equations and the executable finite-difference update must be
+   represented as SymPy expressions. Python may construct, name, compile, and
+   repeatedly invoke those expressions, but it must not contain a second
+   handwritten numerical implementation of the update.
+2. If symbolic derivatives are discretized before backend lowering, that
+   transformation must itself produce inspectable SymPy equations. The
+   compiled expression set is the executable authority.
+3. All four backend artifacts must descend from the same canonical
+   ProcessGraph/repository-SSA program. Backend-specific source equations or
+   numerically substituted stand-ins do not satisfy the request.
+4. State evolution is repeated invocation of the compiled symbolic update.
+   Initial/boundary state and physical coefficients are inputs; next-state
+   fields are named outputs fed into the following invocation.
+5. Display publication is semantic metadata attached to named symbolic
+   outputs (for example height, velocity, pressure/vorticity, or dye). The
+   shell resolves those publications for its backend. Rendering or deployment
+   calls must not be embedded in the equations.
+6. The demonstration must retain the exact authored SymPy equations, the
+   ProcessGraph, the repository SSA, and each emitted backend artifact for
+   inspection, and must verify numerical agreement across the four lanes over
+   repeated steps.
+7. Timestep selection, accepted-state recurrence, rollback, retry, exact frame
+   landing, and monotonic within-round timestep policy belong to the existing
+   `src/common/dt_system`; they are not to be replaced by clamps embedded in
+   the fluid update. The dt-system control program must itself be captured and
+   compiled with the symbolic numerical function linked as its advance stage.
+   The symbolic program publishes wave-speed and bound-violation metrics;
+   `dt_system` aggregates them, rejects invalid candidates, restores state,
+   reduces `dt`, and retries according to its existing contract.
+
+Reject as a wrong route any implementation whose physics is authored first as
+array/tensor operations and merely printed as mathematics afterward, any use
+of fused-program capture as the source of the simulation, or any bespoke
+backend solver that bypasses the SymPy-to-ProcessGraph compiler. Existing
+fluid demos may inform boundary/display conventions, but they are not the
+simulation requested here unless their physics is re-authored through this
+symbolic route.
+
+### Compile/runtime copying follow-up
+
+The first linked SymPy + managed-dt capture showed that recursive Python
+`deepcopy` is an important scaling cost. The intended optimization boundary is
+SSA/state storage: rollback snapshots should copy declared contiguous arena
+spans and retain explicit alias/version metadata. ProcessGraph scheduling
+should likewise use an immutable authored graph plus a scheduling/storage
+overlay, rather than cloning the complete Python object graph merely to add
+SSA storage versions. Do not attempt a raw byte copy of live Python objects;
+the straight span copy becomes valid only after storage has been lowered to
+the explicit SSA arena ABI.
+
+### Symbolic fluid implementation and managed-time proof
+
+The first concrete program now exists in `turing/src/compiler`:
+
+- `symbolic_fluid_model.py` authors an unclamped viscous shallow-water
+  current/wave stencil and its diagnostics as eleven simultaneous SymPy
+  equations. `symbolic_equation_compiler.py` lowers the named equations
+  through one shared ProcessGraph into one repository-SSA function.
+- The direct repository-SSA LLVM and Fortran emitters accept the full function
+  without shortfalls. The LLVM artifact has been compiled and run.
+- `symbolic_fluid_dt.py` supplies the ordinary grid traversal and invokes the
+  linked symbolic function while the existing `run_superstep` owns rollback,
+  retry, exact frame landing, and within-round monotonic dt behavior.
+- `symbolic_fluid_native_runtime.py` is only an ABI adapter: it binds the
+  emitted LLVM function into that exact managed-dt source. It contains no
+  alternative numerical update.
+- `examples/symbolic_fluid_live.py` is directly runnable. It preserves state
+  across frames, prints timestep/rejection/mass diagnostics, and optionally
+  displays a presentation-only RGB mapping of height, tracer, and speed.
+
+A deterministic managed-time proof began with `dt=0.2`. The LLVM stencil
+reported a physical-bound violation, the controller rejected the attempt and
+restored the grid, then accepted two `dt=0.1` attempts and landed exactly at
+the requested `0.2` frame boundary. Final mass error and both bound-violation
+channels were zero. The focused symbolic/link/native suite passes seven tests.
+
+Named symbolic outputs now carry `parameter_names`, `named_outputs`, and the
+generic `turing.semantic-output-publications.v1` contract. LLVM artifacts and
+Fortran `CompiledProgramAPI` metadata expose identical validated publication
+rows; this is the backend-neutral seam shell display adapters will consume.
+
+The original full Python-control capture was later observed at about 17.3 GB
+working set / 21.1 GB private bytes with no checkpoint and less than 1 GB of
+system RAM remaining, and was stopped by exact PID. It was not pytest, binary
+decompilation, or an inherent cost of the managed-dt graph. The direct attempt
+had omitted `extraction_contracts/program_extraction.yaml`, so the historical
+default pursued source-available third-party Python; the orchestration also
+contained `np.sum`, which opened a path into NumPy source. The grid traversal
+now accumulates mass in its existing loops and the direct compiler is always
+given the extraction contract. With those two corrections, the complete
+ProcessGraph-to-repository-SSA build finishes in about 25 seconds at roughly
+0.51 GB peak working set / 1.02 GB peak private bytes. No memory ceiling fired
+or was configured. The external watcher is telemetry-only by default; a
+positive CLI ceiling remains an explicit emergency operator action, never a
+normal compiler success/failure condition.
+
+This comparison localizes the apparent leak to ungoverned third-party source
+pursuit. The resulting SSA checkpoint is only about 1.65 MB, so disk spilling
+the correctly bounded graph would add complexity without addressing that
+cause. Disk checkpoints remain useful at stable phase seams, but must not mask
+an extraction-policy error by paging an unintended interpreter closure.
+
+The direct build has also exposed two generic call-linking omissions, now
+covered by `test_process_graph_function_linking.py`: unpacked aggregate call
+results were materialized but not added to the authored `Ret`, and numerical
+region values consumed only by a later `PlanCall` were pruned because retention
+considered public returns but not call feeds. Both are fixed generically. The
+real managed-dt module is still **not execution-complete**: non-`self` record
+parameters retain array arenas but currently lose five scalar `state` fields
+(`coriolis`, `dx`, `gravity`, `linear_drag`, `minimum_height`). That leaves the
+call chain above `symbolic_fluid_step` unresolved and the public frame return
+empty. The next correct boundary is an explicit record-parameter ABI/schema,
+not guessed scalar arguments or a fluid-specific patch.
+
+### Fusion-stage invariant
+
+Fusion is a last-mile optimization, never a frontend or control-discovery
+representation. The legal order is:
+
+```text
+source frontend -> ProcessGraph -> complete control/data lowering
+  -> repository SSA -> maximal contiguous effect-free SSA regions
+  -> optional repository-SSA or backend-local fusion
+```
+
+`turing/src/compiler/ssa_fusion_regions.py` enshrines this boundary without
+performing a rewrite or entering the compiler hot path. Calls, branches,
+returns, phi nodes, stores, publications, effectful instructions, and any
+unsupported operation terminate a candidate region. The authored graph and
+canonical SSA remain authoritative and inspectable after any later fused
+artifact is produced.
+
+The fluid program now also has direct repository-SSA C and WebAssembly
+emitters (`ssa_c_backend.py`, `ssa_wasm_backend.py`). Both compile/run the
+uniform-state stencil successfully and expose the same semantic-output rows as
+LLVM and Fortran. They do not construct or consume `FusedProgram`.
+
+---
+
+## 13. LLVM lane: 256 -> 10 shortfalls, and the keyed-mapping seam — 2026-08-15
+
+Committed in `turing/` as `4abc962`. Every item below was verified by compiling
+and running a native artifact, not by shortfall count alone.
+
+### Landed
+
+- **Target intrinsics** are declared from the authored call templates
+  themselves (`_intrinsic_declarations_from_templates`), so a signature cannot
+  drift from its call site and only referenced intrinsics appear. The closure
+  scan previously ignored the emitted bodies and the wrapper entirely.
+- **Integer results stay in the integer column.** The scalar tables evaluated
+  every opcode as `double` and stored the result back into its declared slot —
+  eight bytes into four, read back as noise. The declared result type is now
+  the authority; `Max`/`Min` lower to compare-and-select; the return store uses
+  the value's own type. One shared `integer_scalar_lines` serves both emitters,
+  which had disagreed (one refused honestly, the other silently mis-typed).
+- **`and`/`or` return an operand, not a truth value.** Where an operand is a
+  declared container or a non-boolean scalar they lower to `Select`; the
+  boolean opcode still stands where it is equivalent. `x or {}` over a dict had
+  been collapsing to `bool`, destroying the mapping invisibly.
+- **Multi-axis span addressing is exact or refused.** It previously kept only
+  the first index and strided by a fixed `i64` on any dtype, reporting *no*
+  shortfall — a silent miscompile.
+- **Record-field storage identity crosses the call frame** on the caller's own
+  argument binding, so a declared rank reaches the region that indexes it.
+  Note: the rank travels in the field identity, *not* in `shape` — `shape` is
+  the repository's static element-count contract and symbolic axes there
+  corrupt every buffer size derived from it.
+- **Span extents are measured from the real buffer** through the artifact's
+  public extents vector, resolved back to the root's public buffer through the
+  call frames, so one artifact serves any grid size.
+- `Deploy`/`Join` emit no instruction, matching the Fortran lane.
+
+`symbolic_fluid_advance` — the 2-D grid stencil — now emits **zero shortfalls
+and compiles to a native artifact**. The control module is at **10 shortfalls
+across 4 of 44 functions, from 256**.
+
+### The keyed-mapping ABI
+
+`program_abi` gained a `keyed` storage kind. A dict field materializes as three
+physical slots:
+
+```text
+<field>.length   scalar int64
+<field>.keys     span   int64     <- universal FNV-1a string tokens
+<field>.values   span   <dtype>
+```
+
+`Metrics.error_channels` and `Targets.error_limits` are declared keyed. The
+mapping value keeps its identity and names its slots via
+`program_abi_keyed_length/keys/values`. Because the token is content-addressed
+(`string_table.string_token`), this one shape serves a fixed key set and a
+dynamic one — a constant key and a name hashed at run time select the same
+slot. Slot ids are **frame-local**: a validation pass drops any correlation
+that does not resolve in its own frame rather than let it address whatever
+holds those ids there.
+
+Constructor literals (`Metrics(error_channels={...})`) are skipped explicitly,
+as nested records already are, rather than given a wrong single-slot layout.
+
+### The remaining 10 shortfalls are one seam
+
+All ten are the same cause: `any(... for name, limit in targets.error_limits
+.items())`. The `Call` shortfalls are that comprehension's `iterable_extent`.
+Nothing here is a backend gap.
+
+The structure is already correct — the frontend splits `.items()` into **two
+parallel iterables**, which is exactly the key/value vector shape. What is
+missing is only the binding. A minimal repro
+(`for name, limit in metrics.error_channels.items()`) lowers to:
+
+```text
+arg 5   error_channels          keyed, slots 24/25/26
+arg 7   <untyped>               iterable, extent+projection source
+arg 19  float64                 second projection source
+Call    [7] -> 12   {tensor_operation: extent, binding: iterable_extent}
+GEP     [7, i]      {binding: projected_iterable}   -> name
+GEP     [19, i]     {binding: projected_iterable}   -> limit
+```
+
+so `7` *is* `error_channels.keys` (25), `19` *is* `error_channels.values` (26),
+and `extent(7)` *is* `error_channels.length` (24).
+
+**The association is available and does not need guessing.** The graph carries
+the chain `GetAttr(items) <- GetAttr(error_channels)`, and
+`ControlProgram.projected_iterable_bindings` carries
+`(resident iterable id, target id, induction, projection)` where `projection`
+is the zero-based field of a destructured tuple — so component 0 is the key and
+component 1 is the value, rigorously rather than positionally.
+
+Next step: resolve `.items()`/`.keys()`/`.values()` on a keyed mapping to its
+slots instead of leaving them as anonymous storage, then rewrite
+`extent(iterable)` to the `.length` slot. `any` then becomes an ordinary `LOr`
+reduction over the two comparisons and the last ten close. `.get(name, default)`
+follows the same rule: compare the name's token against `.keys`, select from
+`.values` or the default.
+
+### Known state
+
+Two tests fail in this tree and did so before this session — confirmed by
+neutralizing the specific edit, **not** by `git stash` (stashing a file in
+`turing/` reverts it to that repo's HEAD and discards the whole uncommitted
+campaign, which gives a false answer):
+
+- `test_ir_sequence_tables::test_compiled_retained_loop_mutates_caller_sequence_record`
+- `test_precompile_to_ssa::test_whole_object_region_signature_preserves_planner_value_shapes`
+
+`test_ssa_llvm_backend::test_native_sgd_wrapper_...` is flaky in large batches
+(Windows DLL reuse) and passes in isolation; a single red result on this suite
+is not reliable on its own.
