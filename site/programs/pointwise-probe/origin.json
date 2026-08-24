@@ -2,7 +2,7 @@
   "slug": "pointwise-probe",
   "title": "Pointwise probe",
   "entrypoint": "step",
-  "source": "\"\"\"A minimal, well-formed page: per-pixel, state-fed, naming red/green/blue.\n\nNothing here is stencil-shaped. It exists to answer one question -- does the\nsite generator publish a page again after the naming, flattening and\nboundary-dtype repairs -- without a malformed program muddying the answer.\n\"\"\"\n\nTURING_PAGE = {\n    \"entrypoint\": \"step\",\n    \"title\": \"Pointwise probe\",\n    \"slug\": \"pointwise-probe\",\n    \"width\": 32,\n    \"height\": 32,\n    \"feeds\": {\"phase\": 0.0, \"rate\": 0.0, \"dt\": 0.05},\n    \"feed_expressions\": {\n        \"phase\": \"((x + 0.5) / w) * 6.283185307179586\",\n        \"rate\": \"0.4 + 0.6 * ((y + 0.5) / h)\",\n        \"dt\": \"0.05\",\n    },\n    \"state_feedback\": {\"phase\": \"next_phase\"},\n    \"render_fps\": 30.0,\n    \"autostart\": True,\n    \"backend\": \"c\",\n}\n\n\ndef step(phase, rate, dt):\n    \"\"\"One turn of a per-pixel oscillator, painted as hue.\"\"\"\n\n    next_phase = phase + dt * rate\n    red = 0.5 + 0.5 * next_phase.cos()\n    green = 0.5 + 0.5 * (next_phase - 2.094395102393195).cos()\n    blue = 0.5 + 0.5 * (next_phase - 4.18879020478639).cos()\n    return next_phase, red, green, blue\n",
+  "source": "\"\"\"A minimal, well-formed page: per-pixel, state-fed, naming red/green/blue.\n\nNothing here is stencil-shaped. It exists to answer one question -- does the\nsite generator publish a page again after the naming, flattening and\nboundary-dtype repairs -- without a malformed program muddying the answer.\n\"\"\"\n\nTURING_PAGE = {\n    \"entrypoint\": \"step\",\n    \"title\": \"Pointwise probe\",\n    \"slug\": \"pointwise-probe\",\n    \"width\": 32,\n    \"height\": 32,\n    \"feeds\": {\"phase\": 0.0, \"rate\": 0.0, \"dt\": 0.05},\n    \"feed_expressions\": {\n        \"phase\": \"((x + 0.5) / w) * 6.283185307179586\",\n        \"rate\": \"0.4 + 0.6 * ((y + 0.5) / h)\",\n        \"dt\": \"0.05\",\n    },\n    \"state_feedback\": {\"phase\": \"next_phase\"},\n    \"render_fps\": 30.0,\n    \"autostart\": True,\n    \"backend\": \"c\",\n    \"shader_configuration\": {\n        \"channels\": [\"red\", \"green\", \"blue\"],\n        \"channel_scale\": 255.0,\n    },\n}\n\n\ndef step(phase, rate, dt):\n    \"\"\"One turn of a per-pixel oscillator, painted as hue.\"\"\"\n\n    next_phase = phase + dt * rate\n    red = 0.5 + 0.5 * next_phase.cos()\n    green = 0.5 + 0.5 * (next_phase - 2.094395102393195).cos()\n    blue = 0.5 + 0.5 * (next_phase - 4.18879020478639).cos()\n    return next_phase, red, green, blue\n",
   "source_filename": "pointwise_probe.py",
   "probes": {
     "phase": 0.0,
@@ -15,5 +15,5 @@
   "include_mathematics": true,
   "bake_mode": "whole_program",
   "schedule_preference": "alap",
-  "updated_at": "2026-08-24T15:58:55.877431+00:00"
+  "updated_at": "2026-08-24T16:52:14.392334+00:00"
 }
