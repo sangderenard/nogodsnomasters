@@ -1,0 +1,1 @@
+{"value_type": "f64", "count": 1, "required_bytes": 32816, "feeds": [{"offset": 32776, "data": [-0.08333333333333337]}], "outputs": [{"offset": 32784, "length": 1}, {"offset": 32792, "length": 1}, {"offset": 32800, "length": 1}, {"offset": 32808, "length": 1}], "run_offsets": [32776, 32784, 32792, 32800, 32808]}
