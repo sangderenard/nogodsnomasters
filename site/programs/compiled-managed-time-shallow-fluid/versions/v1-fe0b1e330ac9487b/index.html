@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Compiled managed-time shallow fluid</title>
+<style>
+:root{color-scheme:dark;background:#071018;color:#dceaf0;font:15px/1.35 system-ui,sans-serif}
+*{box-sizing:border-box} body{margin:0;min-height:100vh;overflow-x:hidden;display:grid;grid-template-rows:auto 1fr;background:radial-gradient(circle at 50% 20%,#183040,#071018 62%)}
+header{display:flex;gap:.7rem;align-items:center;flex-wrap:wrap;padding:.75rem 1rem;background:#08131ddd;border-bottom:1px solid #294250}
+h1{font-size:1rem;margin:0 auto 0 0;font-weight:650} button,select{color:inherit;background:#132733;border:1px solid #3b5968;border-radius:.45rem;padding:.45rem .7rem}
+button:active{transform:translateY(1px)} main{min-height:0;display:grid;place-items:center;padding:1rem}
+.stage{width:min(92vw,82vh);aspect-ratio:1;position:relative;border:1px solid #365764;border-radius:.8rem;overflow:hidden;box-shadow:0 1.2rem 4rem #0008;background:#020609}
+canvas{width:100%;height:100%;display:block;image-rendering:auto;touch-action:none}
+.readout{position:absolute;left:.7rem;bottom:.65rem;padding:.4rem .55rem;border-radius:.4rem;background:#071018bb;font:12px/1.25 ui-monospace,monospace;pointer-events:none}
+.hint{opacity:.72;font-size:.8rem} @media(max-width:600px){header{padding:.6rem;display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}header h1{grid-column:1/-1;margin:0}header button,header select{width:100%;min-width:0}.hint{display:none}main{padding:.4rem;overflow:hidden}.stage{width:min(94vw,70vh)}}
+</style></head><body>
+<header><h1>Compiled managed-time shallow fluid</h1><button id="toggle">Pause</button><button id="step">Step</button><button id="reset">Reset</button><select id="field"></select><span class="hint">drag: raise · press/secondary: lower</span></header>
+<main><div class="stage"><canvas id="view"></canvas><div class="readout" id="readout">loading compiler output…</div></div></main>
+<script type="module" src="./runtime/host.js"></script></body></html>

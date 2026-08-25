@@ -1,0 +1,121 @@
+{
+  "diagnosticOutputIndex": 5,
+  "display": [
+    {
+      "field": "state.height",
+      "label": "height"
+    },
+    {
+      "field": "state.momentum_x",
+      "label": "momentum x"
+    },
+    {
+      "field": "state.momentum_y",
+      "label": "momentum y"
+    },
+    {
+      "field": "state.tracer",
+      "label": "tracer"
+    }
+  ],
+  "feedback": {
+    "inputValueId": 1,
+    "outputIndex": 4
+  },
+  "fields": {
+    "controller.A": 1.5,
+    "controller.Ki": 0.05,
+    "controller.Kp": 0.4,
+    "controller.acc": 0.0,
+    "controller.dt_max": 0.03333333333333333,
+    "controller.dt_min": 1e-08,
+    "controller.max_vel_ever": 1e-30,
+    "controller.shrink": 0.5,
+    "state.coriolis": 0.08,
+    "state.dx": 0.125,
+    "state.gravity": 1.0,
+    "state.height": {
+      "bumps": [
+        {
+          "amplitude": 0.18,
+          "radius": 2.2,
+          "x": 0.5,
+          "y": 0.5
+        }
+      ],
+      "fill": 1.0,
+      "kind": "grid"
+    },
+    "state.height_count": 8,
+    "state.last_height_violation": 0.0,
+    "state.last_tracer_violation": 0.0,
+    "state.last_wave_speed": 0.0,
+    "state.linear_drag": 0.002,
+    "state.minimum_height": 0.0001,
+    "state.momentum_x": {
+      "fill": 0.0,
+      "kind": "grid"
+    },
+    "state.momentum_y": {
+      "fill": 0.0,
+      "kind": "grid"
+    },
+    "state.next_height": {
+      "fill": 0.0,
+      "kind": "grid"
+    },
+    "state.next_momentum_x": {
+      "fill": 0.0,
+      "kind": "grid"
+    },
+    "state.next_momentum_y": {
+      "fill": 0.0,
+      "kind": "grid"
+    },
+    "state.next_tracer": {
+      "fill": 0.0,
+      "kind": "grid"
+    },
+    "state.tracer": {
+      "bumps": [
+        {
+          "amplitude": 1.0,
+          "radius": 1.8,
+          "x": 0.34,
+          "y": 0.5
+        }
+      ],
+      "fill": 0.0,
+      "kind": "grid"
+    },
+    "state.tracer_diffusivity": 0.0001,
+    "state.viscosity": 0.0002,
+    "state.width_count": 8,
+    "targets.cfl": 0.45,
+    "targets.div_max": 1.0,
+    "targets.error_limits.keys": [],
+    "targets.error_limits.length": 0,
+    "targets.error_limits.values": [],
+    "targets.mass_max": 1e-08
+  },
+  "grid": {
+    "height": 8,
+    "width": 8
+  },
+  "inputs": {
+    "1": 0.001,
+    "2": 0.016666666666666666
+  },
+  "interaction": {
+    "amplitude": 0.012,
+    "field": "state.height",
+    "radius": 1.6
+  },
+  "ownerAliases": {
+    "ctrl": "controller",
+    "self": "controller"
+  },
+  "renderFps": 8,
+  "scratchCapacity": 4096,
+  "title": "Compiled managed-time shallow fluid"
+}

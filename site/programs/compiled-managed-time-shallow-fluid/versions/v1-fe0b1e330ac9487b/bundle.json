@@ -1,0 +1,74 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "compiled-managed-time-shallow-fluid",
+    "title": "Compiled managed-time shallow fluid",
+    "entrypoint": "symbolic_fluid_control__symbolic_fluid_frame"
+  },
+  "version": {
+    "id": "v1-fe0b1e330ac9487b",
+    "source_sha256": "bf241aa9c8dcbc3a5945e89ad1814f40f47956b39fbe41c78cba372cf377283d",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-25T03:33:01.048339+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/compiled-managed-time-shallow-fluid/versions/v1-fe0b1e330ac9487b/index.html"
+  },
+  "source": {
+    "path": "source/symbolic_fluid_dt_program.py",
+    "filename": "symbolic_fluid_dt_program.py"
+  },
+  "compiler": {
+    "backend": "prebuilt-program-interior"
+  },
+  "runtime": {
+    "backend": "repository-ssa-javascript",
+    "manifest": "program/program.json",
+    "host": "generic-manifest-grid-v1",
+    "compiled_function_count": 55
+  },
+  "artifacts": [
+    {
+      "path": "build/control_repository_ssa.contract.json",
+      "bytes": 29,
+      "sha256": "fac71e073ab6869fda424770bfd533ce96f7e3e704bc3596e34d56f73e43b646"
+    },
+    {
+      "path": "build/control_summary.json",
+      "bytes": 11573,
+      "sha256": "e334b24786c04fbbe2d0b8cc49dc46b844d6068e3f8a5a5f39582f5741deb01a"
+    },
+    {
+      "path": "index.html",
+      "bytes": 2109,
+      "sha256": "88b889385b16084aa6856c9883795913a5d3b6cd34784dae7a72c8f3e3104dd8"
+    },
+    {
+      "path": "program/page-config.json",
+      "bytes": 2504,
+      "sha256": "95feba2137f32b59fe3b5ee4da2c2054a832520d35b9820310c302415b3e3bd3"
+    },
+    {
+      "path": "program/program.js",
+      "bytes": 134877,
+      "sha256": "6711236624bd741f5f74433501538103bffde69df7a1ab5a3ed703d32dd414c7"
+    },
+    {
+      "path": "program/program.json",
+      "bytes": 105877,
+      "sha256": "1db953ac161d0ccd35b4fbabb9f7ca2e7d27df971915bf8f3f0329d6258f5ee3"
+    },
+    {
+      "path": "runtime/host.js",
+      "bytes": 6095,
+      "sha256": "c64933a11694c8a065d9014e817f6892139be5802262ca317fc3cddca619eac1"
+    },
+    {
+      "path": "source/symbolic_fluid_dt_program.py",
+      "bytes": 4081,
+      "sha256": "bf241aa9c8dcbc3a5945e89ad1814f40f47956b39fbe41c78cba372cf377283d"
+    }
+  ]
+}

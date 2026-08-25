@@ -1,0 +1,3354 @@
+{
+  "schema": "turing.repository-ssa-javascript.v1",
+  "entry": "symbolic_fluid_control__symbolic_fluid_frame",
+  "module": "program.mjs",
+  "returnConvention": "array-in-ssa-ret-order",
+  "arguments": [
+    {
+      "position": 0,
+      "valueId": 2,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {}
+    },
+    {
+      "position": 1,
+      "valueId": 1,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {}
+    },
+    {
+      "position": 2,
+      "valueId": 8,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "height",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "height",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 3,
+      "valueId": 9,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "momentum_x",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "momentum_x",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 4,
+      "valueId": 10,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "momentum_y",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "momentum_y",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 5,
+      "valueId": 11,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "tracer",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "tracer",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 6,
+      "valueId": 24,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "next_height",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "next_height",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 7,
+      "valueId": 25,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "next_momentum_x",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "next_momentum_x",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 8,
+      "valueId": 26,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "next_momentum_y",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "next_momentum_y",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 9,
+      "valueId": 27,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "next_tracer",
+      "programStorage": "span",
+      "programRank": 2,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "next_tracer",
+        "program_abi_storage": "span",
+        "program_abi_rank": 2,
+        "program_abi_mutable": true,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 10,
+      "valueId": 6,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "dx",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "dx",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 11,
+      "valueId": 28,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "gravity",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "gravity",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 12,
+      "valueId": 29,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "viscosity",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "viscosity",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 13,
+      "valueId": 30,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "tracer_diffusivity",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "tracer_diffusivity",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 14,
+      "valueId": 31,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "linear_drag",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "linear_drag",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 15,
+      "valueId": 32,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "coriolis",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "coriolis",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 16,
+      "valueId": 33,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "minimum_height",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "minimum_height",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 17,
+      "valueId": 12,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "last_wave_speed",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "last_wave_speed",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "ssa_call_rank": 1,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 18,
+      "valueId": 13,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "last_height_violation",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "last_height_violation",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 19,
+      "valueId": 14,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "last_tracer_violation",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "last_tracer_violation",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 20,
+      "valueId": 34,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "height_count",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "height_count",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 21,
+      "valueId": 35,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "state",
+      "programField": "width_count",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "width_count",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 22,
+      "valueId": 36,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "targets",
+      "programField": "cfl",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "cfl",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 23,
+      "valueId": 37,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "targets",
+      "programField": "div_max",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "div_max",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 24,
+      "valueId": 38,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "targets",
+      "programField": "mass_max",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "mass_max",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 25,
+      "valueId": 40,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "targets",
+      "programField": "error_limits.length",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "error_limits.length",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_keyed_owner": "error_limits",
+        "program_abi_keyed_part": "length",
+        "program_abi_key_encoding": "string_token",
+        "program_abi_value_record": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 26,
+      "valueId": 41,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "targets",
+      "programField": "error_limits.keys",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "error_limits.keys",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_keyed_owner": "error_limits",
+        "program_abi_keyed_part": "keys",
+        "program_abi_key_encoding": "string_token",
+        "program_abi_value_record": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 27,
+      "valueId": 42,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "targets",
+      "programField": "error_limits.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "error_limits.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_keyed_owner": "error_limits",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "program_abi_value_record": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 28,
+      "valueId": 39,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "targets",
+      "programField": "error_limits",
+      "programStorage": "keyed",
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "error_limits",
+        "program_abi_storage": "keyed",
+        "program_abi_keyed_length": 40,
+        "program_abi_keyed_keys": 41,
+        "program_abi_keyed_values": 42,
+        "program_abi_key_encoding": "string_token",
+        "program_abi_value_record": null,
+        "program_abi_value_identity": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 29,
+      "valueId": 43,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "controller",
+      "programField": "Kp",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "Kp",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 30,
+      "valueId": 44,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "controller",
+      "programField": "Ki",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "Ki",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 31,
+      "valueId": 45,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "controller",
+      "programField": "A",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "A",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 32,
+      "valueId": 46,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "controller",
+      "programField": "shrink",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "shrink",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 33,
+      "valueId": 47,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "controller",
+      "programField": "dt_min",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": false,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "dt_min",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": false,
+        "program_abi_field_written": false,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 34,
+      "valueId": 48,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "controller",
+      "programField": "dt_max",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "dt_max",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 35,
+      "valueId": 49,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "controller",
+      "programField": "acc",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "acc",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 36,
+      "valueId": 50,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "controller",
+      "programField": "max_vel_ever",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.STController",
+        "program_abi_parameter": "controller",
+        "program_abi_field": "max_vel_ever",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 37,
+      "valueId": 51,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 38,
+      "valueId": 52,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 450
+      }
+    },
+    {
+      "position": 39,
+      "valueId": 53,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 51
+      }
+    },
+    {
+      "position": 40,
+      "valueId": 54,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 52
+      }
+    },
+    {
+      "position": 41,
+      "valueId": 55,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.keys",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.keys",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "keys",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          155
+        ]
+      }
+    },
+    {
+      "position": 42,
+      "valueId": 56,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          172
+        ]
+      }
+    },
+    {
+      "position": 43,
+      "valueId": 57,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.length",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.length",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "length",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          173
+        ]
+      }
+    },
+    {
+      "position": 44,
+      "valueId": 58,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 45,
+      "valueId": 59,
+      "dtype": "int",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 46,
+      "valueId": 60,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 47,
+      "valueId": 61,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 48,
+      "valueId": 62,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 49,
+      "valueId": 63,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 50,
+      "valueId": 64,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 51,
+      "valueId": 65,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 52,
+      "valueId": 66,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 53,
+      "valueId": 67,
+      "dtype": "int",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          853
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 54,
+      "valueId": 68,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          854
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_dtype": "float64"
+      }
+    },
+    {
+      "position": 55,
+      "valueId": 69,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          855
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_dtype": "float64"
+      }
+    },
+    {
+      "position": 56,
+      "valueId": 70,
+      "dtype": "ptr",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          856
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 57,
+      "valueId": 71,
+      "dtype": "bool",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          857
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_dtype": "bool"
+      }
+    },
+    {
+      "position": 58,
+      "valueId": 72,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          858
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_dtype": "int64"
+      }
+    },
+    {
+      "position": 59,
+      "valueId": 73,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          859
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_dtype": "float64"
+      }
+    },
+    {
+      "position": 60,
+      "valueId": 74,
+      "dtype": "ptr",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          860
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 61,
+      "valueId": 75,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.length",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.length",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "length",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          861
+        ],
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "late_record_surface": true
+      }
+    },
+    {
+      "position": 62,
+      "valueId": 76,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.keys",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.keys",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "keys",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          862
+        ],
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "late_record_surface": true
+      }
+    },
+    {
+      "position": 63,
+      "valueId": 77,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          863
+        ],
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "late_record_surface": true
+      }
+    },
+    {
+      "position": 64,
+      "valueId": 78,
+      "dtype": "ptr",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          864
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49"
+      }
+    },
+    {
+      "position": 65,
+      "valueId": 79,
+      "dtype": "int",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          865
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49"
+      }
+    },
+    {
+      "position": 66,
+      "valueId": 80,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 470
+      }
+    },
+    {
+      "position": 67,
+      "valueId": 81,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 473,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          306
+        ],
+        "ssa_call_dtype": "float64"
+      }
+    },
+    {
+      "position": 68,
+      "valueId": 82,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 474
+      }
+    },
+    {
+      "position": 69,
+      "valueId": 83,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 475
+      }
+    },
+    {
+      "position": 70,
+      "valueId": 84,
+      "dtype": "int",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 476
+      }
+    },
+    {
+      "position": 71,
+      "valueId": 85,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 477
+      }
+    },
+    {
+      "position": 72,
+      "valueId": 86,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 478
+      }
+    },
+    {
+      "position": 73,
+      "valueId": 87,
+      "dtype": "ssa.aggregate",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          160
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 479,
+        "ssa_call_dtype": "ssa.aggregate"
+      }
+    },
+    {
+      "position": 74,
+      "valueId": 88,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 480
+      }
+    },
+    {
+      "position": 75,
+      "valueId": 89,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 481
+      }
+    },
+    {
+      "position": 76,
+      "valueId": 90,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 482
+      }
+    },
+    {
+      "position": 77,
+      "valueId": 91,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 483
+      }
+    },
+    {
+      "position": 78,
+      "valueId": 92,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 484
+      }
+    },
+    {
+      "position": 79,
+      "valueId": 93,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 485
+      }
+    },
+    {
+      "position": 80,
+      "valueId": 94,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 486
+      }
+    },
+    {
+      "position": 81,
+      "valueId": 95,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 487
+      }
+    },
+    {
+      "position": 82,
+      "valueId": 96,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 451
+      }
+    },
+    {
+      "position": 83,
+      "valueId": 97,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.keys",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.keys",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "keys",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          155
+        ],
+        "split_from_unproven_alias": 452
+      }
+    },
+    {
+      "position": 84,
+      "valueId": 98,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          172
+        ],
+        "split_from_unproven_alias": 453
+      }
+    },
+    {
+      "position": 85,
+      "valueId": 99,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.length",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.length",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "length",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          173
+        ],
+        "split_from_unproven_alias": 454
+      }
+    },
+    {
+      "position": 86,
+      "valueId": 100,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 455,
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 87,
+      "valueId": 101,
+      "dtype": "int",
+      "shape": [
+        1
+      ],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 456
+      }
+    },
+    {
+      "position": 88,
+      "valueId": 102,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 457,
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 89,
+      "valueId": 103,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 460
+      }
+    },
+    {
+      "position": 90,
+      "valueId": 104,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 91,
+      "valueId": 105,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 92,
+      "valueId": 106,
+      "dtype": "int",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 93,
+      "valueId": 107,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 94,
+      "valueId": 108,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 95,
+      "valueId": 109,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 96,
+      "valueId": 110,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 97,
+      "valueId": 111,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 98,
+      "valueId": 112,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 99,
+      "valueId": 113,
+      "dtype": "int",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 100,
+      "valueId": 114,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 101,
+      "valueId": 115,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19
+      }
+    },
+    {
+      "position": 102,
+      "valueId": 116,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          467
+        ]
+      }
+    },
+    {
+      "position": 103,
+      "valueId": 117,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          468
+        ]
+      }
+    },
+    {
+      "position": 104,
+      "valueId": 118,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          469
+        ]
+      }
+    },
+    {
+      "position": 105,
+      "valueId": 119,
+      "dtype": "bool",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          470
+        ]
+      }
+    },
+    {
+      "position": 106,
+      "valueId": 120,
+      "dtype": "bool",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          471
+        ]
+      }
+    },
+    {
+      "position": 107,
+      "valueId": 121,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          472
+        ]
+      }
+    },
+    {
+      "position": 108,
+      "valueId": 122,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          473
+        ]
+      }
+    },
+    {
+      "position": 109,
+      "valueId": 123,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          474
+        ]
+      }
+    },
+    {
+      "position": 110,
+      "valueId": 124,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.length",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.length",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "length",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__symbolic_fluid_advance",
+        "callsite_id": 301,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          475
+        ],
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "late_record_surface": true
+      }
+    },
+    {
+      "position": 111,
+      "valueId": 125,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.keys",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.keys",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "keys",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__symbolic_fluid_advance",
+        "callsite_id": 301,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          476
+        ],
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "late_record_surface": true
+      }
+    },
+    {
+      "position": 112,
+      "valueId": 126,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__symbolic_fluid_advance",
+        "callsite_id": 301,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          477
+        ],
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "late_record_surface": true
+      }
+    },
+    {
+      "position": 113,
+      "valueId": 127,
+      "dtype": "bool",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          478
+        ]
+      }
+    },
+    {
+      "position": 114,
+      "valueId": 128,
+      "dtype": "none",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 182,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+          479
+        ]
+      }
+    },
+    {
+      "position": 115,
+      "valueId": 129,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 53,
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 116,
+      "valueId": 130,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 54
+      }
+    },
+    {
+      "position": 117,
+      "valueId": 131,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.keys",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.keys",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "keys",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          155
+        ],
+        "split_from_unproven_alias": 55
+      }
+    },
+    {
+      "position": 118,
+      "valueId": 132,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          172
+        ],
+        "split_from_unproven_alias": 56
+      }
+    },
+    {
+      "position": 119,
+      "valueId": 133,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.length",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.length",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "length",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          173
+        ],
+        "split_from_unproven_alias": 57
+      }
+    },
+    {
+      "position": 120,
+      "valueId": 134,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 58,
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 121,
+      "valueId": 135,
+      "dtype": "int",
+      "shape": [
+        1
+      ],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 59
+      }
+    },
+    {
+      "position": 122,
+      "valueId": 136,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 60,
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 123,
+      "valueId": 137,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 61
+      }
+    },
+    {
+      "position": 124,
+      "valueId": 138,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 62
+      }
+    },
+    {
+      "position": 125,
+      "valueId": 139,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 63,
+        "ssa_call_rank": 1
+      }
+    },
+    {
+      "position": 126,
+      "valueId": 140,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 64
+      }
+    },
+    {
+      "position": 127,
+      "valueId": 141,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 65
+      }
+    },
+    {
+      "position": 128,
+      "valueId": 142,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 66
+      }
+    },
+    {
+      "position": 129,
+      "valueId": 143,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          853
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "split_from_unproven_alias": 67,
+        "ssa_call_dtype": "float64"
+      }
+    },
+    {
+      "position": 130,
+      "valueId": 144,
+      "dtype": "bool",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          856
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "split_from_unproven_alias": 70,
+        "ssa_call_dtype": "bool"
+      }
+    },
+    {
+      "position": 131,
+      "valueId": 145,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          860
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "split_from_unproven_alias": 74,
+        "ssa_call_dtype": "float64"
+      }
+    },
+    {
+      "position": 132,
+      "valueId": 146,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": "error_channels.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          863
+        ],
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "late_record_surface": true,
+        "split_from_unproven_alias": 77
+      }
+    },
+    {
+      "position": 133,
+      "valueId": 147,
+      "dtype": "bool",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          864
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "split_from_unproven_alias": 78,
+        "ssa_call_dtype": "bool"
+      }
+    },
+    {
+      "position": 134,
+      "valueId": 148,
+      "dtype": "none",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "returned_record_storage": "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+        "callsite_id": 19,
+        "late_record_surface": true,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+          865
+        ],
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "split_from_unproven_alias": 79,
+        "ssa_call_dtype": "none"
+      }
+    },
+    {
+      "position": 135,
+      "valueId": 149,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 470,
+        "split_from_unproven_alias": 80
+      }
+    },
+    {
+      "position": 136,
+      "valueId": 150,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 473,
+        "split_from_unproven_alias": 81
+      }
+    },
+    {
+      "position": 137,
+      "valueId": 151,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_result_storage": 474,
+        "split_from_unproven_alias": 82
+      }
+    },
+    {
+      "position": 138,
+      "valueId": 152,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "last_wave_speed",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "last_wave_speed",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 12,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 139,
+      "valueId": 153,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "targets",
+      "programField": "error_limits",
+      "programStorage": "keyed",
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "error_limits",
+        "program_abi_storage": "keyed",
+        "program_abi_key_encoding": "string_token",
+        "program_abi_value_record": null,
+        "program_abi_value_identity": null,
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 39,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 140,
+      "valueId": 154,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": "targets",
+      "programField": "error_limits",
+      "programStorage": "keyed",
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_controller.Targets",
+        "program_abi_parameter": "targets",
+        "program_abi_field": "error_limits",
+        "program_abi_storage": "keyed",
+        "program_abi_key_encoding": "string_token",
+        "program_abi_value_record": null,
+        "program_abi_value_identity": null,
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 39,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    },
+    {
+      "position": 141,
+      "valueId": 188,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 488
+      }
+    },
+    {
+      "position": 142,
+      "valueId": 189,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 489
+      }
+    },
+    {
+      "position": 143,
+      "valueId": 190,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 490
+      }
+    },
+    {
+      "position": 144,
+      "valueId": 191,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 491
+      }
+    },
+    {
+      "position": 145,
+      "valueId": 192,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 492
+      }
+    },
+    {
+      "position": 146,
+      "valueId": 193,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 493
+      }
+    },
+    {
+      "position": 147,
+      "valueId": 194,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 494
+      }
+    },
+    {
+      "position": 148,
+      "valueId": 195,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 495
+      }
+    },
+    {
+      "position": 149,
+      "valueId": 196,
+      "dtype": "unknown",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_method_receiver_storage": "value",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 496
+      }
+    },
+    {
+      "position": 150,
+      "valueId": 197,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.keys",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.keys",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "keys",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          155
+        ],
+        "split_from_unproven_alias": 497
+      }
+    },
+    {
+      "position": 151,
+      "valueId": 198,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.values",
+      "programStorage": "span",
+      "programRank": 1,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.values",
+        "program_abi_storage": "span",
+        "program_abi_rank": 1,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "values",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          172
+        ],
+        "split_from_unproven_alias": 498
+      }
+    },
+    {
+      "position": 152,
+      "valueId": 199,
+      "dtype": "int64",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": "error_channels.length",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.common.dt_system.dt_scaler.Metrics",
+        "program_abi_field": "error_channels.length",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_keyed_owner": "error_channels",
+        "program_abi_keyed_part": "length",
+        "program_abi_key_encoding": "string_token",
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "ssa_call_result_from": [
+          "symbolic_fluid_control__symbolic_fluid_advance",
+          173
+        ],
+        "split_from_unproven_alias": 499
+      }
+    },
+    {
+      "position": 153,
+      "valueId": 200,
+      "dtype": "int64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 500
+      }
+    },
+    {
+      "position": 154,
+      "valueId": 201,
+      "dtype": "int",
+      "shape": [
+        1
+      ],
+      "pointer": true,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 501
+      }
+    },
+    {
+      "position": 155,
+      "valueId": 202,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 502
+      }
+    },
+    {
+      "position": 156,
+      "valueId": 203,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": false,
+      "programParameter": null,
+      "programField": null,
+      "programStorage": null,
+      "programRank": null,
+      "mutable": null,
+      "accounting": {
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 503
+      }
+    },
+    {
+      "position": 157,
+      "valueId": 204,
+      "dtype": "float64",
+      "shape": [],
+      "pointer": true,
+      "programParameter": "state",
+      "programField": "last_wave_speed",
+      "programStorage": "scalar",
+      "programRank": 0,
+      "mutable": true,
+      "accounting": {
+        "program_abi_record": "src.compiler.symbolic_fluid_dt.SymbolicFluidGridState",
+        "program_abi_parameter": "state",
+        "program_abi_field": "last_wave_speed",
+        "program_abi_storage": "scalar",
+        "program_abi_rank": 0,
+        "program_abi_mutable": true,
+        "program_abi_field_written": true,
+        "program_abi_fixed_length": null,
+        "linked_call_frame_storage": "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+        "callsite_id": 19,
+        "split_from_unproven_alias": 12,
+        "linked_parameter_provenance": "exact_argument_binding"
+      }
+    }
+  ],
+  "functionCount": 55,
+  "sourceArtifact": "C:\\dev\\Powershell\\turing\\build\\true-dt-controller-pages-20260824h\\control_repository_ssa.pkl"
+}

@@ -1,0 +1,354 @@
+{
+  "schema": "turing.symbolic-fluid-direct-control.v1",
+  "fused_program_used": false,
+  "functions": [
+    "symbolic_fluid_control__symbolic_fluid_frame",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_0",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_1",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_2",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_4",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_3",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_5",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_7",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_8",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_10",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_11",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+    "ssa_sequence_50_append",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_0",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_1",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_2",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_3",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_8",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_9",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_11",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_12",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_14",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_19",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_20",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_21",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+    "ssa_sequence_322_lookup_or_default",
+    "ssa_sequence_54_append",
+    "ssa_sequence_274_append",
+    "ssa_sequence_285_append",
+    "ssa_sequence_243_append",
+    "ssa_sequence_448_append",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_1",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_3",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_4",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_2",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_5",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_6",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_7",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552",
+    "symbolic_fluid_control__update_dt_max__planned_region_0",
+    "symbolic_fluid_control__update_dt_max__planned_region_1",
+    "symbolic_fluid_control__update_dt_max",
+    "symbolic_fluid_control__coerce_metrics",
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_0",
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_1",
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_2",
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_3",
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_4",
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_6",
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_5",
+    "symbolic_fluid_control__symbolic_fluid_advance",
+    "ssa_sequence_155_add",
+    "symbolic_fluid_control__symbolic_fluid_step__planned_region_0",
+    "symbolic_fluid_control__symbolic_fluid_step"
+  ],
+  "exports": [
+    "symbolic_fluid_control__symbolic_fluid_frame",
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49",
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552",
+    "symbolic_fluid_control__update_dt_max",
+    "symbolic_fluid_control__coerce_metrics",
+    "symbolic_fluid_control__symbolic_fluid_advance",
+    "symbolic_fluid_control__symbolic_fluid_step",
+    "symbolic_fluid_control__update_dt_max",
+    "symbolic_fluid_control__pi_update__specialized_45758127f552"
+  ],
+  "outputs": {
+    "symbolic_fluid_control__symbolic_fluid_frame": [
+      8,
+      9,
+      10,
+      11,
+      21,
+      12,
+      13,
+      14
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_0": [
+      32,
+      34,
+      35,
+      52
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_1": [
+      41
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_2": [
+      59
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_4": [
+      155
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_3": [
+      153
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_5": [
+      168
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_7": [
+      174
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_8": [
+      73,
+      202,
+      203
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_10": [
+      219
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49__planned_region_11": [
+      208,
+      234
+    ],
+    "symbolic_fluid_control__run_superstep__specialized_47985f25ff49": [
+      234,
+      208,
+      467,
+      467,
+      468,
+      469,
+      470,
+      471,
+      472,
+      473,
+      474,
+      475,
+      476,
+      477,
+      478,
+      479
+    ],
+    "ssa_sequence_50_append": [
+      406
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_0": [
+      45,
+      300
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_1": [
+      71,
+      72
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_2": [
+      213
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_3": [
+      248
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_8": [
+      296
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_9": [
+      306
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_11": [
+      328
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_12": [
+      331
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_14": [
+      339
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_19": [
+      442,
+      443,
+      444
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_20": [
+      444
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70__planned_region_21": [
+      446
+    ],
+    "symbolic_fluid_control__step_with_dt_control_used__specialized_f81e5124de70": [
+      853,
+      853,
+      854,
+      855,
+      856,
+      857,
+      858,
+      859,
+      860,
+      861,
+      862,
+      863,
+      864,
+      865,
+      446,
+      306
+    ],
+    "ssa_sequence_322_lookup_or_default": [
+      799
+    ],
+    "ssa_sequence_54_append": [
+      606
+    ],
+    "ssa_sequence_274_append": [
+      692
+    ],
+    "ssa_sequence_285_append": [
+      737
+    ],
+    "ssa_sequence_243_append": [
+      754
+    ],
+    "ssa_sequence_448_append": [
+      821
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_1": [
+      43,
+      76
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_3": [
+      47,
+      83
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_4": [
+      86
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_2": [
+      81
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_5": [
+      88
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_6": [
+      89
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552__planned_region_7": [
+      92
+    ],
+    "symbolic_fluid_control__pi_update__specialized_45758127f552": [
+      92
+    ],
+    "symbolic_fluid_control__update_dt_max__planned_region_0": [
+      7,
+      9
+    ],
+    "symbolic_fluid_control__update_dt_max__planned_region_1": [
+      18
+    ],
+    "symbolic_fluid_control__update_dt_max": [],
+    "symbolic_fluid_control__coerce_metrics": [
+      0
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_0": [
+      13,
+      16
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_1": [
+      35,
+      37,
+      39,
+      41,
+      47,
+      49,
+      51,
+      53,
+      57,
+      59,
+      61,
+      63,
+      68,
+      70,
+      72,
+      74
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_2": [
+      27,
+      33,
+      45,
+      55,
+      65
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_3": [
+      88
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_4": [
+      116,
+      129,
+      148,
+      154
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_6": [
+      118,
+      122,
+      126,
+      130,
+      136,
+      141,
+      150,
+      151,
+      157,
+      159
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance__planned_region_5": [
+      113
+    ],
+    "symbolic_fluid_control__symbolic_fluid_advance": [
+      160,
+      169,
+      169,
+      90,
+      122,
+      335,
+      336,
+      337,
+      338,
+      150,
+      173,
+      155,
+      172,
+      339,
+      340
+    ],
+    "ssa_sequence_155_add": [
+      310
+    ],
+    "symbolic_fluid_control__symbolic_fluid_step__planned_region_0": [
+      28,
+      44,
+      83,
+      152,
+      213,
+      264,
+      275,
+      282,
+      301,
+      309,
+      317
+    ],
+    "symbolic_fluid_control__symbolic_fluid_step": [
+      83,
+      152,
+      213,
+      264,
+      28,
+      44,
+      275,
+      282,
+      301,
+      309,
+      317
+    ]
+  }
+}
