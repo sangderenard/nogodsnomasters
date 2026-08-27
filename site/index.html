@@ -64,7 +64,7 @@ color:var(--ink);font-size:9px;pointer-events:none;backdrop-filter:blur(6px);box
 justify-content:flex-end;align-items:center;gap:5px;margin-bottom:4px;color:#b9d4ca;text-transform:uppercase;
 letter-spacing:.08em}.vehicle-contact-mode{color:var(--active);white-space:nowrap}
 .vehicle-contact-title{margin-right:auto}.vehicle-contact-monitor:not(.expanded) .vehicle-contact-title{display:none}
-.vehicle-contact-monitor:not(.expanded) .vehicle-contact-mode{display:none}
+.vehicle-contact-monitor:not(.expanded) .vehicle-contact-mode:not([data-fault]){display:none}
 .vehicle-recover-button,.vehicle-detail-button{pointer-events:auto;border:1px solid #ffd166;border-radius:5px;background:#1d1608;
 color:#ffe29a;font:inherit;font-size:8px;padding:2px 5px;cursor:pointer}.vehicle-recover-button:hover{filter:brightness(1.3)}
 .vehicle-detail-button{border-color:#5d7c70;background:#10211c;color:#b9d4ca}.vehicle-detail-button:hover{filter:brightness(1.3)}
@@ -7936,7 +7936,8 @@ function updateVehicleContactMonitor() {
   if(mode&&liveDom){const nextMode=vehicleRuntime.error
     ?`FAULT · ${String(vehicleRuntime.error).slice(0,160)}`
     :vehicleRuntime.computeMode.replaceAll("-"," ");
-    if(mode.textContent!==nextMode)mode.textContent=nextMode;}
+    if(mode.textContent!==nextMode)mode.textContent=nextMode;
+    if(vehicleRuntime.error)mode.setAttribute("data-fault","true");else mode.removeAttribute("data-fault");}
   if(!liveDom)return;
   root.querySelectorAll(".vehicle-contact-corner").forEach((corner,index)=>{
     const area=Math.max(0,vehicleRuntime.contactAreas[index]||0),force=Math.max(0,vehicleRuntime.lastSpringForces[index]||0),
