@@ -1,0 +1,450 @@
+{
+  "schema": "turing-program-bundle-v1",
+  "layout_version": 1,
+  "program": {
+    "slug": "pointwise-probe",
+    "title": "Pointwise probe",
+    "entrypoint": "step"
+  },
+  "version": {
+    "id": "v1-adaa1b8c24e5bb9f",
+    "source_sha256": "d52ffccfa6f84e823bf12a6cb03bc3879c285b26860ec51ba52f8b595748f837",
+    "builder": "site-bundle-v18"
+  },
+  "created_at": "2026-08-24T15:51:36.202712+00:00",
+  "page": {
+    "path": "index.html",
+    "url": "/site/programs/pointwise-probe/versions/v1-adaa1b8c24e5bb9f/index.html",
+    "mode": "shader-execution",
+    "shader": {
+      "url": "source/roles/shader-surface/webgpu.compute.wgsl",
+      "language": "wgsl",
+      "stage": "compute",
+      "role": "shader-surface",
+      "autostart": true,
+      "execution": {
+        "continuous": true,
+        "prefer_contiguous": true
+      },
+      "candidates": [
+        {
+          "url": "source/roles/shader-surface/webgpu.compute.wgsl",
+          "language": "wgsl",
+          "stage": "compute",
+          "role": "shader-surface"
+        },
+        {
+          "url": "source/roles/shader-surface/webgl.frag.glsl",
+          "language": "webgl2-glsl-es",
+          "stage": "fragment",
+          "role": "shader-surface"
+        }
+      ]
+    },
+    "shader_support": {
+      "numeric": {
+        "entrypoint": "step"
+      },
+      "presentation": {
+        "url": "source/roles/shader-surface/webgpu.compute.wgsl",
+        "language": "wgsl",
+        "stage": "compute",
+        "role": "shader-surface",
+        "autostart": true,
+        "execution": {
+          "continuous": true,
+          "prefer_contiguous": true
+        },
+        "candidates": [
+          {
+            "url": "source/roles/shader-surface/webgpu.compute.wgsl",
+            "language": "wgsl",
+            "stage": "compute",
+            "role": "shader-surface"
+          },
+          {
+            "url": "source/roles/shader-surface/webgl.frag.glsl",
+            "language": "webgl2-glsl-es",
+            "stage": "fragment",
+            "role": "shader-surface"
+          }
+        ]
+      }
+    },
+    "audio": null
+  },
+  "source": {
+    "path": "source/python_source/pointwise_probe.py",
+    "filename": "pointwise_probe.py"
+  },
+  "compiler": {
+    "backend": "c",
+    "bake_mode": "whole_program",
+    "final_fused_reduction": true,
+    "file_parameters": {},
+    "schedule_preference": "alap",
+    "program_record_mode": "full",
+    "constant_map": {},
+    "mutable_parameters": [
+      "phase"
+    ],
+    "thread_topology": null,
+    "remove_loops": true,
+    "unroll_limit": 4096,
+    "implementation_sha256": "52b59e150d4db9adaf4c3abaa683dd21315fb27eb3bd702e61fa0e8b5246f595",
+    "mathematics_error": "",
+    "fortran_verification": null,
+    "wasm_verification": {
+      "passed": true,
+      "case_count": 3,
+      "binary_sha256": "8a445b09ab13ecd7208adf764b222e363493e0e4652a9b525ff6fb44b0117a74",
+      "url": "verification/wasm-fidelity.json"
+    },
+    "region_target_capabilities": {
+      "0": [
+        "fortran",
+        "glsl",
+        "wasm",
+        "webgl",
+        "webgpu"
+      ]
+    },
+    "region_execution_classes": {
+      "0": {
+        "execution_class": "shader-compute",
+        "eligible": [
+          "shader-compute"
+        ],
+        "extent_effect": "pointwise",
+        "compute_shader_targets": [
+          "glsl",
+          "webgpu"
+        ],
+        "deployment_region_id": null,
+        "lane_count": 0,
+        "presentation_outputs": [],
+        "reasons": [
+          "every operation is expressible by compute-stage target(s) glsl, webgpu"
+        ]
+      }
+    },
+    "region_deployment_strategies": {
+      "0": {
+        "execution_class": "shader-compute",
+        "strategies": {
+          "wasm": {
+            "strategy": "pool",
+            "join_mode": "barrier",
+            "execution_class": "shader-compute",
+            "workers": null,
+            "chunk": null,
+            "compute": null,
+            "calibration_demoted": false,
+            "reasons": [
+              "dispatch unavailable: backend 'wasm' does not declare it (copy-in/copy-out tile workers; lockstep batches today, chunk claiming is the planned refinement)",
+              "pool selected via src/compiler/wasm_html_shell.py:ensureTileWorkers/executeDeploy"
+            ]
+          },
+          "webgpu": {
+            "strategy": "dispatch",
+            "join_mode": "barrier",
+            "execution_class": "shader-compute",
+            "workers": null,
+            "chunk": null,
+            "compute": null,
+            "calibration_demoted": false,
+            "reasons": [
+              "dispatch geometry deferred: backend limits were not supplied",
+              "dispatch selected via src/compiler/ssa_webgpu_backend.py (deploy is the grid dimension; barrier join is the end of the dispatch)"
+            ]
+          },
+          "glsl": {
+            "strategy": "dispatch",
+            "join_mode": "barrier",
+            "execution_class": "shader-compute",
+            "workers": null,
+            "chunk": null,
+            "compute": null,
+            "calibration_demoted": false,
+            "reasons": [
+              "dispatch geometry deferred: backend limits were not supplied",
+              "dispatch selected via src/common/tensors/accelerator_backends/glsl_backend.py"
+            ]
+          },
+          "c": {
+            "strategy": "pool",
+            "join_mode": "barrier",
+            "execution_class": "shader-compute",
+            "workers": null,
+            "chunk": null,
+            "compute": null,
+            "calibration_demoted": false,
+            "reasons": [
+              "dispatch unavailable: backend 'c' does not declare it",
+              "pool selected via src/common/tensors/accelerator_backends/c_backend/turing_pool.c (persistent workers, atomic chunk claiming, barrier join)"
+            ]
+          },
+          "llvm": {
+            "strategy": "pool",
+            "join_mode": "barrier",
+            "execution_class": "shader-compute",
+            "workers": null,
+            "chunk": null,
+            "compute": null,
+            "calibration_demoted": false,
+            "reasons": [
+              "dispatch unavailable: backend 'llvm' does not declare it",
+              "pool selected via src/compiler/deployment_host_pool.py:HostDeploymentPool (artifact entry releases the GIL across ctypes calls); src/common/tensors/accelerator_backends/llvm_simd_deployment.py (REDUCE, scale 1)"
+            ]
+          },
+          "fortran": {
+            "strategy": "serial",
+            "join_mode": "barrier",
+            "execution_class": "shader-compute",
+            "workers": null,
+            "chunk": null,
+            "compute": null,
+            "calibration_demoted": false,
+            "reasons": [
+              "dispatch unavailable: backend 'fortran' does not declare it (runs under the C shell; inherits the native pool once profiled_c_shell's launch seam routes through turing_pool)",
+              "pool unavailable: backend 'fortran' does not declare it (runs under the C shell; inherits the native pool once profiled_c_shell's launch seam routes through turing_pool)",
+              "serial baseline selected"
+            ]
+          }
+        }
+      }
+    },
+    "native_deployment_frames": {},
+    "shader_region_holes": {
+      "0": {
+        "hole": {
+          "region_index": 0,
+          "marker": "__scheduled_region_0__",
+          "target": "glsl",
+          "invocation": "compute-dispatch",
+          "capsule_digest": "0fac2bb97ed972cc479ccbfff966b4cc82d15a310ac6082b05986d95414f9f32",
+          "boundary_digest": "29b270a7149d368ebeb26044ead81d88293c8a211d7deded2f45e55d44d930f9",
+          "recursive_deployment_permitted": false
+        },
+        "capsule": {
+          "schema": "turing.shader-region.v1",
+          "region_index": 0,
+          "target": "glsl",
+          "boundary": {
+            "inputs": [
+              {
+                "value_id": 4,
+                "name": null,
+                "direction": "input",
+                "metadata": {
+                  "shape": [],
+                  "dtype": "float64",
+                  "device": null,
+                  "source_id": null,
+                  "offset": 0,
+                  "stride": 1,
+                  "shape_source_ids": null
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "value_id": 10,
+                "name": "value_10",
+                "direction": "output",
+                "metadata": {
+                  "shape": [],
+                  "dtype": "float64",
+                  "device": null,
+                  "source_id": null,
+                  "offset": 0,
+                  "stride": 1,
+                  "shape_source_ids": null
+                }
+              },
+              {
+                "value_id": 18,
+                "name": "value_18",
+                "direction": "output",
+                "metadata": {
+                  "shape": [],
+                  "dtype": "float64",
+                  "device": null,
+                  "source_id": null,
+                  "offset": 0,
+                  "stride": 1,
+                  "shape_source_ids": null
+                }
+              },
+              {
+                "value_id": 26,
+                "name": "value_26",
+                "direction": "output",
+                "metadata": {
+                  "shape": [],
+                  "dtype": "float64",
+                  "device": null,
+                  "source_id": null,
+                  "offset": 0,
+                  "stride": 1,
+                  "shape_source_ids": null
+                }
+              }
+            ],
+            "effects": []
+          },
+          "source_digest": "51f50ee9fd74826b6ac74fd8ec13089c3daf5d0c9e7beb6e3d9abd86742d8dc2",
+          "capsule_digest": "0fac2bb97ed972cc479ccbfff966b4cc82d15a310ac6082b05986d95414f9f32",
+          "sealed_deployment_depth": 1
+        }
+      }
+    }
+  },
+  "artifacts": [
+    {
+      "path": "index.html",
+      "bytes": 280722,
+      "sha256": "aee1ff4c2ffb747d902c3627ced66c6078ded6abd5d40a4e0047f03ab2933779"
+    },
+    {
+      "path": "math/sympy-process-model.json",
+      "bytes": 6943,
+      "sha256": "e904b383071a3b363bffcb5bbd560527dd6c6e868a2dc6ef95142ac93d5e887b"
+    },
+    {
+      "path": "native/wasm/step.captured-probe.lane0.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.captured-probe.lane1.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.captured-probe.lane2.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.captured-probe.lane3.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.deterministic-sweep.lane0.plan.json",
+      "bytes": 298,
+      "sha256": "3b4612bbda8c67a70d3802faaf75207bea51785420a41a41b52410c16113702c"
+    },
+    {
+      "path": "native/wasm/step.deterministic-sweep.lane1.plan.json",
+      "bytes": 313,
+      "sha256": "e92478a2b0d74995c26d136256c8e189184fd085a147e8a7ec328e3408396aed"
+    },
+    {
+      "path": "native/wasm/step.deterministic-sweep.lane2.plan.json",
+      "bytes": 311,
+      "sha256": "1e3131f92e4311771bc9f4174d671ad464a6512f1274dacb708850479cca0884"
+    },
+    {
+      "path": "native/wasm/step.deterministic-sweep.lane3.plan.json",
+      "bytes": 297,
+      "sha256": "1881e9269ed4058c3795b7664c7d68f81071788e881cdb6910598892093af436"
+    },
+    {
+      "path": "native/wasm/step.reversed-probe.lane0.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.reversed-probe.lane1.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.reversed-probe.lane2.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.reversed-probe.lane3.plan.json",
+      "bytes": 296,
+      "sha256": "e0fc1adfa3ede85f871f46946a1802766cb6ad1a5c58095321da68d40e732b45"
+    },
+    {
+      "path": "native/wasm/step.run.mjs",
+      "bytes": 1347,
+      "sha256": "60360a07f452fa2761bcce4205fda2cacad15a613bfd33e1814f561f4c558c47"
+    },
+    {
+      "path": "native/wasm/step.wasm",
+      "bytes": 33344,
+      "sha256": "8a445b09ab13ecd7208adf764b222e363493e0e4652a9b525ff6fb44b0117a74"
+    },
+    {
+      "path": "source/abstract_tensor/abstract_tensor.py",
+      "bytes": 286,
+      "sha256": "73478bfe37c987f3dccc8d4e54963b3f2da0e502bbe84f2e81f0dde1dc2fd96e"
+    },
+    {
+      "path": "source/glsl/glsl.comp.glsl",
+      "bytes": 1620,
+      "sha256": "5bcf2c4db54ba5b0153cf107aed9b6c7581a70495de0f4daafbe01005161123b"
+    },
+    {
+      "path": "source/numpy/numpy.py",
+      "bytes": 292,
+      "sha256": "59c841a92c608ae26924e7321b8ecf7810f7029c7b52e0ad8f7c05db3e5e438f"
+    },
+    {
+      "path": "source/python_source/pointwise_probe.py",
+      "bytes": 1102,
+      "sha256": "d52ffccfa6f84e823bf12a6cb03bc3879c285b26860ec51ba52f8b595748f837"
+    },
+    {
+      "path": "source/roles/shader-surface/webgl.frag.glsl",
+      "bytes": 954,
+      "sha256": "5f958d9d1d88ff1aaa7b5a7cfaa0597e719cc584e4cad8e4020dd2955118da66"
+    },
+    {
+      "path": "source/roles/shader-surface/webgpu.compute.wgsl",
+      "bytes": 1142,
+      "sha256": "01a552162f5355e6f225fa61427fa8d007c77e0aa626ba8e25282be677b19965"
+    },
+    {
+      "path": "source/torch/torch.py",
+      "bytes": 301,
+      "sha256": "6566ae71329084b0be95ac2db34cd13bce53168f58702219dcfecb020ab43390"
+    },
+    {
+      "path": "source/wat/wat.wat",
+      "bytes": 150,
+      "sha256": "f6ff77039f94ce2f951b4b549282ad266a03f29158bd65e6c900734dd7db8eb7"
+    },
+    {
+      "path": "verification/wasm-fidelity.json",
+      "bytes": 7082,
+      "sha256": "5b7ce86c220dc41a5bc6278b4c743a864b43a19f6788ae2119f9c47e6ee95f0a"
+    },
+    {
+      "path": "wasm/size-2000/class-inventory.json",
+      "bytes": 722,
+      "sha256": "4bd199f951c12755961a26014a9fbb561467b89db6848e9dedad2d42860ef42b"
+    },
+    {
+      "path": "wasm/size-2000/step_control_2000.wasm",
+      "bytes": 121,
+      "sha256": "b181a5f204a19377390c5f8f2e34762c5258fa06697864e94543a5c7230a5767"
+    },
+    {
+      "path": "wasm/size-2000/step_k9e8e445c3e85.wasm",
+      "bytes": 33342,
+      "sha256": "9e8e445c3e85f4cda85016926ade6783fa16ed9a953a99e973d5f1d239570ce4"
+    },
+    {
+      "path": "wasm/step_control_2000.wasm",
+      "bytes": 121,
+      "sha256": "b181a5f204a19377390c5f8f2e34762c5258fa06697864e94543a5c7230a5767"
+    }
+  ]
+}

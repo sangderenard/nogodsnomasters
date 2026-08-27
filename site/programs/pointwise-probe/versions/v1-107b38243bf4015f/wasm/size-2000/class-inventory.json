@@ -1,0 +1,40 @@
+{
+  "abi": "turing.class-memory-inventory.v1",
+  "field_slots": [
+    {
+      "index": 0,
+      "key": "in::phase"
+    },
+    {
+      "index": 1,
+      "key": "out::step__0::red"
+    },
+    {
+      "index": 2,
+      "key": "out::step__0::green"
+    },
+    {
+      "index": 3,
+      "key": "out::step__0::blue"
+    }
+  ],
+  "container_fields": [],
+  "storage_redirects": [],
+  "methods": [
+    {
+      "index": 0,
+      "module": "step__0",
+      "kernel": "step__0",
+      "entry": "run",
+      "input_slots": [
+        0
+      ],
+      "output_slots": [
+        1,
+        2,
+        3
+      ],
+      "parameter_count": 5
+    }
+  ]
+}
