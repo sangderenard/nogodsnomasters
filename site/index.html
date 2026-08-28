@@ -3251,7 +3251,7 @@ function installSceneMesh(mesh,{publish=true}={}) {
 }
 
 function vehiclePresentationGeometry(){
-  const useHostWheels=vehicleRuntime.wheelPart==="legacy-small-brown"||!shaderViewer.wheelProgram;
+  const useHostWheels=!shaderViewer.wheelProgram;
   return [...vehicleRuntime.frameBoxes,...vehicleRuntime.rollCageBoxes,
     ...vehicleRuntime.mechanicalLinkBoxes,...vehicleRuntime.powertrainBoxes,
     ...vehicleRuntime.bodyShellBoxes,
@@ -3468,15 +3468,21 @@ function initializeVehicleWheelRenderer(gl){
   gl.attachShader(program,compileShader(gl,gl.FRAGMENT_SHADER,VEHICLE_WHEEL_FRAGMENT_SHADER));
   gl.linkProgram(program);if(!gl.getProgramParameter(program,gl.LINK_STATUS))
     throw new Error(gl.getProgramInfoLog(program)||"vehicle wheel shader link failed");
-  const vertices=[],segments=16,emit=(position,normal)=>vertices.push(...position,...normal);
-  for(let segment=0;segment<segments;segment+=1){
+  const vertices=[],segments=48,crossSections=16,major=.75,tube=.25,
+    emit=(position,normal)=>vertices.push(...position,...normal),
+    tirePoint=(theta,phi)=>{const radial=major+tube*Math.cos(phi);return[
+      [Math.cos(theta)*radial,Math.sin(theta)*radial,.5*Math.sin(phi)],
+      [Math.cos(theta)*Math.cos(phi),Math.sin(theta)*Math.cos(phi),Math.sin(phi)]];};
+  for(let segment=0;segment<segments;segment+=1)for(let cross=0;cross<crossSections;cross+=1){
     const a=segment*Math.PI*2/segments,b=(segment+1)*Math.PI*2/segments,
-      pa=[Math.cos(a),Math.sin(a),-.5],pb=[Math.cos(b),Math.sin(b),-.5],
-      pc=[Math.cos(b),Math.sin(b),.5],pd=[Math.cos(a),Math.sin(a),.5],
-      na=[Math.cos(a),Math.sin(a),0],nb=[Math.cos(b),Math.sin(b),0];
-    [[pa,na],[pb,nb],[pc,nb],[pa,na],[pc,nb],[pd,na],
-     [pa,[0,0,-1]],[pb,[0,0,-1]],[[0,0,-.5],[0,0,-1]],
-     [pd,[0,0,1]],[[0,0,.5],[0,0,1]],[pc,[0,0,1]]].forEach(([p,n])=>emit(p,n));
+      c=cross*Math.PI*2/crossSections,d=(cross+1)*Math.PI*2/crossSections,
+      pa=tirePoint(a,c),pb=tirePoint(b,c),pc=tirePoint(b,d),pd=tirePoint(a,d);
+    [pa,pb,pc,pa,pc,pd].forEach(([p,n])=>emit(p,n));
+  }
+  for(const side of [-1,1])for(let segment=0;segment<segments;segment+=1){
+    const a=segment*Math.PI*2/segments,b=(segment+1)*Math.PI*2/segments,z=side*.501,
+      pa=[Math.cos(a)*.51,Math.sin(a)*.51,z],pb=[Math.cos(b)*.51,Math.sin(b)*.51,z],
+      normal=[0,0,side];[[pa,normal],[pb,normal],[[0,0,z],normal]].forEach(([p,n])=>emit(p,n));
   }
   const vao=gl.createVertexArray(),buffer=gl.createBuffer();gl.bindVertexArray(vao);
   gl.bindBuffer(gl.ARRAY_BUFFER,buffer);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(vertices),gl.STATIC_DRAW);
@@ -3499,12 +3505,12 @@ function rotateVehiclePresentationVector(point,state,steer=0){
 
 function drawVehicleWheels(gl,width,height,cameraPosition,cameraFacing,celestial){
   if(vehicleRuntime.disabledPresentationStages.has("wheel-shader"))return;
-  if(vehicleRuntime.wheelPart!=="balloon-black-current")return;
   const state=vehicleRuntime.state||vehicleRuntime.parkedState,vehicle=vehicleRuntime.active||model.vehicle_slot?.vehicles?.[0];
   if(!state||!shaderViewer.wheelProgram||!vehicleRuntime.wheelBoxes.length)return;
-  const config=vehicle.configuration,presentation=config.presentation,radius=Number(config.tires.radius),
-    tireWidth=Number(config.tires.width),rubber=colorVector("#202624"),
-    tread=colorVector("#687672"),rim=colorVector(model.appearance.colors["rollbar-silver"]),
+  const config=vehicle.configuration,presentation=config.presentation,
+    part=vehicle.wheel_parts?.find(item=>item.identity===vehicleRuntime.wheelPart)||vehicle.wheel_parts?.[0],
+    rubber=colorVector(part?.tire_color||"#202624"),tread=colorVector(part?.tread_color||"#687672"),
+    rim=colorVector(model.appearance.colors["rollbar-silver"]),
     rotor=colorVector(model.appearance.colors["suspension-yellow"]),locations=shaderViewer.wheelLocations;
   try{
   gl.useProgram(shaderViewer.wheelProgram);gl.uniform2f(locations.uResolution,width,height);
@@ -3514,7 +3520,8 @@ function drawVehicleWheels(gl,width,height,cameraPosition,cameraFacing,celestial
   gl.uniform3fv(locations.uLightDirection,celestial.key==="sun"?celestial.sunDirection:celestial.moonDirection);
   gl.bindVertexArray(shaderViewer.wheelVao);
   vehicleRuntime.wheelBoxes.forEach((wheel,index)=>{
-    const stateData=wheel.wheel_state,center=rotateVehiclePresentationVector(stateData.localCenter,state,0),
+    const stateData=wheel.wheel_state,radius=Number(stateData.radius),tireWidth=Number(stateData.width),
+      center=rotateVehiclePresentationVector(stateData.localCenter,state,0),
       x=rotateVehiclePresentationVector([radius,0,0],state,stateData.steer),
       y=rotateVehiclePresentationVector([0,radius,0],state,stateData.steer),
       z=rotateVehiclePresentationVector([0,0,tireWidth],state,stateData.steer),
@@ -5817,12 +5824,14 @@ function selectVehicleWheelPart(partIdentity){
   const vehicle=vehicleRuntime.active,part=vehicle?.wheel_parts?.find(item=>item.identity===partIdentity);
   if(!vehicle||!part)return false;
   vehicle.wheel_part=part.identity;vehicleRuntime.wheelPart=part.identity;
-  const tires=vehicle.configuration.tires,wheels=vehicle.configuration.wheels,legacy=part.identity==="legacy-small-brown";
-  vehicleRuntime.wheelBoxes.forEach(wheel=>{const radius=Number(tires.radius)*(legacy ? .72 : 1),
-      width=Number(tires.width)*(legacy ? .72 : 1);
+  const tires=vehicle.configuration.tires,wheels=vehicle.configuration.wheels;
+  vehicleRuntime.wheelBoxes.forEach(wheel=>{const radius=Number(tires.radius)*Number(part.radius_scale??(part.identity==="legacy-small-brown"?.72:1)),
+      width=Number(tires.width)*Number(part.width_scale??(part.identity==="legacy-small-brown"?.78:1));
     wheel.height=radius*2;wheel.half_extent=[radius,width*.5];wheel.appearance.face_color=part.tire_color;
     wheel.appearance.tread_color=part.tread_color;wheel.wheel_state={...wheel.wheel_state,radius,
-      rimRadius:Number(wheels.rim_radius)*(legacy ? .72 : 1),width};});
+      rimRadius:Number(wheels.rim_radius)*Number(part.rim_scale??(part.identity==="legacy-small-brown"?.72:1)),width,
+      coldPressureKpa:Number(part.cold_pressure_kpa||0),compound:part.compound,
+      carcassProfile:part.carcass_profile,dryGripScale:Number(part.dry_grip_scale||1)};});
   rebuildPortableSceneMesh();updateVehicleTransmissionControls();setPlacementStatus(`${part.label} selected`);return true;
 }
 
