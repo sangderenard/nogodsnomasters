@@ -6751,19 +6751,10 @@ function drawVehicleShaderHud(gl,width,height){
     draw(x+5*ratio,y+5*ratio,6*ratio,32*ratio,rgba("#31483f",.8));
     draw(x+6*ratio,y+(36-30*compression)*ratio,4*ratio,30*compression*ratio,
       rgba(damper>1.05?"#66d9ff":damper<.96?"#b28cff":compression>.82?"#ff5f7d":compression>.58?"#ffd166":"#fff2a8",.95));
-    // Unwrapped full tire circumference.  The 5 radial by 3 lateral marks are
-    // the worker's actual surface probes, rotated by the wheel's live phase.
-    const tireX=x+16*ratio,tireY=y+4*ratio,tireW=48*ratio,tireH=14*ratio,
-      samples=vehicleRuntime.radialProbePenetrations[index]||[],angles=[-.95,-.48,0,.48,.95],
-      maximum=Math.max(1e-6,...samples.map(Number));
+    // Reserved for the compiled per-probe force integral. Penetration probes
+    // are deliberately not drawn as force/heat; that would be false telemetry.
+    const tireX=x+16*ratio,tireY=y+4*ratio,tireW=48*ratio,tireH=14*ratio;
     draw(tireX,tireY,tireW,tireH,rgba("#0b1513",.98));
-    draw(tireX+tireW*.5-.4*ratio,tireY,.8*ratio,tireH,rgba("#31483f",.75));
-    samples.forEach((penetration,probe)=>{const radial=Math.floor(probe/3),lateral=probe%3,
-      phase=((angles[radial]-Number(vehicleRuntime.wheelAngles[index]||0))%(Math.PI*2)+Math.PI*2)%(Math.PI*2),
-      px=tireX+phase/(Math.PI*2)*tireW,py=tireY+(2+lateral*4)*ratio,
-      active=Number(penetration)>0,intensity=Math.max(.18,Math.min(1,Number(penetration)/maximum));
-      draw(px-1.4*ratio,py,2.8*ratio,2.8*ratio,rgba(!active?"#31483f":"#54e39b",
-        active ? .45+.55*intensity : .45));});
     const wheelNeedleCenterX=x+(12+Math.sin(wheelNeedle)*1.6)*ratio,
       wheelNeedleCenterY=y+(10-Math.cos(wheelNeedle)*1.6)*ratio;
     draw(wheelNeedleCenterX-.6*ratio,wheelNeedleCenterY-2.6*ratio,1.2*ratio,5.2*ratio,rgba("#66d9ff",.96),false,wheelNeedle);
