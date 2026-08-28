@@ -5290,11 +5290,11 @@ function buildVehicleBodyShell(vehicle,state){
   const shell=vehicle.body_shells?.find(item=>item.identity===vehicleRuntime.bodyShell),
     chassis=vehicle.configuration.chassis,halfLength=Number(chassis.half_length),halfWidth=Number(chassis.half_width),
     colorRole=shell?.palette_role||vehicle.configuration.presentation.palette_role,specs=[
-      ["hood",[halfLength*.48,.34,0],[halfLength*.37,halfWidth*.94],.26],
-      ["cab",[-halfLength*.02,.56,0],[halfLength*.28,halfWidth*.88],.72],
-      ["bed",[-halfLength*.62,.31,0],[halfLength*.32,halfWidth*.96],.24],
-      ["left-fender",[halfLength*.22,.25,-halfWidth*.94],[halfLength*.70,.055],.20],
-      ["right-fender",[halfLength*.22,.25,halfWidth*.94],[halfLength*.70,.055],.20]];
+      ["hood",[halfLength*.48,.32,0],[halfLength*.40,halfWidth*1.08],.30],
+      ["cab",[-halfLength*.03,.52,0],[halfLength*.32,halfWidth*1.06],.82],
+      ["bed",[-halfLength*.62,.29,0],[halfLength*.35,halfWidth*1.09],.30],
+      ["left-fender",[halfLength*.20,.24,-halfWidth*1.07],[halfLength*.74,.065],.24],
+      ["right-fender",[halfLength*.20,.24,halfWidth*1.07],[halfLength*.74,.065],.24]];
   return specs.map(([name,localCenter,halfExtent,height])=>({identity:`${vehicle.identity}/cosmetic-shell:${name}`,
     kind:"vehicle-cosmetic-shell",label:name,parent_identity:vehicle.identity,center:[state.position[0],state.position[2]],
     center_y:state.position[1]+localCenter[1],half_extent:halfExtent,height,floor_height:height,wall_thickness:.012,
