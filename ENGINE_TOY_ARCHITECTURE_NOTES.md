@@ -90,6 +90,61 @@ Investigated directly rather than assumed:
   above deliberately avoids touching the dt system or the state-machine
   substrate at all.
 
+## Refined: crate engine, not a black box
+
+"Box with connections" (above) undersold it. The right model is a real
+crate engine: a complete package that isn't fully self-sufficient by
+design. Some parts ship in the crate. Some parts the buyer has to
+install before it runs. That distinction is load-bearing, not a
+simplification.
+
+- **The installable unit is a prism** — a bounding volume — carrying a
+  declared, finite set of real fluid and mechanical connectors on its
+  boundary.
+- **Internally it still resolves constituent part identities**, even
+  though it presents to the game as one baked object. Damage, wear,
+  and service need to reach a real sub-part (a valve spring, a
+  transfer case, a starter), not just move a dial on an opaque blob.
+- **Every system the toy simulates has to be classified**: built-in
+  (ships inside the prism) or supplied-elsewhere (the game/vehicle
+  provides it; the crate just declares it needs one). This is not
+  automatic and not the same for every part.
+
+This classification already exists, half-formed, in the toy's own
+code — a sign it's the right cut, not a new invention. `drivetrain_
+graph.py`'s fuel circuit comment already places the tank/pump at a
+`chassis_remote` position specifically because "a real fuel tank is
+never bolted to the engine itself, it sits elsewhere in the vehicle" —
+already treated as supplied-elsewhere, just without a formal declared
+mechanism. The fuel rail/injectors, by contrast, are engine-mounted at
+`front` — already treated as built-in. The toy has been drawing this
+line implicitly through node placement; what's missing is making it an
+explicit, declared property of each part instead of something buried
+in a position choice.
+
+**The classification rule itself is not settled** and needs guidance
+beyond the fuel-tank example before it gets generalized to coolant,
+starter battery, exhaust, pneumatic lines, etc. — noted as open rather
+than guessed at.
+
+## The prism is a bar cage, and mounts are load-bearing on it
+
+Refined further: the prism the game supplies isn't an abstract
+clearance volume — it's a real bar cage structure (actual structural
+members with real positions), and the engine is expected to use it for
+its own mounts, not just fit inside its silhouette. This is a real,
+existing concept on the toy side already: `engine_geometry.py::mount_
+points()` already returns real declared attachment positions
+(`front_mount`, `rear_mount`, plus `oil_pan`/`exhaust_manifold`/
+valve-cover points) computed from the engine's own crank extent and
+bank geometry. What's missing is the other half: correlating those
+points against the cage's own real structural node positions (do
+`front_mount`/`rear_mount` actually land on a real bar of the supplied
+cage, at a real, attachable position, for THIS vehicle's cage), not
+just checking the engine's silhouette fits inside a bounding shape.
+The fit check is a mount-to-structural-node correlation, not a
+volume-containment test.
+
 ## Corrected: the engine is not connected through a torque port at all — it's already a real part in the graph
 
 First pass at this got it wrong by pattern-matching on the word
