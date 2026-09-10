@@ -90,6 +90,46 @@ Investigated directly rather than assumed:
   above deliberately avoids touching the dt system or the state-machine
   substrate at all.
 
+## Confirmed: the real connection point, and it's already engine-shaped
+
+Checked directly in `abstract_ui_vehicles.py` rather than assumed.
+`external_hub_torque_{wheel}` (line 635 default, used at line 2762) is
+real but wheel-level — meant for per-wheel interventions (an in-hub
+motor, traction-control-style corrections), not a powertrain.
+
+The actual engine-shaped port is one axle level up:
+`external_differential_wrench_torque_{axle}` (front/rear), paired with
+`external_differential_inertia_{axle}` and
+`differential_wrench_shaft_omega_{axle}` (lines 637-642 defaults,
+real physics at lines 2782-2804). Per tick, the differential shaft's
+own integration is:
+
+```
+shaft_input_torque = drive_torque * axle_drive_fraction + center_torque
+                      + external_differential_wrench_torque_{axle}
+shaft_inertia = differential_brake_rotor_inertia + external_differential_inertia_{axle}
+free_shaft_omega = shaft_omega + dt * (shaft_input_torque - shaft_output_torque) / shaft_inertia
+```
+
+So the real contract, already live in production, is exactly three
+named scalars per axle:
+- **in**: `external_differential_wrench_torque_{axle}` — the engine's
+  real torque output this tick, Nm.
+- **in**: `external_differential_inertia_{axle}` — the engine's own
+  rotating inertia reflected at this shaft, kg·m².
+- **out** (read back next tick, the same one-tick-lag convention
+  `engine_cycle_sim.py` already uses everywhere): `differential_wrench_
+  shaft_omega_{axle}` — the shaft's real current speed, what the
+  engine's own torque curve needs as input.
+
+This is structurally the *same shape* as the toy's own dyno-rig
+junction (`EngineCycleSim._brake_junction`/`_load_omega`, an engine
+reading a load shaft's speed and supplying torque back against it) —
+just the toy's dyno drum swapped for the real vehicle's differential
+shaft. A baked engine package doesn't need a new contract invented for
+it; it needs to supply a torque(shaft_omega, internal_state) relation
+shaped to feed exactly these three names.
+
 ## The best-case target for the baked characterization
 
 Not just numeric coefficients or lookup splines as a fallback: the real
