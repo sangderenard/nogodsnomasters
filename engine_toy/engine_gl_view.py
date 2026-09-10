@@ -46,7 +46,8 @@ _SPECTRAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _SPECTRAL_DIR not in sys.path:
     sys.path.insert(0, _SPECTRAL_DIR)
 
-from engine_mesh import EngineMesh, MATERIALS, material_table, build_engine_mesh, start_animation, CYCLE_DEG
+from engine_mesh import (EngineMesh, MATERIALS, material_table, build_engine_mesh, start_animation, CYCLE_DEG,
+                        build_throttle_animation)
 
 GL_OK = False
 try:
@@ -251,6 +252,15 @@ class EngineGLView:
     covers_off: bool = True
     animation_divisions: int = 16
     spin_rad_per_s: float = 0.0
+    # The mesh REDUCTION stage, made explicit and optional. Two real knobs:
+    #   detail        tessellation multiplier for every tube/drum side count
+    #                 (mesh_primitives.DETAIL): 1.0 = full, the exporter's
+    #                 own level; the live app may run lower.
+    #   spring_style  "cylinder" draws each valve spring as one cheap tube
+    #                 (the live default), "helix" draws the real coil.
+    # A high-triangle render is simply detail=1.0, spring_style="helix".
+    detail: float = 1.0
+    spring_style: str = "cylinder"
 
     def __post_init__(self) -> None:
         if not GL_OK:
@@ -262,6 +272,8 @@ class EngineGLView:
         self._static_gl: GLMesh | None = None
         self._frame_gl: list = []
         self._animation = None
+        self._throttle_animation = None
+        self._throttle_gl: list = []
         self._graph = None
         self._materials_present: set = set()
         self._angle_rad = 0.6
@@ -284,7 +296,13 @@ class EngineGLView:
     def set_graph(self, graph: dict) -> None:
         self._graph = graph
         self._free_geometry()
-        static_mesh, _moving0 = build_engine_mesh(graph, crank_angle_deg=0.0, covers_off=self.covers_off)
+        import mesh_primitives as _mp
+        _prev_detail = _mp.DETAIL
+        _mp.set_detail(self.detail)
+        try:
+            static_mesh, _moving0 = build_engine_mesh(graph, crank_angle_deg=0.0, covers_off=self.covers_off)
+        finally:
+            _mp.DETAIL = _prev_detail
         self._static_gl = upload_mesh(static_mesh)
         self._materials_present = set(int(i) for i in np.unique(static_mesh.material_ids)) if static_mesh.n_triangles else set()
         if _moving0.n_triangles:
@@ -315,9 +333,27 @@ class EngineGLView:
         # for whatever azimuth is current instead.
         self._half_extents = ((box_max - box_min) / 2.0).astype(np.float32)
         self._animation = start_animation(graph, self.animation_divisions, covers_off=self.covers_off,
-                                          spring_style="cylinder")
+                                          detail=self.detail, spring_style=self.spring_style)
         self._frame_gl = [None] * self._animation.n_frames
         self._upload_pending_frames(limit=1)
+
+        # a SEPARATE small baked set, keyed by throttle position (0..1)
+        # instead of crank angle -- cheap enough (a plate + lever arm
+        # per throttle body) to upload all of it right here rather than
+        # spreading it across bake_next() the way the crank animation
+        # does; composited alongside whatever crank frame is showing,
+        # never folded into that frame count.
+        _mp.set_detail(self.detail)
+        try:
+            self._throttle_animation = build_throttle_animation(graph, divisions=9)
+        finally:
+            _mp.DETAIL = _prev_detail
+        for g in self._throttle_gl:
+            g.delete()
+        self._throttle_gl = [upload_mesh(f) for f in self._throttle_animation.frames]
+        if self._throttle_gl:
+            self._materials_present |= {int(i) for f in self._throttle_animation.frames if f.n_triangles
+                                        for i in np.unique(f.material_ids)}
 
     def _free_geometry(self) -> None:
         if self._static_gl is not None:
@@ -325,6 +361,10 @@ class EngineGLView:
         for g in self._frame_gl:
             if g is not None:
                 g.delete()
+        for g in self._throttle_gl:
+            if g is not None:
+                g.delete()
+        self._throttle_gl = []
         self._frame_gl = []
 
     def bake_next(self) -> bool:
@@ -357,27 +397,40 @@ class EngineGLView:
             return None
         return int(np.argmin(d))
 
-    # ---- render: two draw calls, no per-frame geometry work ----
-    def render(self, crank_angle_deg: float, spin: bool = True, dt: float = 0.0) -> np.ndarray:
+    def _throttle_frame_for(self, throttle_frac: float):
+        if not self._throttle_animation or not self._throttle_gl:
+            return None
+        idx = self._throttle_animation.frame_index(throttle_frac)
+        return self._throttle_gl[idx] if idx < len(self._throttle_gl) else None
+
+    # ---- render: two-or-three draw calls, no per-frame geometry work ----
+    def render(self, crank_angle_deg: float, spin: bool = True, dt: float = 0.0,
+              throttle_frac: float = 1.0) -> np.ndarray:
         """Same draw as render_gpu(), but reads the result back to a
         numpy array (a CPU round trip) -- for headless PNG export and
         the test harness; the live app uses render_gpu() instead, which
         never leaves the GPU."""
-        self._draw(crank_angle_deg, spin=spin, dt=dt)
+        self._draw(crank_angle_deg, spin=spin, dt=dt, throttle_frac=throttle_frac)
         rgba = self._target.read_rgba()
         return rgba
 
-    def render_gpu(self, crank_angle_deg: float, spin: bool = True, dt: float = 0.0) -> int:
+    def render_gpu(self, crank_angle_deg: float, spin: bool = True, dt: float = 0.0,
+                   throttle_frac: float = 1.0) -> int:
         """Same draw as render(), but leaves the result sitting in the
         FBO's own colour texture and returns its GL texture id --
         no glReadPixels, no CPU round trip at all. The compositor
         (gl_compositor.py) draws that texture id straight into the
         main window's backbuffer as a quad; the pixels never visit
-        Python. This is the path main_pygame.py uses every tick."""
-        self._draw(crank_angle_deg, spin=spin, dt=dt)
+        Python. This is the path main_pygame.py uses every tick.
+
+        throttle_frac drives the SEPARATE baked throttle-plate frame
+        set (build_throttle_animation) composited alongside whatever
+        crank_angle_deg frame is showing -- a real, independent live
+        parameter, not folded into the crank-angle bake."""
+        self._draw(crank_angle_deg, spin=spin, dt=dt, throttle_frac=throttle_frac)
         return self._target.color_tex
 
-    def _draw(self, crank_angle_deg: float, spin: bool, dt: float) -> None:
+    def _draw(self, crank_angle_deg: float, spin: bool, dt: float, throttle_frac: float = 1.0) -> None:
         if spin:
             self._angle_rad = (self._angle_rad + dt * 0.25) % (2.0 * np.pi)
         glBindFramebuffer(GL_FRAMEBUFFER, self._target.fbo)
@@ -458,6 +511,9 @@ class EngineGLView:
         if idx is not None and self._frame_gl[idx] is not None:
             fg = self._frame_gl[idx]
             self._renderer.draw_mesh(fg.vao, fg.n_vertices, mvp_gl, mv_gl, enable_blend=True)
+        tg = self._throttle_frame_for(throttle_frac)
+        if tg is not None:
+            self._renderer.draw_mesh(tg.vao, tg.n_vertices, mvp_gl, mv_gl, enable_blend=True)
         glBindFramebuffer(GL_FRAMEBUFFER, 0)
 
     def pick_ray(self, px: float, py: float):

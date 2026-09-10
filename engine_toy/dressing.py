@@ -101,32 +101,89 @@ def _intake_ports(layout):
     return out
 
 
-def intake_inlet_count(engine, spec: DressingSpec, n_ports: int) -> tuple[int, str]:
-    """How many inlets (throttle barrels / carburetor barrels / throttle
-    bodies) the intake distributes N ports into, and what that is
-    called. Declared where the catalogue declares it (a
-    ThrottleBodyAssembly's barrels); otherwise the typical build."""
-    if n_ports == 0:
-        return 0, "none"
-    if spec.throttle == "none":
-        # a diesel still has a manifold: one open inlet with a filter, no butterfly
-        return 1, "unthrottled manifold"
-    if spec.throttle == "individual":
-        return n_ports, "individual throttle bodies"
-    tb = getattr(engine, "throttle_body", None)
-    if tb is not None and getattr(tb, "barrels", None):
-        m = len(tb.barrels)
-        return m, f"{m}-barrel" + (" (double quad)" if m == 8 else "")
+@dataclass(frozen=True)
+class IntakeHardware:
+    """The intake resolved to real, distinct hardware facts -- what one
+    "barrel count" used to conflate. units are SPATIALLY separate carbs/
+    throttle bodies (a 2- or 4-barrel carb is ONE unit; dual quads two;
+    ITBs one per port). barrels_per_unit is how many bores share that one
+    casting. planes is how many firing-order groups share a DIVIDED
+    plenum under one unit (dual-plane = 2) -- co-located, never spread to
+    each group's own centroid. placement is where the chamber sits."""
+    units: int
+    barrels_per_unit: int
+    planes: int
+    placement: str        # "valley" | "inboard" | "piped"
+    label: str
+
+
+def derive_intake_hardware(engine, spec: DressingSpec, n_ports: int, n_banks: int) -> IntakeHardware:
+    """Declared on IntakeSystem where the catalogue declares it; every
+    None resolves to the typical real build for this engine's own
+    declared architecture, throttle assembly and forced induction."""
+    intake = engine.intake_system
+    fi = engine.forced_induction
     cyl = max(1, engine.architecture.cylinders)
+
+    if n_ports == 0:
+        return IntakeHardware(0, 0, 1, "inboard", "none")
+
+    # placement: the valley only exists between the banks of a V/flat
+    # engine; a straight engine's manifold sits inboard above its head;
+    # a turbo's compressor outlet is always plumbed to the plenum by a
+    # real pipe. A supercharger keeps the on-block placement unless the
+    # build declares "piped" (a remote/centrifugal blower).
+    placement = intake.plenum_placement
+    if placement == "auto":
+        placement = "piped" if fi.kind == "turbo" else ("valley" if n_banks >= 2 else "inboard")
+
+    if spec.throttle == "none":
+        # a diesel still has a manifold: one open inlet, no butterfly
+        return IntakeHardware(intake.inlet_units or 1, 1, intake.plenum_planes or 1, placement, "unthrottled manifold")
+    if spec.throttle == "individual":
+        return IntakeHardware(n_ports, 1, 1, placement, "individual throttle bodies")
+
+    tb = getattr(engine, "throttle_body", None)
+    declared_barrels = len(tb.barrels) if (tb is not None and getattr(tb, "barrels", None)) else None
+
     if spec.throttle == "carburetor":
-        if cyl == 1:
-            return 1, "single carburetor"
-        if cyl <= 6:
-            return 2, "two-barrel carburetor"
-        if engine.preferred_fuel_profile in ("nitromethane-race", "methanol-race"):
-            return 8, "double quad"
-        return 4, "single four-barrel"
-    return 1, "single throttle body"
+        if declared_barrels is not None:
+            # a real 8-barrel declaration is two 4-barrel carbs (dual quads),
+            # never one casting with eight bores
+            units = intake.inlet_units or (2 if declared_barrels >= 8 else 1)
+            barrels = max(1, declared_barrels // units)
+        elif cyl == 1:
+            units, barrels = intake.inlet_units or 1, 1
+        elif cyl <= 6:
+            units, barrels = intake.inlet_units or 1, 2
+        elif engine.preferred_fuel_profile in ("nitromethane-race", "methanol-race"):
+            units, barrels = intake.inlet_units or 2, 4
+        else:
+            units, barrels = intake.inlet_units or 1, 4
+        # dual-plane is the classic carbureted manifold on 4..8 cylinders;
+        # a single is one plane by construction
+        planes = intake.plenum_planes or (2 if 4 <= cyl <= 8 else 1)
+        total = units * barrels
+        label = ("double quad" if (units == 2 and barrels == 4)
+                 else f"single {barrels}-barrel carburetor" if units == 1 and barrels > 1
+                 else "single carburetor" if units == 1
+                 else f"{units}x {barrels}-barrel carburetors")
+        if planes > 1:
+            label += " (dual-plane)" if planes == 2 else f" ({planes}-plane)"
+        return IntakeHardware(units, barrels, planes, placement, label)
+
+    # central EFI throttle body: one unit, one open plenum unless declared
+    units = intake.inlet_units or 1
+    barrels = declared_barrels // units if declared_barrels else 1
+    planes = intake.plenum_planes or 1
+    return IntakeHardware(units, max(1, barrels), planes, placement,
+                          "single throttle body" if units == 1 else f"{units} throttle bodies")
+
+
+def intake_inlet_count(engine, spec: DressingSpec, n_ports: int) -> tuple[int, str]:
+    """Kept for callers that only want the unit count and a label."""
+    hw = derive_intake_hardware(engine, spec, n_ports, n_banks=1)
+    return hw.units, hw.label
 
 
 def distribute_ports(layout, ports, n_inlets: int) -> list[int]:
@@ -142,16 +199,26 @@ def distribute_ports(layout, ports, n_inlets: int) -> list[int]:
 
 
 def plan_intake(layout, spec: DressingSpec, runner_radius_m: float, engine=None):
-    """The intake as a DISTRIBUTOR: N intake ports gathered into M
-    inlet chambers (the mirror of the exhaust collector). Each chamber
-    sits at the mean position of its group along the bank -- in the
-    valley of a V/flat engine, inboard and above the head on a
-    straight one -- and every runner leaves its port, bends up to the
-    rail level, runs along the bank to its chamber and bends in; a
-    barrel/throttle body sits on each chamber (or, with M == N, the
-    throttle body sits right on the short runner with an open stack).
-    So a straight six is 6-to-1 with one carb on a centre chamber, a
-    V8 with a four-barrel is 8-to-4, a double quad or ITBs 8-to-8."""
+    """The intake as a DISTRIBUTOR: N intake ports gathered into the
+    chambers of M spatially distinct inlet UNITS (the mirror of the
+    exhaust collector). A unit is one real casting -- a carburetor or
+    throttle body with however many barrels it has side by side -- so a
+    straight six with a two-barrel is 6-to-1: ONE centre chamber, ONE
+    carb, two bores a few cm apart on it. Dual quads are 6/8-to-2. ITBs
+    are N-to-N with the body right on the short runner.
+
+    Within a unit the plenum may be DIVIDED into planes: cylinders that
+    fire consecutively go to different planes (distribute_ports), so each
+    half sees evenly spaced pulses -- the real dual-plane manifold. The
+    planes are halves of the same chamber under the same carb, tagged on
+    each runner and offset to their own half of the chamber; they are
+    never separate chambers at each group's own centroid (that is what
+    put two "throttle bodies" 35 cm apart on a two-barrel straight six).
+
+    Placement: the chamber sits in the valley of a V/flat engine, or
+    inboard above the head on a straight one; "piped" keeps the chamber
+    where the runners meet but feeds it through a real pipe from the
+    compressor outlet instead of a throttle body sitting on top."""
     from head_mesh import banks
     ports = _intake_ports(layout)
     if not ports:
@@ -161,9 +228,11 @@ def plan_intake(layout, spec: DressingSpec, runner_radius_m: float, engine=None)
     mean_up = _unit(sum(axes))
     bore = max(g.bore_m for g, _ in ports)
     bend_r = 2.0 * runner_radius_m * BEND_RADIUS_FRAC_OF_DIAMETER
-    n_inlets, label = intake_inlet_count(engine, spec, len(ports)) if engine is not None else (1, "single")
-    n_inlets = max(1, min(n_inlets, len(ports)))
-    groups = distribute_ports(layout, ports, n_inlets)
+    hw = (derive_intake_hardware(engine, spec, len(ports), len(bank_list)) if engine is not None
+          else IntakeHardware(1, 1, 1, "valley" if len(bank_list) >= 2 else "inboard", "single"))
+    n_units = max(1, min(hw.units, len(ports)))
+    n_planes = max(1, hw.planes)
+    unit_of = distribute_ports(layout, ports, n_units)
     positions = [np.array(p.position) for _, p in ports]
     centre = sum(positions) / len(positions)
     if len(bank_list) >= 2:
@@ -173,16 +242,35 @@ def plan_intake(layout, spec: DressingSpec, runner_radius_m: float, engine=None)
         inboard = inboard - mean_up * float(np.dot(inboard, mean_up))
         inboard = _unit(inboard) if np.linalg.norm(inboard) > 1e-6 else -_unit(np.cross(CRANK_AXIS, mean_up))
         rail_level = centre + inboard * (bore * 0.75) + mean_up * (bore * 0.8)
-    individual = n_inlets == len(ports) and spec.throttle in ("individual", "central") and len(ports) > 1 and label == "individual throttle bodies"
+    individual = hw.label == "individual throttle bodies" and n_units == len(ports) and len(ports) > 1
+
+    # plane within each unit: the same firing-order rule applied to that
+    # unit's own members, so a dual-plane half never sees two consecutive
+    # fires either
+    plane_of = [0] * len(ports)
+    for ui in range(n_units):
+        members = [k for k, u in enumerate(unit_of) if u == ui]
+        if n_planes > 1 and len(members) > 1:
+            sub_layout = [(g, ps) for (g, ps) in layout if any(g is ports[k][0] for k in members)]
+            sub_ports = [ports[k] for k in members]
+            for k, pl in zip(members, distribute_ports(sub_layout, sub_ports, min(n_planes, len(members)))):
+                plane_of[k] = pl
+
     chambers = []
-    for gi in range(n_inlets):
-        members = [k for k, gk in enumerate(groups) if gk == gi]
+    for ui in range(n_units):
+        members = [k for k, u in enumerate(unit_of) if u == ui]
         xs = [positions[k][0] for k in members]
         c = rail_level.copy(); c[0] = float(np.mean(xs))
-        half_len = max(bore * 0.45, (max(xs) - min(xs)) / 2.0 * 0.35) if len(members) > 1 else bore * 0.35
-        chambers.append({"centre": c, "half_len": half_len, "radius": bore * 0.42, "ports": members})
-    plan = {"chambers": chambers, "runners": [], "itbs": [], "up": mean_up, "n_inlets": n_inlets, "label": label,
-            "plenum_radius": bore * 0.42, "individual": individual}
+        # a divided plenum is one chamber, long enough to seat every
+        # barrel side by side and both planes' runner joins
+        span = (max(xs) - min(xs)) / 2.0 if len(members) > 1 else 0.0
+        barrel_pitch = bore * 0.42 * 2.2
+        half_len = max(bore * 0.45, span * 0.35, hw.barrels_per_unit * barrel_pitch / 2.0)
+        chambers.append({"centre": c, "half_len": half_len, "radius": bore * 0.42, "ports": members,
+                         "barrels": hw.barrels_per_unit, "planes": min(n_planes, max(1, len(members)))})
+    plan = {"chambers": chambers, "runners": [], "itbs": [], "up": mean_up, "n_inlets": n_units,
+            "label": hw.label, "plenum_radius": bore * 0.42, "individual": individual,
+            "placement": hw.placement, "barrels_per_unit": hw.barrels_per_unit, "planes": n_planes}
     for k, (g, p) in enumerate(ports):
         pos = np.array(p.position); d = _unit(p.direction)
         pts = [pos, pos + d * (p.radius_m * 1.4)]
@@ -192,21 +280,31 @@ def plan_intake(layout, spec: DressingSpec, runner_radius_m: float, engine=None)
             plan["itbs"].append({"cylinder": g.number, "port": p.name, "body": body, "direction": d,
                                  "stack_end": body + d * (bore * 0.45)})
         else:
-            ch = chambers[groups[k]]
+            ch = chambers[unit_of[k]]
+            # a plane's runners join their own half of the divided chamber:
+            # plane 0 toward the front end, plane 1 toward the rear, etc.
+            n_pl = ch["planes"]
+            plane_shift = ((plane_of[k] + 0.5) / n_pl - 0.5) * (ch["half_len"] * 1.2) if n_pl > 1 else 0.0
             target = ch["centre"].copy(); target[0] = pos[0]
             to_t = _unit(target - pts[-1])
             pts.extend(_quarter_bend(pts[-1], d, to_t, bend_r))
-            if abs(pos[0] - ch["centre"][0]) > ch["half_len"] * 0.9:
-                run_dir = CRANK_AXIS * (1.0 if ch["centre"][0] > pos[0] else -1.0)
+            join_x = ch["centre"][0] + plane_shift
+            if abs(pos[0] - join_x) > ch["half_len"] * 0.9:
+                run_dir = CRANK_AXIS * (1.0 if join_x > pos[0] else -1.0)
                 pts.append(target - to_t * (ch["radius"] * 1.2))
                 pts.extend(_quarter_bend(pts[-1], to_t, run_dir, bend_r))
-                join = pts[-1].copy(); join[0] = ch["centre"][0] - run_dir[0] * (ch["half_len"] * 0.9)
+                join = pts[-1].copy(); join[0] = join_x - run_dir[0] * (ch["half_len"] * 0.9)
                 pts.append(join)
                 pts.extend(_quarter_bend(pts[-1], run_dir, to_t, bend_r))
-                pts.append(ch["centre"] - run_dir * (ch["half_len"] * 0.6) - to_t * (ch["radius"] * 0.3))
+                end = ch["centre"] - run_dir * (ch["half_len"] * 0.6) - to_t * (ch["radius"] * 0.3)
+                end[0] = join_x - run_dir[0] * (ch["half_len"] * 0.3)
+                pts.append(end)
             else:
-                pts.append(target - to_t * (ch["radius"] * 0.6))
-        plan["runners"].append({"cylinder": g.number, "port": p.name, "points": pts, "group": groups[k]})
+                end = target - to_t * (ch["radius"] * 0.6)
+                end[0] = join_x if n_pl > 1 else end[0]
+                pts.append(end)
+        plan["runners"].append({"cylinder": g.number, "port": p.name, "points": pts,
+                                "group": unit_of[k], "plane": plane_of[k]})
     return plan
 
 
@@ -236,6 +334,28 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
         tb = by_id.get("powertrain.throttle_body")
         bowl = by_id.get("powertrain.fuel_bowl")
         chamber_ids = []
+        placement = plan.get("placement", "inboard")
+        barrels = int(plan.get("barrels_per_unit", 1))
+        # a real pipe run needs a real source point: the compressor outlet
+        # -- the same front-of-block reference the supercharger rotor is
+        # placed from in drivetrain_graph.py (a turbo has no rotor node
+        # yet; its compressor outlet is declared at that same reference
+        # until a real turbo placement exists)
+        compressor_outlet = None
+        if placement == "piped":
+            import engine_geometry
+            f_ = np.array(engine_geometry.accessory_front_point(engine), dtype=np.float64)
+            compressor_outlet = f_ + np.array([0.0, 0.06, 0.0]) + plan["up"] * (bore * 0.4)
+
+        def _bung(identity: str, part: str, pos, direction, radius_m: float, port_kind: str, fluid: str) -> None:
+            # a real, default-PLUGGED casting port in exactly the vocabulary
+            # assembly_ports.emit_ports_graph already uses -- something a
+            # sensor, injector or vacuum line can later plumb into, drawn
+            # as a stub like every other casting port
+            node(identity, [float(v) for v in pos], "engine-block-port", port_kind=port_kind,
+                 port_direction=[float(v) for v in _unit(direction)], port_radius_m=radius_m,
+                 fluid_role=fluid, mating=False, connected=False, plugged=True, part=part, bung=True)
+
         if not plan["individual"]:
             for gi, ch in enumerate(plan["chambers"]):
                 cid = "powertrain.intake_plenum" if gi == 0 else f"powertrain.intake_plenum_{gi + 1}"
@@ -247,16 +367,53 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
                 n_["body_half_extent_m"] = [ch["half_len"], ch["radius"] * 0.7, ch["radius"]]
                 n_["plenum_style"] = f"chamber {gi + 1}/{plan['n_inlets']}"
                 n_["inlet_group"] = gi
+                n_["plenum_planes"] = ch["planes"]
+                n_["plenum_placement"] = placement
                 chamber_ids.append(cid)
-                # the inlet on this chamber: a throttle barrel / carburetor barrel
+                # default-plugged sensor/vacuum bungs on the chamber: a MAP/
+                # vacuum tap on the end wall and an IAT boss on the roof
+                side = _unit(np.cross(plan["up"], CRANK_AXIS))
+                _bung(f"{cid}.map_tap", cid, ch["centre"] + CRANK_AXIS * ch["half_len"], CRANK_AXIS,
+                      0.004, "vacuum-tap", "intake-air")
+                _bung(f"{cid}.iat_boss", cid, ch["centre"] + side * ch["radius"], side,
+                      0.006, "sensor-boss", "intake-air")
+                # the inlet on this chamber: ONE unit -- a carburetor / throttle
+                # body casting -- with its barrels side by side on it
                 inlet_pos = ch["centre"] + plan["up"] * (ch["radius"] * 1.3)
                 tid = "powertrain.throttle_body" if gi == 0 else f"powertrain.throttle_body_{gi + 1}"
                 t_ = tb if (gi == 0 and tb is not None) else None
                 if t_ is None:
                     node(tid, [float(v) for v in inlet_pos], "engine-block-component", mass_kg=1.0)
                     t_ = nodes[-1]
+                if compressor_outlet is not None:
+                    # piped: the throttle/inlet sits at the compressor outlet
+                    # and a real pipe carries the charge to the chamber
+                    inlet_pos = compressor_outlet
                 t_["reference_position"] = [float(v) for v in inlet_pos]
-                t_["body_half_extent_m"] = [ch["radius"] * 0.6, ch["radius"] * 0.55, ch["radius"] * 0.6]
+                barrel_pitch = ch["radius"] * 0.85 * 2.2
+                t_["body_half_extent_m"] = [max(ch["radius"] * 0.6, barrels * barrel_pitch / 2.0),
+                                            ch["radius"] * 0.55, ch["radius"] * 0.6]
+                t_["barrels"] = barrels
+                t_["barrel_pitch_m"] = barrel_pitch
+                # a default-plugged vacuum tap at the throttle base (ported
+                # vacuum -- what a distributor advance or PCV line taps)
+                _bung(f"{tid}.vacuum_tap", tid, inlet_pos - plan["up"] * (ch["radius"] * 0.45) + side * (ch["radius"] * 0.6),
+                      side, 0.004, "vacuum-tap", "intake-air")
+                # the real bore/flow axis through this barrel -- metadata
+                # only (not a new node/edge), read by vehicle_mesh.py to
+                # build a real rotating butterfly-plate part live off
+                # this same node instead of adding more graph topology
+                # for what is purely a cosmetic sub-feature of the
+                # throttle body that's already here.
+                t_["flow_axis"] = [float(v) for v in plan["up"]]
+                # bigger than the housing box's own half-extent
+                # (radius*0.6/0.55/0.6 above) on purpose: a plate/lever
+                # sized to match or sit inside the housing is fully
+                # buried in its own opaque box from every angle --
+                # never actually visible regardless of throttle
+                # position. A real external lever does stick out past
+                # the housing to reach its cable/rod anyway.
+                t_["plate_radius_m"] = ch["radius"] * 0.85
                 t_["inlet_kind"] = ("carburetor" if spec.throttle == "carburetor"
                                     else "open-inlet-elbow" if spec.throttle == "none" else "throttle-body")
                 # every inlet needs this edge, including the first
@@ -271,8 +428,14 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
                 c0 = plan["chambers"][0]["centre"]
                 bowl["reference_position"] = [float(v) for v in (c0 + plan["up"] * (bore * 0.55) + np.array([bore * 0.45, 0.0, 0.0]))]
             # one air cleaner over the inlets (spanning them along the bank)
+            # -- or, piped, at the compressor's own inlet: the filter sits
+            # where air actually enters, which is no longer over the chamber
             xs = [ch["centre"][0] for ch in plan["chambers"]]
-            fc = sum(ch["centre"] for ch in plan["chambers"]) / len(plan["chambers"]) + plan["up"] * (bore * 1.3)
+            if compressor_outlet is not None:
+                fc = compressor_outlet + plan["up"] * (bore * 0.9)
+                xs = [float(compressor_outlet[0])]
+            else:
+                fc = sum(ch["centre"] for ch in plan["chambers"]) / len(plan["chambers"]) + plan["up"] * (bore * 1.3)
             span = (max(xs) - min(xs)) / 2.0 + bore * 0.9
             node("powertrain.air_filter", [float(v) for v in fc], "air-filter", filter=spec.air_filter, mass_kg=1.5,
                  body_half_extent_m=[span, bore * 0.22, bore * 0.9] if len(xs) > 1 else None,
@@ -296,11 +459,24 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
                      circuit_identity="intake-air", medium_rate_state="intake-air-flow-and-temperature")
                 prev = wid
             re = runner_edges.get(port_id)
+            if spec.rail == "none" and len(r["points"]) >= 2:
+                # no port injection on this build: every runner still carries a
+                # real, default-plugged injector bung just upstream of the port,
+                # so the same casting can be converted to port injection later
+                # by plumbing it rather than by inventing a new casting
+                p0 = np.array(r["points"][0]); p1 = np.array(r["points"][1])
+                boss_pos = p1 + (p1 - p0) * 0.5
+                boss_dir = _unit(np.cross(_unit(p1 - p0), CRANK_AXIS))
+                if np.linalg.norm(boss_dir) < 1e-6:
+                    boss_dir = plan["up"]
+                _bung(f"{port_id}.injector_bung", port_id, boss_pos + boss_dir * (runner_radius_m * 0.9),
+                      boss_dir, 0.005, "injector-bung", "fuel")
             if plan["individual"]:
                 itb = next(i for i in plan["itbs"] if i["cylinder"] == r["cylinder"] and i["port"] == r["port"])
                 tb_id = f"powertrain.cylinder_{r['cylinder']}.{r['port']}.throttle_body"
                 node(tb_id, [float(v) for v in itb["body"]], "engine-block-component", mass_kg=0.6,
-                     body_half_extent_m=[runner_radius_m * 1.4] * 3, inlet_kind="individual-throttle-body")
+                     body_half_extent_m=[runner_radius_m * 1.4] * 3, inlet_kind="individual-throttle-body",
+                     flow_axis=[float(v) for v in itb["direction"]], plate_radius_m=runner_radius_m * 1.7)
                 node(tb_id + ".stack", [float(v) for v in itb["stack_end"]], "engine-block-port", port_kind="velocity-stack",
                      port_direction=[float(v) for v in itb["direction"]], port_radius_m=runner_radius_m * 1.3)
                 edge(tb_id + ".stack_to_body", tb_id + ".stack", tb_id, "low-pressure-air-line", radius=runner_radius_m * 1.2,

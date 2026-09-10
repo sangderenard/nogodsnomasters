@@ -347,6 +347,27 @@ class IntakeSystem:
     # felt engine-tuning choice.
     runner_length_m: float = 0.30
     runner_diameter_mm: float = 45.0
+    # The intake as declared HARDWARE, three orthogonal real things that
+    # one "barrel count" used to conflate:
+    #   inlet_units      spatially distinct carburetors / throttle bodies.
+    #                    A two- or four-barrel carb is ONE unit (one casting,
+    #                    barrels a few cm apart); dual quads are 2; ITBs are
+    #                    one per port. None = derive in dressing.derive_intake_
+    #                    hardware from the declared throttle_body/architecture.
+    #   plenum_planes    firing-order groups sharing a DIVIDED plenum under one
+    #                    unit (dual-plane = 2), co-located, never spread apart.
+    #                    None = derive (2 for a carbureted 4..8, else 1).
+    #   plenum_placement where the chamber physically sits: "valley" (between
+    #                    the banks of a V/flat), "inboard" (above the head on
+    #                    a straight engine), "piped" (fed by a real pipe from a
+    #                    compressor outlet -- a turbo, or a remote blower that
+    #                    doesn't sit on the block). "auto" derives from banks
+    #                    and forced induction. A supercharger on the block keeps
+    #                    the on-block placement; declare "piped" for one that
+    #                    genuinely plumbs to and from the manifold.
+    inlet_units: int | None = None
+    plenum_planes: int | None = None
+    plenum_placement: str = "auto"   # "auto" | "valley" | "inboard" | "piped"
 
     @property
     def restriction_frac(self) -> float:

@@ -26,7 +26,9 @@ from typing import Any
 
 import numpy as np
 
-from mesh_primitives import tube_mesh, cuboid_mesh, tube_wireframe, cuboid_wireframe, write_obj
+import math
+
+from mesh_primitives import tube_mesh, cuboid_mesh, tube_wireframe, cuboid_wireframe, write_obj, _perpendicular_basis, _normalized3
 
 DEFAULT_TUBE_RADIUS_M = 0.012
 DEFAULT_BODY_HALF_EXTENT_M = 0.035
@@ -89,6 +91,14 @@ def _body_half_extent(node: dict[str, Any]) -> np.ndarray:
     explicit = node.get("body_half_extent_m")
     if explicit is not None:
         return np.array([float(v) for v in explicit])
+    if node["kind"] == "powertrain-mount":
+        # a real bolt-on mount/isolator bracket -- these used to be
+        # skipped as bodiless waypoints; they're real structural
+        # hardware (engine_mounts.py's own mounting policy assigns a
+        # real technique/hardware to exactly these points), so a
+        # small, real, roughly isolator-bracket-sized box, not the
+        # generic tiny placeholder every other unsized accessory gets.
+        return np.array([0.03, 0.02, 0.035])
     mass_kg = float(node.get("mass_kg") or 0.0)
     if mass_kg > 0.0:
         scale = DEFAULT_BODY_HALF_EXTENT_M * (mass_kg ** (1.0 / 3.0)) / (10.0 ** (1.0 / 3.0))
@@ -188,6 +198,74 @@ class SolidPart:
     name: str
 
 
+# Real max butterfly-plate opening -- the SAME real constant engine_
+# cycle_sim.py/throttle_body.py already use for the actual airflow
+# physics (not re-derived independently; this just draws the same
+# real angle their own model already computes).
+BUTTERFLY_MAX_ANGLE_DEG = 78.0
+
+
+def build_throttle_parts(graph: dict[str, Any], throttle_frac: float = 1.0) -> list["SolidPart"]:
+    """A real rotating butterfly plate (plus its own external lever
+    arm, sharing one shaft with it) for every real throttle-body/
+    carburetor-barrel/individual-throttle-body node dressing.py already
+    declares -- driven by throttle_frac alone, completely independent
+    of crank angle, so this is meant to be baked as its OWN small set
+    of frames (keyed by throttle position) and composited alongside
+    whatever crank-angle frame is currently showing, not folded into
+    the crank-angle animation's own per-cylinder frame count.
+
+    Geometry-only: this reads flow_axis/plate_radius_m metadata dressing.
+    py already attaches to the existing throttle-body node (no new graph
+    node/edge -- the plate is a real sub-feature of hardware already
+    there, not a separate part to wire up and risk adding more of the
+    confusing extra edges this was built to clear up, not add to).
+
+    The plate's face normal is `flow_axis` when closed (fully blocking)
+    and rotates toward `flow_axis` itself as throttle_frac -> 1 (nearly
+    parallel to the bore, i.e. nearly open) -- a real butterfly's own
+    actual kinematics, not a stand-in animation."""
+    theta = max(0.0, min(1.0, throttle_frac)) * math.radians(BUTTERFLY_MAX_ANGLE_DEG)
+    parts: list[SolidPart] = []
+    for node in graph["nodes"]:
+        axis_raw = node.get("flow_axis")
+        if axis_raw is None:
+            continue
+        center = np.array(node["reference_position"], dtype=np.float64)
+        axis = _normalized3(np.array(axis_raw, dtype=np.float64))
+        r = float(node.get("plate_radius_m", 0.02))
+        shaft_dir, swept0 = _perpendicular_basis(axis)
+        swept = swept0 * math.cos(theta) + axis * math.sin(theta)
+        thickness_dir = _normalized3(np.cross(shaft_dir, swept))
+        basis = np.array([shaft_dir, swept, thickness_dir])   # rows: local (u, v, w) -> world
+
+        # every barrel of this one casting gets its own plate, side by
+        # side along the crank axis at the declared pitch, all on one
+        # shaft -- a 2- or 4-barrel is one unit with N bores, never N
+        # separate throttle bodies; one external lever serves the shaft
+        n_barrels = max(1, int(node.get("barrels", 1)))
+        pitch = float(node.get("barrel_pitch_m", r * 2.2))
+        local_v, local_n = cuboid_mesh((0.0, 0.0, 0.0), (r * 0.95, r * 0.95, r * 0.12))
+        plate_vs, plate_ns = [], []
+        for bi in range(n_barrels):
+            offset = np.array([(bi - (n_barrels - 1) / 2.0) * pitch, 0.0, 0.0])
+            plate_vs.append(center[None, :] + offset[None, :] + local_v @ basis)
+            plate_ns.append(local_n @ basis)
+        plate_v = np.concatenate(plate_vs)
+        plate_n = np.concatenate(plate_ns)
+
+        lever_start = center + shaft_dir * (r * 1.1)
+        lever_end = lever_start + swept * (r * 1.2)
+        lever_v, lever_n = tube_mesh(lever_start, lever_end, radius=r * 0.08, sides=6)
+
+        vertices = np.concatenate([plate_v, lever_v])
+        normals = np.concatenate([plate_n, lever_n])
+        name = node["identity"].replace(".", "_").replace("/", "_")
+        parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=None,
+                               name=f"node_{name}_throttle_plate_linkage"))
+    return parts
+
+
 def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float = 0.0, covers_off: bool = False) -> list[SolidPart]:
     """Every real line connection in the graph -- fluid lines (fuel,
     intake air, exhaust, coolant, oil, nitrous), torque shafts, cables,
@@ -221,9 +299,9 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         parts.extend(build_parts_from_layout(deserialize_layout(layout_data), crank_angle_deg=crank_angle_deg, covers_off=covers_off))
 
     for node in graph["nodes"]:
-        if node["kind"] == "powertrain-mount" or node["kind"] == "engine-block-port":
-            # a waypoint has no body; a real port is already drawn as a
-            # stub by the cylinder layout above
+        if node["kind"] == "engine-block-port":
+            # a real port is already drawn as a stub by the cylinder
+            # layout above
             continue
         if layout_data and (node["identity"].startswith("powertrain.engine_block_body")
                             or node["identity"] == "powertrain.oil_pan"):
@@ -257,6 +335,28 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         name = node["identity"].replace("/", "_").replace(".", "_")
         parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group, name=f"node_{name}"))
 
+    parts.extend(build_intake_bung_parts(graph))
+    return parts
+
+
+def build_intake_bung_parts(graph: dict[str, Any]) -> list[SolidPart]:
+    """Default-plugged bungs dressing.py declares on the intake hardware
+    (MAP/vacuum taps, IAT bosses, injector bungs) drawn as the SAME short
+    stub every other casting port gets (head_mesh.build_head_parts'
+    oil-port stubs -- same depth, same `port_` naming, so they land in
+    the casting-port material). A plugged bung is drawn a touch shorter
+    than an open, plumbed one: a plug, not a fitting."""
+    parts: list[SolidPart] = []
+    for node in graph["nodes"]:
+        if node.get("kind") != "engine-block-port" or not node.get("bung"):
+            continue
+        pos = np.array(node["reference_position"], dtype=np.float64)
+        d = _normalized3(np.array(node.get("port_direction", [0.0, 1.0, 0.0]), dtype=np.float64))
+        radius = float(node.get("port_radius_m", 0.004))
+        depth = 0.010 if node.get("plugged", True) else 0.018
+        vertices, normals = tube_mesh(pos - d * 0.004, pos + d * depth, radius, sides=10)
+        name = node["identity"].replace("powertrain.", "").replace("/", "_").replace(".", "_")
+        parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=None, name=f"port_{name}"))
     return parts
 
 

@@ -547,9 +547,22 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         x_front, x_rear = sorted((crank_x_min + inset, crank_x_max - inset))
         nodes.remove(engine_left)
         nodes.remove(engine_right)
+        # the production subunit's own mount edges point at the two nodes
+        # just removed -- carry their real attributes (constraint kind,
+        # transfer, radius) onto one edge per new real mount point instead
+        # of leaving two edges dangling at nothing
+        stale = [e for e in edges if e["b"] in ("mount.engine_left", "mount.engine_right")]
+        template = dict(stale[0]) if stale else {"constraint": "six-axis-compliant-mount", "radius": 0.012,
+                                                 "palette": "drivetrain-black",
+                                                 "transfer": "force-and-moment-to-chassis"}
+        for e in stale:
+            edges.remove(e)
+        attrs = {k: v for k, v in template.items() if k not in ("identity", "a", "b", "constraint")}
         for suffix, x in (("front", x_front), ("rear", x_rear)):
-            node(f"mount.engine_{suffix}_left", [x, y, z_left], "powertrain-mount", fixed_to="chassis")
-            node(f"mount.engine_{suffix}_right", [x, y, z_right], "powertrain-mount", fixed_to="chassis")
+            for side, z in (("left", z_left), ("right", z_right)):
+                mid = f"mount.engine_{suffix}_{side}"
+                node(mid, [x, y, z], "powertrain-mount", fixed_to="chassis")
+                edge(f"mount.engine.engine_{suffix}_{side}", "powertrain.engine", mid, template["constraint"], **attrs)
 
     # drivetrain.engine_to_clutch and drivetrain.direct_drive_bypass are
     # both production-authored torque-path edges from "powertrain.engine"
@@ -748,7 +761,30 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     dressing_report = emit_dressing_graph(engine, layout, dressing_spec, nodes, edges, node, edge, intake_radius_m)
     # Manifolds sit relative to the REAL heads now, not to the block-
     # face guess: the plenum above the intake side, the exhaust
-    # manifold beside the exhaust side just under head height
+    # manifold beside the exhaust side just under head height.
+    #
+    # Two real, genuinely different intake configurations both live in
+    # this graph on purpose, not by accident: dressing.py's own N-to-M
+    # distributor (multiple real inlet chambers -- a dual-quad, individual
+    # throttle bodies, ...) AND this single, compact ON-BLOCK plenum
+    # positioned relative to the real heads (the layout a compact
+    # supercharger's own low-profile manifold actually needs). Both are
+    # real and worth keeping -- the bug was letting them fight over the
+    # SAME node identity ("powertrain.intake_plenum") when dressing had
+    # already built more than one real chamber: this block would drag
+    # chamber 0's plenum to a THIRD position near the engine's own
+    # geometric center, while its own throttle_body (untouched here)
+    # stayed at dressing's real chamber-0 position and the per-cylinder
+    # runners (which follow "powertrain.intake_plenum" by identity)
+    # followed the plenum to the new, wrong spot -- three real pieces
+    # of the same barrel disagreeing about where it is. Resolved by an
+    # OWNERSHIP rule, not a chamber-count guess: dressing.py now places
+    # every intake configuration it builds -- valley, inboard, piped, any
+    # unit/plane count -- and marks the chamber it placed (`plenum_style`).
+    # This legacy repositioner only ever applies to a plenum dressing did
+    # NOT place (a graph with no dressable intake ports at all), so the
+    # two can never fight over the same node again.
+    multi_chamber_intake = any(n["identity"] == "powertrain.intake_plenum" and "plenum_style" in n for n in nodes)
     piston_geoms = [geom for geom, _ in layout if geom.kind in ("spark-piston", "compression-piston")]
     if piston_geoms:
         import numpy as _np
@@ -756,7 +792,7 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         bore_ref = max(geom.bore_m for geom in piston_geoms)
         x_mid = sum(float(geom.base[0]) for geom in piston_geoms) / len(piston_geoms)
         for n in nodes:
-            if n["identity"] == "powertrain.intake_plenum":
+            if n["identity"] == "powertrain.intake_plenum" and not multi_chamber_intake:
                 n["reference_position"] = [x_mid - 0.05, head_top + bore_ref * 0.9, -bore_ref * 1.1]
             elif n["identity"] == "powertrain.exhaust_manifold":
                 n["reference_position"] = [x_mid, head_top - bore_ref * 0.15, bore_ref * 1.25]
@@ -765,7 +801,7 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     length_scale = intake.runner_length_m / max(IntakeSystem().runner_length_m, 1e-6)
     pipe_scale = exhaust.total_length_m / max(ExhaustSystem().total_length_m, 1e-6)
     for n in nodes:
-        if n["identity"] == "powertrain.intake_plenum":
+        if n["identity"] == "powertrain.intake_plenum" and not multi_chamber_intake:
             n["reference_position"] = [
                 engine_origin[i] + (n["reference_position"][i] - engine_origin[i]) * length_scale
                 for i in range(3)

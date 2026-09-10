@@ -19,7 +19,7 @@ import os
 
 import numpy as np
 
-from vehicle_mesh import build_drivetrain_solid_parts
+from vehicle_mesh import build_drivetrain_solid_parts, build_throttle_parts
 
 
 @dataclass(frozen=True)
@@ -66,7 +66,16 @@ MATERIAL_RULES = [
     (("_injector",), Material("injector", "injector bosses", _rgb("#3ccf6a"), 1.0, 0.4, 0.25, 0.4, 30.0)),
     (("_admission", "_drain_cock", "_lubricator", "_rod_gland"), Material("expander_port", "expander passages / cocks", _rgb("#b070ff"), 0.95, 0.5, 0.25, 0.3, 20.0)),
     (("edge_powertrain_cylinder", "edge_powertrain_exhaust", "node_powertrain_exhaust_collector"), Material("exhaust", "exhaust primaries / collector", _rgb("#e06040"), 0.6, 0.5, 0.25, 0.35, 24.0)),
-    (("runner", "node_powertrain_intake_plenum", "node_powertrain_throttle_body", "node_powertrain_air_filter", "stack", "throttle_body"), Material("intake", "intake runners / plenum / throttle / cleaner", _rgb("#8fb0d8"), 0.5, 0.5, 0.25, 0.3, 24.0)),
+    # Air filter, throttle body, and plenum/runners each get their own
+    # distinct color -- these used to share one "intake" material, which
+    # made the real, genuinely different boxes in a real distributor
+    # chain (air_filter -> throttle_body(s) -> plenum chamber(s) ->
+    # runners -> ports) hard to tell apart by eye even though the real
+    # graph topology connecting them was always correct.
+    (("node_powertrain_air_filter",), Material("air_filter", "air filter / cleaner", _rgb("#c9b380"), 0.7, 0.6, 0.25, 0.3, 20.0)),
+    (("throttle_plate", "throttle_linkage"), Material("throttle_plate", "throttle plate + linkage", _rgb("#e8e8ec"), 1.0, 0.3, 0.2, 0.6, 45.0, 0.6)),
+    (("node_powertrain_throttle_body", "throttle_body"), Material("throttle_body", "throttle body / barrel(s)", _rgb("#d4a017"), 0.85, 0.5, 0.25, 0.35, 26.0)),
+    (("runner", "node_powertrain_intake_plenum", "stack"), Material("intake", "intake runners / plenum", _rgb("#8fb0d8"), 0.5, 0.5, 0.25, 0.3, 24.0)),
     (("fuel_rail", "rail_feed", "fuel_filter", "edge_fuel"), Material("fuel", "fuel rail + filter", _rgb("#3ccf6a"), 0.75, 0.5, 0.25, 0.3, 24.0)),
     (("lead", "distributor", "ignition_coil", "coil_pack", "leading_coil", "trailing_coil", "magneto", "glow_plug_bus"), Material("ignition", "ignition wiring", _rgb("#202020"), 0.9, 0.7, 0.3, 0.15, 12.0)),
     (("oil_filter", "oil_reserve", "scavenge", "oil_bath", "oil_pump", "edge_powertrain_oil", "edge_powertrain_pan", "edge_powertrain_trough", "splash"), Material("lube", "lubrication", _rgb("#8a6a30"), 0.75, 0.6, 0.25, 0.25, 16.0)),
@@ -75,6 +84,7 @@ MATERIAL_RULES = [
     (("valve_cover", "valley_cover", "case_top_cover"), Material("cover", "covers", _rgb("#606a78"), 0.2, 0.55, 0.25, 0.35, 20.0)),
     (("_bore", "_water_jacket", "_fin_", "_head", "_crank_cover", "_hopper", "_rotor_housing", "_side_plate", "_valve_chest"), Material("cylinder", "cylinders / jackets / fins", _rgb("#57626e"), 0.22, 0.65, 0.25, 0.25, 16.0)),
     (("crankcase", "sump", "front_cover", "rear_main", "bedplate", "main_pedestal", "frame_plate", "guide_bar", "rear_accessory"), Material("case", "crankcase / sump / frame", _rgb("#34363a"), 0.2, 0.7, 0.25, 0.2, 14.0)),
+    (("node_mount_",), Material("mount", "engine mounts / isolators", _rgb("#8a3324"), 0.3, 0.6, 0.3, 0.3, 18.0)),
 ]
 DEFAULT_MATERIAL = Material("other", "other graph parts", _rgb("#b0b0b8"), 0.35, 0.7, 0.25, 0.2, 14.0)
 MATERIALS: list[Material] = [m for _, m in MATERIAL_RULES] + [DEFAULT_MATERIAL]
@@ -104,7 +114,8 @@ def wanted_in_view(name: str) -> bool:
     if name.startswith("node_"):
         return any(k in name for k in ("intake_plenum", "throttle_body", "air_filter", "fuel_rail", "distributor", "ignition_coil",
                                        "coil_pack", "leading_coil", "trailing_coil", "magneto", "oil_filter", "oil_reserve",
-                                       "scavenge", "oil_bath", "glow_plug_bus", "exhaust_collector", "fuel_filter", "oil_pump"))
+                                       "scavenge", "oil_bath", "glow_plug_bus", "exhaust_collector", "fuel_filter", "oil_pump",
+                                       "mount_"))
     if name.startswith("edge_"):
         return any(k in name for k in ("cylinder", "exhaust", "runner", "lead", "rail_feed", "oil", "pan", "trough", "scavenge",
                                        "air_filter", "stack", "coil", "throttle", "splash"))
@@ -168,6 +179,49 @@ def build_moving_mesh(graph: dict, crank_angle_deg: float, covers_off: bool = Fa
     parts = build_parts_from_layout(deserialize_layout(layout_data), crank_angle_deg=crank_angle_deg,
                                     covers_off=covers_off, moving_only=True, spring_style=spring_style)
     return _from_parts([p for p in parts if is_moving(p.name)], moving=True)
+
+
+# ---------------------------------------------------------------------
+# Throttle-plate animation: a SEPARATE small baked set, keyed by
+# throttle position (0..1) instead of crank angle -- composited
+# alongside whatever crank-angle frame is showing, not folded into it
+# (a full crank-angle x throttle-position cross product would be N
+# times the frame count for geometry that's a handful of triangles;
+# indexing two small independent sets and drawing both is the same
+# real "bake once, index during playback" contract as EngineAnimation,
+# just on its own real driving parameter).
+# ---------------------------------------------------------------------
+
+def build_throttle_mesh(graph: dict, throttle_frac: float = 1.0) -> EngineMesh:
+    parts = build_throttle_parts(graph, throttle_frac=throttle_frac)
+    return _from_parts(parts, moving=True)
+
+
+@dataclass
+class ThrottleAnimation:
+    fracs: np.ndarray
+    frames: list                    # EngineMesh per fraction, baked upfront (cheap: a handful of triangles each)
+
+    @property
+    def n_frames(self) -> int:
+        return len(self.frames)
+
+    def frame_index(self, throttle_frac: float) -> int:
+        f = max(0.0, min(1.0, float(throttle_frac)))
+        return int(np.argmin(np.abs(self.fracs - f)))
+
+    def frame_for(self, throttle_frac: float):
+        return self.frames[self.frame_index(throttle_frac)]
+
+
+def build_throttle_animation(graph: dict, divisions: int = 9) -> ThrottleAnimation:
+    """Baked once, upfront -- unlike EngineAnimation's incremental
+    bake_next(), there's no per-frame cost worth spreading across
+    ticks here (this is a plate and a lever arm, not a whole engine's
+    moving parts)."""
+    fracs = np.linspace(0.0, 1.0, max(2, divisions))
+    frames = [build_throttle_mesh(graph, throttle_frac=float(f)) for f in fracs]
+    return ThrottleAnimation(fracs=fracs, frames=frames)
 
 
 def export_obj_mtl(static: EngineMesh, moving: EngineMesh, path_obj: str) -> tuple[str, str]:

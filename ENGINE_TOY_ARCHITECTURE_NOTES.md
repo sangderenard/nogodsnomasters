@@ -489,6 +489,76 @@ its keep exactly as designed for "genuinely strange" cases, not a
 residual bug. Full pipeline (EnginePackage/correlate_mounts/EngineCrate/
 mesh build/live sim) re-verified clean end to end after the change.
 
+## Fixed: the intake as declared hardware — units, barrels, planes, placement (`engines.IntakeSystem`, `dressing.py`)
+
+Two symptoms the user saw in the live view — a box wired to only one
+of two throttle bodies, and blue runners converging on a chamber that
+wasn't under its own throttle body — traced to ONE conflation: the
+planner treated *barrel count* as *number of spatially separate inlet
+units*. A two-barrel carburetor is one casting with two bores a few cm
+apart over one divided plenum; the code built two throttle bodies 35 cm
+apart at each firing group's centroid. The same conflation made a
+"unified four-barrel" impossible to express. A second, independent
+system (the legacy "manifolds sit relative to the real heads" pass in
+`drivetrain_graph.py`) then rewrote only `powertrain.intake_plenum` —
+never `_2` — dragging one chamber to the engine's center while its own
+throttle body stayed put.
+
+**What was already right:** `distribute_ports` groups by crank throw
+angle; for the Jeep six that yields barrels alternating 0,1,0,1,0,1
+across the 1-5-3-6-2-4 order — the genuine dual-plane split, kept.
+
+**The model now, all declared on `IntakeSystem` with real defaults
+derived once (catalogue can override):**
+- `inlet_units` — spatially distinct carbs/throttle bodies (single carb
+  1, dual quads 2, ITBs one per port). Barrels per unit come from the
+  existing `ThrottleBodyAssembly`; an 8-barrel declaration is two
+  4-barrel units, never one casting with eight bores.
+- `plenum_planes` — firing-order halves of a DIVIDED plenum under one
+  unit (dual-plane = 2), co-located; each runner is tagged with its
+  plane and joins its own half of the same chamber.
+- `plenum_placement` — `valley` (between the banks of a V/flat only),
+  `inboard` (above the head on a straight engine), `piped` (fed by a
+  real pipe from a compressor outlet — a turbo, or a blower that
+  genuinely plumbs to and from the manifold rather than sitting on the
+  block). `auto` derives from bank count and forced induction.
+
+`derive_intake_hardware` resolves these to an `IntakeHardware` record;
+`plan_intake` builds one chamber + one throttle body per UNIT and draws
+that unit's barrels side by side on it (`build_throttle_parts`). The
+legacy repositioner is now gated by an OWNERSHIP rule — it only touches
+a plenum dressing did not place (`plenum_style` marker) — replacing an
+earlier, too-blunt chamber-count guess. Verified: Jeep six = one
+centered 2-barrel, dual-plane, inboard; `radical-cam-bigblock-7400` =
+two 4-barrel units in the valley (double quad); `monster-632-twin-turbo`
+= single throttle at the compressor point, piped to the chamber.
+
+**Default-plugged bungs** (same `engine-block-port` vocabulary as
+`assembly_ports.emit_ports_graph`, drawn as the same `port_` stubs as
+head oil ports): a MAP/vacuum tap and an IAT boss on every chamber, a
+ported-vacuum tap at every throttle base, and an injector bung on every
+runner of an engine with no port injection — so injection, sensors, or
+vacuum lines attach later by plumbing a real declared point, not by
+inventing a casting.
+
+Also in this batch: `mount.engine_*` nodes and their `six-axis-
+compliant-mount` edges now render (the `powertrain-mount` kind was
+skipped outright; the edges were left dangling when the nodes were
+rederived — caught by a dangling-edge regression that now runs on all
+26 engines, zero failures); air filter / throttle body / plenum each
+have their own material; a separate throttle-plate animation
+(`build_throttle_animation`, keyed by throttle position, composited
+alongside the crank-angle frames — the live plate angle comes from
+`EngineCycleState.throttle_plate_angle_deg`); the mesh reduction stage
+is explicit and optional (`EngineGLView.detail`/`spring_style`,
+`main_pygame.MESH_DETAIL`); viewport moved up and right.
+
+**Flagged, not decided:** `supercharged-drag-v8-8200` (ITBs on a blown
+engine) still carries the production subunit's generic `intake_plenum`/
+`throttle_body` nodes untouched, because the ITB path skips the chamber
+loop. A real blown drag engine runs a hat/plenum over the blower; the
+right representation there is a hardware decision, not a guess.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/

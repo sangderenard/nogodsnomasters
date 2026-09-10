@@ -60,7 +60,7 @@ import pygame
 import sounddevice as sd
 
 from engines import CATALOGUE
-from engine_cycle_sim import EngineCycleSim
+from engine_cycle_sim import EngineCycleSim, BUTTERFLY_MAX_ANGLE_DEG
 from engine_sound import SAMPLE_RATE, BLOCK_SIZE
 from audio_stream import LiveAudioState, AudioStreamer
 from drivetrain_graph import build_drivetrain_graph, engine_mesh_view_graph
@@ -85,9 +85,15 @@ BG_COLOR = (18, 18, 22)
 TEXT_COLOR = (210, 215, 225)
 ACCENT_COLOR = (255, 170, 60)
 LOG_COLUMN_X = 700
-MESH_COLUMN_X = 1160
-MESH_Y0 = 40
-MESH_VIEWPORT_SIZE = 560
+MESH_VIEWPORT_SIZE = 620
+MESH_Y0 = 16                                          # was 40 -- closer to the top
+MESH_COLUMN_X = WINDOW_SIZE[0] - MESH_VIEWPORT_SIZE - 20   # flush against the right edge, computed so it stays that way if WINDOW_SIZE ever changes
+# The mesh reduction stage is optional (engine_gl_view.EngineGLView's own
+# detail/spring_style): 1.0 + "helix" is the full high-triangle build the
+# exporter uses; the live view defaults to full tessellation with cheap
+# cylinder springs. Lower MESH_DETAIL if a machine needs the frame rate.
+MESH_DETAIL = 1.0
+MESH_SPRING_STYLE = "cylinder"
 LOG_KIND_COLOR = {
     "knock": (255, 90, 90), "misfire": (255, 170, 60), "backfire": (255, 90, 90),
     "float": (255, 170, 60), "limiter": (140, 180, 255), "wastegate": (140, 180, 255),
@@ -145,7 +151,8 @@ def main() -> None:
     # is a no-op once every angle is uploaded, so switching engines
     # never freezes the window (it just shows fewer baked angles for a
     # few frames while the rest finish uploading).
-    view = EngineGLView(width=MESH_VIEWPORT_SIZE, height=MESH_VIEWPORT_SIZE, covers_off=True, animation_divisions=16)
+    view = EngineGLView(width=MESH_VIEWPORT_SIZE, height=MESH_VIEWPORT_SIZE, covers_off=True, animation_divisions=16,
+                        detail=MESH_DETAIL, spring_style=MESH_SPRING_STYLE)
     view.set_graph(engine_mesh_view_graph(build_drivetrain_graph(sim.engine)))
     mesh_viz_engine = sim.engine
 
@@ -340,7 +347,14 @@ def main() -> None:
             # already resident on the GPU (uploaded in set_graph/
             # bake_next above, never here) -- composited straight from
             # its own FBO texture, no CPU pixel round trip at all
-            mesh_tex = view.render_gpu(crank_angle_deg=sim.state.crank_angle_deg, spin=True, dt=dt)
+            # the real live butterfly-plate angle (engine_cycle_sim's
+            # own throttle_plate_angle_deg, already computed every
+            # tick for the actual airflow physics) drives a SEPARATE
+            # baked frame set composited alongside the crank-angle one
+            # -- see engine_gl_view.EngineGLView._draw's own comment.
+            throttle_frac = sim.state.throttle_plate_angle_deg / BUTTERFLY_MAX_ANGLE_DEG
+            mesh_tex = view.render_gpu(crank_angle_deg=sim.state.crank_angle_deg, spin=True, dt=dt,
+                                       throttle_frac=throttle_frac)
             text.compositor.draw_texture(mesh_tex, MESH_COLUMN_X, MESH_Y0, MESH_VIEWPORT_SIZE, MESH_VIEWPORT_SIZE,
                                          *WINDOW_SIZE, flip_v=True)
 
