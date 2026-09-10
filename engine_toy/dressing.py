@@ -259,9 +259,14 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
                 t_["body_half_extent_m"] = [ch["radius"] * 0.6, ch["radius"] * 0.55, ch["radius"] * 0.6]
                 t_["inlet_kind"] = ("carburetor" if spec.throttle == "carburetor"
                                     else "open-inlet-elbow" if spec.throttle == "none" else "throttle-body")
-                if gi > 0:
-                    edge(f"{tid}_to_plenum", tid, cid, "low-pressure-air-line", radius=ch["radius"] * 0.7,
-                         circuit_identity="intake-air", medium_rate_state="intake-air-flow-and-temperature")
+                # every inlet needs this edge, including the first
+                # (gi == 0): without it, that chamber's throttle body/
+                # carburetor/inlet sits right on top of its own runner
+                # union with no fluid-circuit connection down into it at
+                # all -- the one visibly "floating," unwired inlet a
+                # multi-chamber engine would otherwise always show.
+                edge(f"{tid}_to_plenum", tid, cid, "low-pressure-air-line", radius=ch["radius"] * 0.7,
+                     circuit_identity="intake-air", medium_rate_state="intake-air-flow-and-temperature")
             if bowl is not None and spec.throttle == "carburetor":
                 c0 = plan["chambers"][0]["centre"]
                 bowl["reference_position"] = [float(v) for v in (c0 + plan["up"] * (bore * 0.55) + np.array([bore * 0.45, 0.0, 0.0]))]
@@ -314,6 +319,17 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
         if plan["individual"] and tb is not None:
             nodes.remove(tb)
             edges[:] = [e for e in edges if tb["identity"] not in (e["a"], e["b"])]
+        # Feed the runner's own real, procedurally-routed path length back
+        # into the Helmholtz-resonance model (engines.IntakeSystem.
+        # tuned_frequency_hz/resonance_gain) instead of leaving it locked
+        # to whatever static catalog default the engine happened to
+        # declare: this IS the neck length the graph actually built (bore
+        # spacing, chamber routing and bends all folded in), the one real
+        # number the resonance solve needs and previously never got.
+        real_lengths = [float(sum(np.linalg.norm(np.asarray(b) - np.asarray(a))
+                                   for a, b in zip(r["points"], r["points"][1:]))) for r in plan["runners"]]
+        if real_lengths and engine is not None and hasattr(engine, "intake_system"):
+            engine.intake_system.runner_length_m = sum(real_lengths) / len(real_lengths)
         report["intake"] = f"{len(plan['runners'])}-to-{plan['n_inlets']} ({plan['label']}), filter {spec.air_filter}"
 
     # ---- fuel rail ----

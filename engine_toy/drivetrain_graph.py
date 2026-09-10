@@ -572,13 +572,38 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     from cylinder_ports import cylinder_port_layout, serialize_layout, PortSpec
     existing_ports = {n["identity"]: n for n in nodes if n["kind"] == "engine-block-port"
                       or n["identity"].endswith((".intake_port", ".exhaust_port"))}
+    # Renames are collected into one map and applied to every edge in a
+    # single pass AFTER the whole layout is walked (below), rather than
+    # rewriting matching edges inline as each port is renamed: the
+    # legacy (0-based) and real (1-based) identity ranges overlap for
+    # every cylinder but the last, so an inline rewrite of "any edge
+    # currently named cylinder_K" would also catch an edge THIS SAME
+    # loop had already retargeted to cylinder_K one or two iterations
+    # earlier, cascading it forward onto the wrong, later cylinder.
+    identity_renames: dict[str, str] = {}
     layout = []
     for geom, ports in cylinder_port_layout(engine):
         aligned = []
         for port in ports:
             ident = f"powertrain.cylinder_{geom.number}.{port.name}"
-            authored = existing_ports.get(ident)
+            # _vehicle_powertrain_graph's own per-cylinder intake/exhaust
+            # ports (above) are numbered 0-based straight off the same
+            # cylinder_sites() tuple this toy's own geom.number (1-based)
+            # is numbered from, so the production node THIS cylinder
+            # actually needs sits at geom.number - 1, not geom.number.
+            # Looking it up under the 1-based identity always missed --
+            # every engine kept an orphaned, un-repointed production
+            # "cylinder_0" (a phantom extra cylinder wired straight from
+            # plenum/manifold with none of this layout's real geometry)
+            # while its genuinely-first real cylinder got a brand new
+            # node instead of reusing (and inheriting the flow-capacity-
+            # carrying edges of) the one already there for it.
+            legacy_ident = f"powertrain.cylinder_{geom.number - 1}.{port.name}"
+            authored = existing_ports.get(legacy_ident)
             if authored is not None:
+                if legacy_ident != ident:
+                    identity_renames[legacy_ident] = ident
+                    authored["identity"] = ident
                 # the authored valve-port node moves onto the real head
                 # position the layout derives from bore/stroke/rod (the
                 # runner and primary still start from it -- same node,
@@ -595,6 +620,12 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
                      cylinder=geom.number)
             aligned.append(port)
         layout.append((geom, aligned))
+    if identity_renames:
+        for e in edges:
+            if e["a"] in identity_renames:
+                e["a"] = identity_renames[e["a"]]
+            if e["b"] in identity_renames:
+                e["b"] = identity_renames[e["b"]]
     cylinder_layout = serialize_layout(layout)
     # Every casting's ports (assembly_ports.py): each head's FILL on
     # top plus its deck-face oil feed/return and coolant holes, the
@@ -824,7 +855,16 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
              mass_kg=2.0 + tank_capacity_kg * 0.05, capacity_kg=tank_capacity_kg)
         node("fuel.pump", pump_pos,
              "electro-mechanical-pump" if fd.pump_kind == "electric" else "mechanical-diaphragm-pump")
-        node(rail_identity, rail_pos, "fuel-rail" if rail_identity.endswith("fuel_rail") else "float-bowl")
+        # dressing.emit_dressing_graph (already run, above) creates this
+        # exact rail/bowl identity itself whenever it finds real
+        # injector/float-bowl bosses to hang it off of -- creating it
+        # again here unconditionally, as this used to, left two nodes
+        # sharing one identity (the same "which one does a lookup by
+        # identity keep" ambiguity the throttle-body duplicate above
+        # had), instead of just feeding this real pump/tank plumbing
+        # into the one dressing already placed and sized.
+        if not any(n["identity"] == rail_identity for n in nodes):
+            node(rail_identity, rail_pos, "fuel-rail" if rail_identity.endswith("fuel_rail") else "float-bowl")
         edge("fuel.tank_to_pump", "fuel.tank", "fuel.pump", "fuel-supply-line",
              radius=max(0.002, fd.line_diameter_mm / 2000.0), circuit_identity="fuel",
              medium_rate_state="fuel-flow-and-pressure")
@@ -880,7 +920,21 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # animate the plate; this pass only places the housing geometry.
     if engine.kind == "combustion" and engine.architecture.cylinders:
         plenum_node = next((n for n in nodes if n["identity"] == "powertrain.intake_plenum"), None)
-        if plenum_node is not None:
+        # dressing.emit_dressing_graph (above) already builds a real
+        # throttle body/carburetor/inlet-elbow under this exact identity
+        # whenever the cylinder layout has intake ports at all -- this
+        # stand-in is only for the layouts that reach here without one
+        # (no discrete intake-valve ports for dressing to hang a
+        # throttle body off of, e.g. two-stroke transfer/scavenge
+        # ports). Creating a second node under the SAME identity
+        # unconditionally, as this used to, didn't replace dressing's
+        # real one: both stayed in the graph, so every edge naming
+        # "powertrain.throttle_body" (dressing's own air-filter feed
+        # included) resolved to whichever of the two a given consumer's
+        # identity lookup happened to keep -- usually this one, dropped
+        # down near the crank rather than up at the real inlet -- while
+        # dressing's correctly-placed one was left with no edges at all.
+        if plenum_node is not None and not any(n["identity"] == "powertrain.throttle_body" for n in nodes):
             plenum_pos = plenum_node["reference_position"]
             throttle_body_pos = [
                 engine_origin[i] + (plenum_pos[i] - engine_origin[i]) * 0.4 for i in range(3)
