@@ -509,6 +509,48 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         for n in driveline_nodes.values():
             n["reference_position"][0] += driveline_shift_x
 
+    # mount.engine_left/right as the production subunit declares them
+    # sit at ONE real axial station (its own engine_position[0]) -- a
+    # real reference vehicle's own reasonable choice, but never
+    # rederived for whatever real length THIS engine's own block
+    # actually turns out to be. A 2-point mount at a single station can
+    # never be a real, stable support regardless (two points are a
+    # line, not a polygon -- see engine_mounts.check_stability's own
+    # reasoning), and for anything longer than one cylinder the block's
+    # own real mass genuinely extends fore/aft of that one station, so
+    # the assembly's real center of gravity routinely sits outside it.
+    #
+    # Rederived here as a real 4-point set spanning the crank's own
+    # real front/rear extent instead -- crank_shaft.front/.rear (the
+    # timing-cover end vs the flywheel end) are already this engine's
+    # own INTRINSIC axial references, independent of how a vehicle
+    # later orients the whole crate (a transverse install just rotates
+    # this same real geometry about the vertical axis before bolting
+    # it in; the engine's own casting attachment points don't change).
+    # Nothing external currently dictates a fixed mount spacing this
+    # has to match (no real supplied cage exists yet -- see this
+    # module's own docstring / ENGINE_TOY_ARCHITECTURE_NOTES.md's "no
+    # real cage source" note), so there's no reason to keep the
+    # production subunit's own reference-vehicle spacing over a real
+    # one derived from THIS engine's own geometry.
+    engine_left = next((n for n in nodes if n["identity"] == "mount.engine_left"), None)
+    engine_right = next((n for n in nodes if n["identity"] == "mount.engine_right"), None)
+    if engine_left is not None and engine_right is not None:
+        y = engine_left["reference_position"][1]
+        z_left = engine_left["reference_position"][2]
+        z_right = engine_right["reference_position"][2]
+        # real inset so the mounts land ON the casting, not right at
+        # its own edge; sorted so a degenerate zero-length block
+        # (single cylinder) still produces two distinct, correctly
+        # ordered real stations rather than a reversed pair.
+        inset = max(0.02, (crank_x_max - crank_x_min) * 0.08)
+        x_front, x_rear = sorted((crank_x_min + inset, crank_x_max - inset))
+        nodes.remove(engine_left)
+        nodes.remove(engine_right)
+        for suffix, x in (("front", x_front), ("rear", x_rear)):
+            node(f"mount.engine_{suffix}_left", [x, y, z_left], "powertrain-mount", fixed_to="chassis")
+            node(f"mount.engine_{suffix}_right", [x, y, z_right], "powertrain-mount", fixed_to="chassis")
+
     # drivetrain.engine_to_clutch and drivetrain.direct_drive_bypass are
     # both production-authored torque-path edges from "powertrain.engine"
     # directly (the crank's own CENTER reference, x=0) -- meaningless for

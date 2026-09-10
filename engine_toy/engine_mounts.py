@@ -21,8 +21,9 @@ airframe engineer would choose by context, not by picking the
 
 The real automated part: once an install context is declared,
 `assign_mounting` resolves EVERY real mount point this engine's own
-graph already declares (mount.engine_left/right, and -- only when the
-transmission is actually being baked into this same crate -- mount.
+graph already declares (mount.engine_front/rear_left/right, and --
+only when the transmission is actually being baked into this same
+crate -- mount.
 transmission_left/right and mount.transfer_case_left/right) to a real
 technique and hardware grade, using block_dynamics.py's own modal
 result to decide which points are riding close to a resonance
@@ -447,7 +448,7 @@ def assign_mounting(engine, install_context: str = "automotive", include_transmi
     transfer_case_* are assigned at all -- most crate-engine installs
     don't carry a transmission (see engine_package.py's own supplied-
     elsewhere default), so by default only the engine's own primary
-    mounts (mount.engine_left/right) are returned. Passing True (a
+    mounts (mount.engine_front/rear_left/right) are returned. Passing True (a
     player choosing to bake more into one crate) also assigns the
     driveline's own real mount points, correlated against block_
     dynamics's own modal candidate for the bellhousing/transmission

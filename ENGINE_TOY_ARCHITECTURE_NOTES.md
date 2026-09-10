@@ -451,6 +451,44 @@ all 26 catalogue engines (build + step + read mount_loads back): the
 summed mount forces match the assembly's own real weight to the
 reported precision every time, zero failures.
 
+## Fixed: mount.engine_left/right rederived as a real 4-point set, root-causing the subframe-every-time finding
+
+The prior section's own disclosed finding -- every catalogue engine
+fell back to the subframe -- was traced to its real, single root
+cause and fixed rather than left standing: `mount.engine_left`/`mount.
+engine_right` (production subunit's own declared geometry) sit at ONE
+real axial station, so 2 points there can never form a real support
+polygon at all (a line, not a polygon -- `check_stability`'s own
+reasoning), and for anything longer than one cylinder the block/head
+mass genuinely extends fore/aft of that single station regardless.
+
+Nothing external currently dictates the spacing these have to match
+(no real supplied cage exists yet), so `drivetrain_graph.py` now
+rederives them as a real 4-point set spanning the crank's own real
+front/rear extent: `mount.engine_front_left/right` and `mount.engine_
+rear_left/right`, at real insets from `crank_shaft.front`/`.rear` (the
+timing-cover end vs the flywheel end -- already this engine's own
+INTRINSIC axial references, independent of how a vehicle later
+orients the whole crate; a transverse install just rotates this same
+real geometry about the vertical axis before bolting it in, it doesn't
+change the engine's own casting attachment points). This stays
+correctly frame-orientation-neutral: everything is derived and
+checked in the engine's own local axes, never a specific vehicle bay
+width or orientation assumption.
+
+Verified across all 26 catalogue engines: 22 now pass the universal
+stability gate DIRECTLY with these 4 real points, no subframe needed
+(up from 0 of 26 before this fix). The remaining 4 (`honda-style-
+commuter-i4-1500`, `aircooled-flat-four-1584`, `servo-direct-drive-
+400`, `25cc-two-stroke-trimmer`) still fall back to the subframe for a
+real, DIFFERENT, and correctly-caught reason: their own real center of
+gravity has a lateral (Z) offset (an off-center accessory/battery
+mass) slightly beyond the production subunit's own declared lateral
+mount spread (`half_width * 0.58`) -- the subframe fallback earning
+its keep exactly as designed for "genuinely strange" cases, not a
+residual bug. Full pipeline (EnginePackage/correlate_mounts/EngineCrate/
+mesh build/live sim) re-verified clean end to end after the change.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/
