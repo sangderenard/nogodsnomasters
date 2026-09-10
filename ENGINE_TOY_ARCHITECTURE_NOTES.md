@@ -218,13 +218,48 @@ system's own equations go through, so it should benefit from whatever
 comes out the other side of the current 3-day dt-system compiler
 effort, rather than needing separate tooling built for it.
 
+## Implemented: `engine_toy/engine_package.py`
+
+The first real OOP scaffolding for the crate-engine model above.
+Verified against all 23 catalogue engines with no failures. Built
+entirely off the same `build_drivetrain_graph` output the toy's own
+simulation already uses — no new node/edge vocabulary invented.
+
+- `PartSourcing` (`BUILT_IN` / `SUPPLIED_ELSEWHERE`) plus `part_sourcing
+  (node_identity)`, driven by `_SOURCING_OVERRIDES` — currently only
+  `fuel.tank`/`fuel.pump` are classified `SUPPLIED_ELSEWHERE`, the one
+  settled real case. Everything else defaults `BUILT_IN` until a real
+  case is worked through; the classification rule for the rest is
+  still open, per the section above.
+- `Prism` — the crate's real bounding volume, spanning only `BUILT_IN`
+  node positions (a supplied-elsewhere part doesn't count toward the
+  crate's own footprint, by definition).
+- `Connector` — a real graph edge crossing the built-in/supplied
+  boundary (found automatically, not hand-declared per engine).
+  Verified: piston and turbine engines (both have a real fuel tank)
+  correctly produce exactly one connector, `fuel.pump_to_rail`; the
+  Otto-Langen (coal-gas utility main, no tank) and the EV (no fuel
+  system at all) correctly produce zero, honestly.
+- `EnginePackage.build(engine)` — assembles the above into one real
+  package per engine.
+- `EnginePackage.correlate_mounts(cage_nodes, tolerance_m=0.05)` — the
+  mount-to-cage-node correlation from the bar-cage section above (not
+  a bounding-volume containment test). Verified two ways: an empty
+  cage honestly reports every mount unmatched (no fake positives); a
+  synthetic cage placed exactly at `engine_geometry.mount_points()`'s
+  real `front_mount`/`rear_mount` positions correctly matches those two
+  at zero distance while correctly leaving `oil_pan`/`exhaust_manifold`/
+  `valve_cover` (real accessory reference positions, not structural
+  mounts) unmatched, since they're genuinely too far from the cage.
+
 ## Practical next step (not yet started)
 
-Look at the exact real shape `external_hub_torque_{wheel}` and its
-neighbors expect — units, whether it's a per-tick value or a declared
-curve, timing — before extending `engine_baker.py` to produce a torque
-package aimed at that same contract. Get the target contract right
-before building toward it.
+The classification rule for everything besides the fuel tank/pump is
+still open — coolant, starter battery, exhaust, pneumatic lines, and
+so on each need a real answer, not a guess, before `_SOURCING_OVERRIDES`
+grows. The mount-correlation tool also has no real cage source yet
+(the game doesn't supply one today) — it's verified correct against a
+synthetic cage, not yet wired to anything real.
 
 ## Standing backlog (for continuity)
 
