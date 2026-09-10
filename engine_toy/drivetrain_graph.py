@@ -287,6 +287,16 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     _vehicle_powertrain_graph(
         node, edge, nodes,
         engine_position=[0.0, 0.0, 0.0],
+        # left/right structural mounts (mount.engine_left/right, mount.
+        # transmission_left/right, mount.transfer_case_left/right) are
+        # spread laterally by this same half_width -- left at its 0.0
+        # default they all collapse onto the crank centerline (z=0),
+        # which is not where a real engine mount ever sits. block_half_
+        # yz_m is the toy's own ONE real place this is computed
+        # (engine_geometry.py's own docstring), so mounts spread to just
+        # outside the block's real skirt width instead of a separate
+        # invented constant.
+        half_width=engine_geometry.block_half_yz_m(engine),
         component_masses={"engine": engine.mass_kg},
         include_wheel_output=False,
         use_belt_accessories=True,

@@ -252,14 +252,75 @@ simulation already uses — no new node/edge vocabulary invented.
   `valve_cover` (real accessory reference positions, not structural
   mounts) unmatched, since they're genuinely too far from the cage.
 
+## Updated: real mount hardware, an automated mounting policy, and transmission-as-cargo (`engine_mounts.py`)
+
+The two paragraphs above describe the FIRST cut of mount correlation —
+`engine_geometry.py::mount_points()`'s own invented `front_mount`/
+`rear_mount` pair. That was a toy-only approximation living beside the
+graph, not IN it. The graph already declares the real thing:
+`mount.engine_left`/`mount.engine_right` (plus `mount.transmission_
+left/right` and `mount.transfer_case_left/right`), built by the same
+production `_vehicle_powertrain_graph` subunit `drivetrain_graph.py`
+already calls — just never read by anything on the toy side. Two real
+bugs found and fixed while wiring this up:
+
+- `_vehicle_powertrain_graph`'s `half_width` parameter (how far apart
+  the left/right mounts sit) was never passed, defaulting to `0.0` —
+  every one of those "left/right" pairs was silently landing on the
+  crank centerline. Fixed by passing `engine_geometry.block_half_yz_m
+  (engine)`, the toy's own one real place block half-width is computed.
+- `EnginePackage.build` classified `powertrain.transmission`/
+  `powertrain.transfer_case` (and their mount nodes) as `BUILT_IN` by
+  `_SOURCING_OVERRIDES`'s default, meaning every crate silently shipped
+  WITH a transmission baked in — the opposite of a real crate engine.
+  Now `SUPPLIED_ELSEWHERE` by default, matching the fuel tank's own
+  real reasoning; `EnginePackage.build(include_transmission=True)` (a
+  player deliberately baking more into one crate) reclassifies them
+  `BUILT_IN` for that build only.
+
+`engine_mounts.py` (Stage 4 of the "scientific bake", directly on top
+of `block_dynamics.py`'s own Stage 1/2/3: lumped mass/stiffness modal
+solve + `select_mount_points`) is the automated POLICY: given a real,
+closed set of install contexts (`automotive`, `marine`, `aircraft`,
+`industrial_stationary`, `bar_cage`), `select_technique` resolves the
+real mounting TECHNIQUE a real installer would pick FIRST — rubber
+isolator, cradle/subframe (heavy engines), solid-bolted (industrial
+skids, aircraft firewalls, the toy's own atmospheric/turbine engines
+regardless of context), or bar-cage (the crate's own supplied
+structure). `block_dynamics`'s real modal candidates then refine the
+hardware GRADE within that family (a firmer isolator at a point
+genuinely riding close to a resonance antinode) rather than flipping
+the whole install onto a different technique per-bolt, the same way a
+real installer wouldn't. `wants_torque_strap` adds a real secondary
+reaction anchor (never a standalone technique — it only ever
+supplements a compliant primary mount) when specific torque or forced
+induction/nitrous calls for one. `block_dynamics.build_block_network`
+also grew an `include_transmission`/`transmission_mass_kg` option that
+hangs the transmission's own real mass off the nearest block station
+through a real bellhousing-stiffness edge (same pattern as its
+existing oil-pan DOF) — `transmission_mass_kg` is deliberately a
+caller-supplied real number, not fabricated, since no transmission
+mass exists anywhere on `Engine` (a crate engine's own `mass_kg` is
+the bare engine only). `EnginePackage.correlate_mounts` now checks
+`self.mounting` (the resolved, technique-aware list) instead of the
+old flat `mount_points()` dict. Verified against all 26 catalogue
+engines: builds clean with and without `include_transmission`, and a
+synthetic cage placed exactly at the real `mount.engine_left/right`
+positions matches every one of them at zero distance.
+
 ## Practical next step (not yet started)
 
-The classification rule for everything besides the fuel tank/pump is
-still open — coolant, starter battery, exhaust, pneumatic lines, and
-so on each need a real answer, not a guess, before `_SOURCING_OVERRIDES`
-grows. The mount-correlation tool also has no real cage source yet
-(the game doesn't supply one today) — it's verified correct against a
-synthetic cage, not yet wired to anything real.
+The classification rule for everything besides the fuel tank/pump/
+transmission is still open — coolant, starter battery, exhaust,
+pneumatic lines, and so on each need a real answer, not a guess,
+before `_SOURCING_OVERRIDES` grows further. The mount-correlation tool
+also has no real cage source yet (the game doesn't supply one today)
+— it's verified correct against a synthetic cage, not yet wired to
+anything real. `engine_mounts.py`'s install-context selection is also
+still a caller-declared string, not inferred from the engine's own
+label/application (deliberately — guessing an install context from
+free text would be exactly the kind of unguided assumption this
+codebase avoids elsewhere).
 
 ## Implemented: any fuel is a different fuel network (`working_fluids.py`, `fuel_network.py`, `expander.py`)
 

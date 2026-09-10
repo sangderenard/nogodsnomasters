@@ -57,6 +57,12 @@ Controls:
              over-rev: watch for valve float (past the lifter spring's
              real max_safe_rpm), knock, and whatever else the limiter
              actually exists to prevent
+  - / =      captive-ball governor spring preload down / up (atmospheric
+             engines only) -- the real adjusting screw on the governor's
+             return spring: more preload makes the ball fight harder to
+             reach trip radius, so the engine runs FASTER before it
+             governs; less preload governs SOFTER/slower. No effect on
+             engines without this governor (see the GOVERNOR dashboard line)
   Z / X      load resistor down / up  (baseline electrical draw --
              more draw than the alternator can cover at low rpm sags
              the battery, drops spark energy, raises misfire rate)
@@ -102,6 +108,7 @@ BRAKE_STEP_FRAC = 0.08
 THROTTLE_TARGET_RPM_STEP = 100.0
 LOAD_RESISTOR_STEP = 0.05
 BRAKE_TARGET_RPM_STEP = 100.0
+GOVERNOR_PRELOAD_STEP_N = 0.05
 
 HELP_TEXT = __doc__.strip().split("Controls:")[1].strip()
 
@@ -257,6 +264,16 @@ def main() -> None:
                     sim.brake_target_rpm = None if sim.brake_target_rpm is not None else max(sim.rpm, sim.engine.idle_rpm)
                 elif lower == "n":
                     sim.rev_limiter_enabled = not sim.rev_limiter_enabled
+                elif ch == "-":
+                    gov = sim._atmo_governor
+                    if gov is not None:
+                        cap = gov.spring_rate_n_per_m * (gov.r_max_m - gov.r_min_m)
+                        gov.spring_preload_n = clamp(gov.spring_preload_n - GOVERNOR_PRELOAD_STEP_N, 0.0, cap)
+                elif ch == "=":
+                    gov = sim._atmo_governor
+                    if gov is not None:
+                        cap = gov.spring_rate_n_per_m * (gov.r_max_m - gov.r_min_m)
+                        gov.spring_preload_n = clamp(gov.spring_preload_n + GOVERNOR_PRELOAD_STEP_N, 0.0, cap)
                 elif lower == "t":
                     sim.throttle_target_rpm = None if sim.throttle_target_rpm is not None else max(sim.rpm, sim.engine.idle_rpm)
                 elif lower == "r":

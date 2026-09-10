@@ -328,7 +328,8 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
             gov_bar = "#" * int(gov_frac * gov_bar_w) + "." * (gov_bar_w - int(gov_frac * gov_bar_w))
             lines.append(f"  GOVERNOR[{gov_bar}] ball {gov.r_m * 1000:4.1f} mm"
                          f"  (trip {gov.trip_radius_m * 1000:4.1f} / release {gov.release_radius_m * 1000:4.1f} mm)"
-                         f"  {'TRIPPED' if gov.tripped else 'clear'}")
+                         f"  {'TRIPPED' if gov.tripped else 'clear'}"
+                         f"  spring preload {gov.spring_preload_n:4.2f} N  (-/= to adjust)")
     if eng.kind == "turbine":
         # the real cockpit gauges this engine actually has -- N1/EGT are
         # the same real quantities gas_turbine.py's own SingleShaftGas

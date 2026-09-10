@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from engines import Engine
-import engine_geometry
+import engine_mounts
 from drivetrain_graph import build_drivetrain_graph
 
 
@@ -58,7 +58,30 @@ _SOURCING_OVERRIDES: tuple[tuple[str, PartSourcing], ...] = (
     ("fuel.tank", PartSourcing.SUPPLIED_ELSEWHERE),
     ("fuel.pump", PartSourcing.SUPPLIED_ELSEWHERE),
     ("fuel.gas_main_connection", PartSourcing.SUPPLIED_ELSEWHERE),
+    # A real crate engine ships without its eventual transmission --
+    # same real reason it ships without a fuel tank: the buyer pairs it
+    # with whatever gearbox/transfer case their own build calls for,
+    # not one baked in by the engine seller. EnginePackage.build
+    # (include_transmission=True) overrides these back to BUILT_IN for
+    # players who deliberately want the transmission baked into the
+    # same crate instead.
+    ("powertrain.transmission", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("powertrain.transfer_case", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("powertrain.direct_drive_bypass", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("mount.transmission_left", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("mount.transmission_right", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("mount.transfer_case_left", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("mount.transfer_case_right", PartSourcing.SUPPLIED_ELSEWHERE),
 )
+
+_TRANSMISSION_IDENTITY_PREFIXES = (
+    "powertrain.transmission", "powertrain.transfer_case", "powertrain.direct_drive_bypass",
+    "mount.transmission_", "mount.transfer_case_",
+)
+
+
+def _is_transmission_identity(identity: str) -> bool:
+    return any(identity == p or identity.startswith(p) for p in _TRANSMISSION_IDENTITY_PREFIXES)
 
 
 def part_sourcing(node_identity: str) -> PartSourcing:
@@ -102,12 +125,11 @@ class Prism:
 
 @dataclass(frozen=True)
 class MountCorrelation:
-    """One real engine mount point (engine_geometry.mount_points)
-    checked against a supplied bar cage's real structural node
-    positions -- a real attachment-point match, not a bounding-volume
-    containment test (see ENGINE_TOY_ARCHITECTURE_NOTES.md's own
-    reasoning on why "does it fit the silhouette" is the wrong
-    question)."""
+    """One real engine mount point (engine_mounts.assign_mounting's own
+    resolved technique/position, not a bounding-volume containment
+    test -- see ENGINE_TOY_ARCHITECTURE_NOTES.md's own reasoning on why
+    "does it fit the silhouette" is the wrong question) checked against
+    a supplied bar cage's real structural node positions."""
     mount_name: str
     mount_position: tuple[float, float, float]
     matched_cage_node: str | None
@@ -127,15 +149,26 @@ class EnginePackage:
     connectors: list[Connector]
     built_in_node_ids: frozenset[str]
     supplied_node_ids: frozenset[str]
+    mounting: list[engine_mounts.MountAssignment]
 
     @classmethod
-    def build(cls, engine: Engine) -> "EnginePackage":
+    def build(cls, engine: Engine, install_context: str = "automotive",
+             include_transmission: bool = False, transmission_mass_kg: float = 0.0) -> "EnginePackage":
         graph = build_drivetrain_graph(engine)
         nodes = graph["nodes"]
         edges = graph["edges"]
         node_by_id = {n["identity"]: n for n in nodes}
 
-        sourcing = {n["identity"]: part_sourcing(n["identity"]) for n in nodes}
+        def _sourcing(identity: str) -> PartSourcing:
+            base = part_sourcing(identity)
+            if include_transmission and base is PartSourcing.SUPPLIED_ELSEWHERE and _is_transmission_identity(identity):
+                # the player deliberately baked the transmission into
+                # this same crate -- it's real cargo of the crate now,
+                # not a part the vehicle still has to supply
+                return PartSourcing.BUILT_IN
+            return base
+
+        sourcing = {n["identity"]: _sourcing(n["identity"]) for n in nodes}
         built_in_ids = frozenset(i for i, s in sourcing.items() if s is PartSourcing.BUILT_IN)
         supplied_ids = frozenset(i for i, s in sourcing.items() if s is PartSourcing.SUPPLIED_ELSEWHERE)
 
@@ -162,8 +195,12 @@ class EnginePackage:
                 identity=e["identity"], kind=e.get("constraint", "?"),
                 built_in_node=built_in_node, supplied_node=supplied_node, position=pos))
 
+        mounting = engine_mounts.assign_mounting(
+            engine, install_context=install_context, include_transmission=include_transmission,
+            transmission_mass_kg=transmission_mass_kg)
+
         return cls(engine=engine, prism=prism, connectors=connectors,
-                   built_in_node_ids=built_in_ids, supplied_node_ids=supplied_ids)
+                   built_in_node_ids=built_in_ids, supplied_node_ids=supplied_ids, mounting=mounting)
 
     def correlate_mounts(self, cage_nodes: dict[str, tuple[float, float, float]],
                          tolerance_m: float = 0.05) -> list[MountCorrelation]:
@@ -174,16 +211,15 @@ class EnginePackage:
         without a real cage should pass an empty dict and expect every
         mount to come back unmatched, honestly, rather than a fake
         match."""
-        mounts = engine_geometry.mount_points(self.engine)
         results: list[MountCorrelation] = []
-        for name, pos in mounts.items():
+        for m in self.mounting:
             best_node, best_dist = None, None
             for cage_name, cage_pos in cage_nodes.items():
-                dist = math.dist(pos, cage_pos)
+                dist = math.dist(m.position, cage_pos)
                 if best_dist is None or dist < best_dist:
                     best_node, best_dist = cage_name, dist
             matched = best_node if (best_dist is not None and best_dist <= tolerance_m) else None
             results.append(MountCorrelation(
-                mount_name=name, mount_position=tuple(pos),
+                mount_name=m.identity, mount_position=m.position,
                 matched_cage_node=matched, distance_m=best_dist))
         return results

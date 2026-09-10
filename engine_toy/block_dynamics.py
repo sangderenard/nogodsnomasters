@@ -61,6 +61,12 @@ WEBBING_CROSS_SECTION_FRACTION = 0.30
 # The oil pan bolts to the crankcase through a real, much smaller rail
 # flange, not the full block cross-section.
 PAN_RAIL_CROSS_SECTION_FRACTION = 0.05
+# The bellhousing/transmission-case flange is a substantial full-
+# diameter bolted joint (it carries the whole transmission's own
+# weight plus reaction torque), but still well short of the solid
+# webbing between bores -- a real, disclosed middle value between the
+# pan rail and the webbing fractions above, not a separate guess.
+BELLHOUSING_CROSS_SECTION_FRACTION = 0.20
 
 
 @dataclass
@@ -89,7 +95,8 @@ def _cross_section_area_m2(engine, fraction: float) -> float:
     return fraction * (2.0 * half) ** 2
 
 
-def build_block_network(engine) -> BlockNetwork:
+def build_block_network(engine, include_transmission: bool = False,
+                        transmission_mass_kg: float = 0.0) -> BlockNetwork:
     """The real per-cylinder block segments (same graph
     build_drivetrain_graph already builds and the mesh already draws),
     plus the oil pan -- connected in a real chain along the crank axis,
@@ -97,7 +104,27 @@ def build_block_network(engine) -> BlockNetwork:
     own real total mass (the bare block+crank+heads casting, tracked as
     one lumped figure by the production subunit) is split evenly across
     the segments it represents -- they're real equal-volume slices of
-    the same casting, so an even split is the honest one, not a guess."""
+    the same casting, so an even split is the honest one, not a guess.
+
+    include_transmission additionally hangs the transmission's own real
+    mass off the nearest block station through a real bellhousing-face
+    stiffness edge -- the same pattern as the oil pan below, not a
+    separate mechanism -- so a bellhousing/transmission mount candidate
+    (select_mount_points) is judged against its OWN real modal
+    contribution instead of borrowing the last bare-block segment's
+    figure under a different name. Off by default: most crate-engine
+    installs don't carry a transmission at all (see engine_package.py's
+    own supplied-elsewhere default for it), and a network built without
+    one is the honest answer for that case.
+
+    transmission_mass_kg is the CALLER's own real figure for whatever
+    transmission is actually being paired -- there is no transmission
+    mass anywhere on Engine to default to (a crate engine's own
+    mass_kg is the bare engine only, same real reason it ships without
+    one at all), so a real number has to come from outside rather than
+    being fabricated here. include_transmission with no real mass
+    supplied builds the network without the extra DOF rather than
+    guess at one."""
     graph = build_drivetrain_graph(engine)
     node_by_id = {n["identity"]: n for n in graph["nodes"]}
 
@@ -167,6 +194,19 @@ def build_block_network(engine) -> BlockNetwork:
         identities.append("powertrain.oil_pan")
         positions.append(oil_pan_node["reference_position"])
         masses.append(float(oil_pan_node.get("mass_kg", 0.0)))
+        edges.append(BlockNetworkEdge(nearest_idx, len(identities) - 1, length_m, stiffness, conductance))
+
+    transmission_node = node_by_id.get("powertrain.transmission")
+    if include_transmission and transmission_node is not None and transmission_mass_kg > 0.0:
+        trans_pos = np.array(transmission_node["reference_position"])
+        nearest_idx = int(np.argmin([np.linalg.norm(trans_pos - np.array(p)) for p in positions]))
+        length_m = max(float(np.linalg.norm(trans_pos - np.array(positions[nearest_idx]))), 1e-4)
+        bell_area = _cross_section_area_m2(engine, BELLHOUSING_CROSS_SECTION_FRACTION)
+        stiffness = CAST_IRON_YOUNGS_MODULUS_PA * bell_area / length_m
+        conductance = CAST_IRON_THERMAL_CONDUCTIVITY_W_PER_MK * bell_area / length_m
+        identities.append("powertrain.transmission")
+        positions.append(transmission_node["reference_position"])
+        masses.append(transmission_mass_kg)
         edges.append(BlockNetworkEdge(nearest_idx, len(identities) - 1, length_m, stiffness, conductance))
 
     return BlockNetwork(
@@ -264,7 +304,18 @@ def solve_block_modes(network: BlockNetwork, eigh_method: str = "auto") -> Modal
 # high-stiffness ends of the casting, not because they're convenient.
 # Modal proximity below is the tie-breaker AMONG these, not a search
 # that could recommend mounting mid-span on a webbing wall.
-MOUNT_CANDIDATE_IDENTITIES = ("powertrain.crank_shaft.front", "powertrain.crank_shaft.rear")
+#
+# powertrain.transmission is one stage further out than crank_shaft.
+# rear's own bell-housing/clutch face: the transmission CASE's own real
+# mount point, past the bolted joint rather than at it. Honest either
+# way the network was built -- with include_transmission it resolves
+# against the transmission's own real hung DOF (see build_block_network
+# above); without it, it still resolves (the identity always exists on
+# the raw graph node), just against whichever bare-block station is
+# nearest, exactly as disclosed by `nearest_station` on the result.
+MOUNT_CANDIDATE_IDENTITIES = (
+    "powertrain.crank_shaft.front", "powertrain.crank_shaft.rear", "powertrain.transmission",
+)
 
 
 @dataclass

@@ -33,6 +33,10 @@ Controls: same layout as main.py --
   N          toggle rev limiter -- off means a genuine unchecked
              over-rev: watch for valve float, knock, and whatever else
              the limiter actually exists to prevent
+  - / =      captive-ball governor spring preload down / up (atmospheric
+             engines only) -- the real adjusting screw on the governor's
+             return spring: more preload governs FASTER, less governs
+             softer/slower. No effect on engines without this governor
   Z / X      load resistor down / up
   , / .      quick-shift down / up -- a real two-stage clutch-out,
              swap gear, clutch-in sequence, one button each way (not
@@ -72,6 +76,7 @@ THROTTLE_RATE_PER_S = 1.3
 BRAKE_RATE_FRAC_PER_S = 0.6
 LOAD_RESISTOR_RATE_PER_S = 0.35
 BRAKE_TARGET_RPM_RATE_PER_S = 600.0
+GOVERNOR_PRELOAD_RATE_PER_S = 0.15
 
 HELP_TEXT = __doc__.strip().split("Controls:")[1].strip()
 
@@ -287,6 +292,16 @@ def main() -> None:
                 sim.electrical_load_frac = clamp(sim.electrical_load_frac - LOAD_RESISTOR_RATE_PER_S * dt, 0.0, 3.0)
             if keys[pygame.K_x]:
                 sim.electrical_load_frac = clamp(sim.electrical_load_frac + LOAD_RESISTOR_RATE_PER_S * dt, 0.0, 3.0)
+            if keys[pygame.K_MINUS] or keys[pygame.K_KP_MINUS]:
+                gov = sim._atmo_governor
+                if gov is not None:
+                    cap = gov.spring_rate_n_per_m * (gov.r_max_m - gov.r_min_m)
+                    gov.spring_preload_n = clamp(gov.spring_preload_n - GOVERNOR_PRELOAD_RATE_PER_S * dt, 0.0, cap)
+            if keys[pygame.K_EQUALS] or keys[pygame.K_KP_PLUS]:
+                gov = sim._atmo_governor
+                if gov is not None:
+                    cap = gov.spring_rate_n_per_m * (gov.r_max_m - gov.r_min_m)
+                    gov.spring_preload_n = clamp(gov.spring_preload_n + GOVERNOR_PRELOAD_RATE_PER_S * dt, 0.0, cap)
 
             if not sim.stalled:
                 sim.step(dt)
