@@ -12,6 +12,11 @@
 !/site/
 /site/programs/*/versions/.building-*/
 
+# engine_toy is a real, versioned simulation project (not a throwaway
+# experiment), so it is tracked here directly rather than as an opaque
+# child directory.
+!/engine_toy/
+
 # Archive/quarantine names are called out explicitly for human readers. These
 # rules are redundant with /*/ at the root, but document the safety boundary.
 /_quarantine/

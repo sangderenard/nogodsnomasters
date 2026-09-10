@@ -261,6 +261,425 @@ grows. The mount-correlation tool also has no real cage source yet
 (the game doesn't supply one today) — it's verified correct against a
 synthetic cage, not yet wired to anything real.
 
+## Implemented: any fuel is a different fuel network (`working_fluids.py`, `fuel_network.py`, `expander.py`)
+
+The conversion question ("what hardware does it take to run this
+cylinder on compressed air / hydrogen / natural gas / propane / coal or
+wood gas / steam?") is answered by three modules that sit on the
+existing fluid-circuit system rather than beside it:
+
+- `working_fluids.py` -- THE registry of working fluids: every liquid
+  fuel the catalogue already had, the gaseous fuels (coal gas, wood
+  gas, natural gas, propane, hydrogen, petroleum vapour) and the
+  non-combusting expander fluids (steam, compressed air), in one
+  property vocabulary (LHV, stoich AFR, octane, density, latent heat,
+  flammability limits and stoichiometric volume fraction, laminar
+  flame speed, minimum ignition energy, storage class and pressure,
+  gamma/R). `engines.py`'s and `otto_langen.py`'s fuel tables are
+  views of it now.
+- `fuel_network.py` -- a declared chain of real devices between the
+  store and the admission point: sources (vented tank, pressurized
+  bottle, gasholder with an on-site generator, utility main, boiler
+  with feedwater, compressed-air receiver), in-line stages (staged
+  regulator, coolant-heated vaporizer, cooler/filter, flame arrestor,
+  purge valve, lock-off solenoid) and admission (mixer, gas injector,
+  the engine's own carburetor/injectors, cutoff valve). It emits into
+  the SAME drivetrain-graph "fuel" circuit every tank already lives in
+  (so fill, composition, availability and flow ceilings come from the
+  one reservoir primitive), and a runtime steps the stages each tick.
+  `validate()` refuses a network missing what a real install of that
+  fluid needs (hydrogen without an arrestor, LPG without a vaporizer,
+  steam without a boiler). `convert_engine(engine, spec)` is the whole
+  conversion: same cylinder, new network, knock compatibility derived
+  from octane, charge energy derived from fixed-volume stoichiometry
+  (natural gas ~0.90 of gasoline, hydrogen ~0.83, wood gas ~0.72).
+- `expander.py` -- the cutoff expander cylinder bank steam and
+  compressed air share (one engine kind, "expander"): ideal indicator
+  diagram MEP, double-acting, with the two real fluid-specific
+  failures -- steam water hammer (cold cylinder, drain cocks shut)
+  and compressed-air exhaust icing (no dryer on the line). Two
+  catalogue engines: a c. 1900 steam traction engine (boiler-limited
+  to ~27 kW, which is the right order for a ~35 hp machine) and a
+  two-cylinder compressed-air mine locomotive.
+
+What this bought: a carbureted Jeep six runs on CNG, propane (starts
+weak on a cold vaporizer and comes good as the coolant warms), or
+hydrogen (through its arrestor, with an intake-flashback risk that
+rises with intake temperature) without touching the piston loop;
+the Otto-Langen runs from a generator-fed holder through a purge
+valve; and a fuel-network-declared boiler runs the traction engine
+with real feedwater bookkeeping.
+
+## Implemented: conversion contracts (`engine_toy/conversion.py`) and the demo's shift-F
+
+`plan_conversion(engine, fluid)` writes the engineering contract for
+running THIS chamber on THAT fluid: ignition mode (spark / compression
+/ expander), the compression-ratio target with both real routes to it
+(piston/head clearance change as cc and mm of skim, or a stroke
+change in mm), the timing shift from the fluid's laminar flame speed,
+the fuel conditioning (heater for fry oil / crude, vaporizer for LPG),
+the hardware (injection pump + glow plugs, spark system, hardened
+seats, arrestor), and the predicted torque/power factors from the
+same first-principles rating the builder uses (`derive_gross_bmep_pa`,
+with the gas-displaces-air correction). `apply_conversion` produces
+the converted Engine; `convert` does both. The knock-limited CR is the
+inverse of the rating's own knock relation; a catalogue diesel left on
+the generic 10:1 default is taken as a real 17.5:1 chamber.
+
+In `main.py`, shift-F cycles the current cylinder through every
+registered working fluid, applies the conversion, logs the contract,
+and the dashboard shows the live network (supply pressure,
+availability, fill, fuel temperature, warnings). Verified: the
+commuter four on vegetable oil (17.5:1, compression ignition, heater-
+limited until warm), the 1901 curved-dash on natural gas and hydrogen,
+the industrial diesel on natural gas as a spark conversion, a Jeep six
+as a single-acting steam or air expander; all 19 registered fluids
+build a contract against the commuter engine.
+
+Known rig property: expander engines have no governor, so with a
+constant-torque dyno load they run up to wherever line-choke-limited
+power meets the load; use the throttle-target governor (T) or a load
+sized to the engine.
+
+## Implemented: per-kind cylinder port layouts and meshes (`engine_toy/cylinder_ports.py`)
+
+Four real cylinder kinds, each with its own real set of holes and its
+own mesh, laid out from the same cylinder sites and the same
+network/conversion declarations everything else reads:
+
+- spark-piston: intake and exhaust valve ports in the head, a spark-
+  plug boss, and a port-injector boss when the admission is a liquid
+  or gas injector (a carburetor/mixer feeds the port from the runner,
+  so no boss on the cylinder).
+- compression-piston: intake, exhaust, a direct-injector boss on the
+  bore axis, a glow-plug boss.
+- atmospheric (Otto-Langen): an open-top bore with the rack and its
+  guide above, and the slide valve's gas, air, flame-transfer and
+  exhaust openings at the foot.
+- expander: a valve chest alongside the bore with admission/exhaust
+  passages to the head end, the same pair plus a rod gland at the
+  crank end when double-acting, a drain cock at each working end and a
+  lubricator boss.
+
+Port COUNT follows the declared valvetrain: `lifter_spring.valves_per_
+cylinder` splits into intake and exhaust throats (2 -> 1+1, 4 -> 2+2,
+5 -> 3+2); a loop-scavenged two-stroke (`has_poppet_valves=False`)
+has no head valves at all -- two transfer ports and a wall exhaust
+port uncovered by the piston; a uniflow two-stroke (poppet valves,
+two-stroke) has a ring of four scavenge ports in the wall and its
+valves all exhaust. The mesh also carries the running gear -- piston
+at the slider-crank position for any crank angle, con rod, crankpin
+and webs on a main journal (throw phase from the firing order), a
+crosshead and piston rod on a double-acting expander, the rack
+pinion on the Otto-Langen -- and an outer wall that is a stack of
+cooling fins when the engine is air-cooled (no water pump, no coolant
+pump) or a plain water jacket otherwise.
+
+`drivetrain_graph.build_drivetrain_graph` emits every port as an
+"engine-block-port" node (port_kind, outward port_direction,
+port_radius_m, fluid_role), aligning onto the production-authored
+intake/exhaust valve nodes a piston engine already has, and stores the
+serialized layout on the graph document ("cylinder_layout").
+`vehicle_mesh.build_drivetrain_solid_parts` builds the cylinder bodies
+and port stubs from that, tagged block_cyl_N so the live renderer
+colours them by per-cylinder block temperature. A converted engine
+(conversion.py) gets the layout its new kind and admission imply --
+the commuter on fry oil grows direct injectors and glow plugs and
+loses its plugs; on hydrogen it gains gas-injector bosses.
+
+## Implemented: crank train and crankcase (`engine_toy/crank_mesh.py`)
+
+The crankshaft and the crankcase are built once per cylinder layout,
+not per cylinder. Cylinders are grouped into throw stations by their
+crank-axis position (a V pair shares a crankpin; a radial row shares
+one throw); main journals sit between stations and at both ends at
+the station pitch, with a nose and pulley ahead of the front main and
+a flange and flywheel behind the rear one; each throw has two webs,
+a crankpin and counterweights at that station's phase for any crank
+angle. The crankcase is a crank tunnel sized to the throw swing, one
+segment per station carrying that cylinder's block temperature, a
+bulkhead disc at every main, a skirt from the tunnel to each bore's
+foot along that bore's own axis (which is what makes a V or flat case
+a V or flat case), front cover and rear-seal bosses, and a wet sump in
+the oil thermal group -- except on a loop-scavenged two-stroke, whose
+crankcase is a sealed pump chamber with its own intake boss and no
+sump. Expanders get a bedplate with a pedestal at each main and an
+open crank. When a graph carries a cylinder layout, vehicle_mesh no
+longer draws the generic block and oil-pan boxes.
+
+## Implemented: heads, cam cases, valve covers, valley covers, Otto freewheel, expander frames (`engine_toy/head_mesh.py`, additions to `cylinder_ports.py`/`crank_mesh.py`)
+
+- Heads are one casting per BANK (cylinders grouped by bore-axis
+  direction), oriented along the bank axis, so V/flat heads tilt with
+  their banks. The cam case follows the valvetrain: pushrod (cam in
+  the block beside the crank, pushrods and rockers per cylinder,
+  rocker cover), sohc (one cam in a cam box on the head), dohc (two
+  cams); valve covers over each. The valvetrain is DERIVED until the
+  catalogue declares `EngineArchitecture.valvetrain` (3+ valves ->
+  dohc; two-valve over 7000 rpm -> sohc; otherwise pushrod) and is
+  disclosed as such.
+- Multi-bank engines get a valley cover between the bank skirts (a
+  flat engine gets a case top cover instead), in the oil group.
+- V/W banks breathe in from the valley: each tilted bank's intake
+  ports face the engine centre plane, exhaust outboard.
+- The Otto-Langen's "crank" is drawn as what it is: rack pinion ->
+  freewheel drum -> flywheel shaft in two bearings on the column top,
+  big flywheel outboard.
+- Expanders hang their open-bottomed cylinders from a real frame:
+  two frame plates (hornplates) rising from the bedplate to the
+  cylinder's crank-end cover, crosshead guide bars between them.
+- The cylinder layout is now emitted BEFORE the runners/primaries are
+  routed, and the intake plenum / exhaust manifold nodes sit relative
+  to the real heads -- the "placement issues" were manifolds placed
+  at the old block-face guess, well below the new heads.
+- `mesh_primitives.capped_tube_mesh`: closed drums (flywheel, pulley,
+  bulkheads, fins, piston) instead of open hoops.
+
+Not done (parked): a free-body/constraint integration of the piston
+positions with the crank pinned at its bearing and animations per
+kind -- the kinematic slider-crank at any crank angle is in place, so
+an animation can already be driven from the sim's crank angle.
+
+## Implemented: procedural exhaust headers (`engine_toy/exhaust_header.py`)
+
+`plan_exhaust_header(layout, header_type)` routes every exhaust port
+of the cylinder layout as a real polyline: a short stub along the
+port's own direction, a mandrel-radius quarter bend (1.5 D
+centreline), a run along a rail outboard and below the head parallel
+to the crank, and a final bend down into the group's collector.
+Grouping is the typical rule -- one bank up to four cylinders into
+one collector, five to eight split front/rear into two (an inline
+six's tri-Y), each bank of a V or flat its own -- and a
+"stock-manifold" header_type gives a log: stubs into one shared rail
+with a single outlet. `emit_header_graph` writes the plan into the
+drivetrain graph as exhaust-flow-path edges through header waypoints
+and an exhaust-collector node per group, re-pointing the production
+`.exhaust_primary` edge so its identity survives, then one edge from
+each collector to the existing downpipe junction. Primary lengths are
+reported per group (the typical layout is not equal-length; a tuned
+header would be a different planner, not a different graph).
+
+## Implemented: the detail pass on singles, radial, rotary, expanders, Otto-Langen
+
+- Singles: a 1-into-1 is a stub, one bend and a short outlet, no rail;
+  a hit-and-miss layout gets an open water HOPPER on the jacket and a
+  flywheel on both ends of the crank (`cooling="hopper"`,
+  `twin_flywheels`), read from the catalogue layout label.
+- Radial: the crankcase is a drum sized to the cylinder ring with a
+  front cover and rear accessory case; the exhaust is a collector RING
+  behind the cylinders that each primary bends rearward into, with
+  one outlet at the bottom.
+- Rotary: a new cylinder kind. Housings are drums along the eccentric
+  shaft scaled off real 13B proportions (R 105 mm, e 15 mm, 80 mm
+  width, 654 cc/rotor) by displacement per rotor; each housing has
+  side intake ports in the end plate, a peripheral exhaust port and
+  leading/trailing plug bosses in the rim; the rotor is a triangular
+  prism riding the eccentric at a third of the shaft angle; the two
+  rotors' exhausts join one outlet. No heads, cams or crank train
+  apply (`mesh_primitives.prism_mesh` was added for the rotor).
+- Expanders and the Otto-Langen: their exhaust passages/port are
+  routed too -- stub, bend, and an outlet clear of the body (a blast
+  pipe upward on an expander). The graph gets an exhaust-manifold
+  junction for kinds the production graph never authored one for.
+- The Otto-Langen flywheel is sized at a third of the column height.
+
+## Implemented: removable valvetrain parts with state, and head oil ports (`engine_toy/valvetrain_parts.py`)
+
+Every poppet valve in the cylinder layout is a set of individual
+parts: valve (stem + head, lifted by a first-order cam phase),
+spring, retainer, and a bucket tappet (overhead cam) or a rocker plus
+pushrod (cam in block). Each is a `RemovablePart` with an axis-aligned
+box, what it attaches to, the direction and travel it comes out
+along, and what must come off first; `removal_blockers` sweeps the
+box along that direction and names anything in the way, which is the
+assembly rule a game needs (cover, then retainer, then spring, then
+valve). Springs carry real state (`SpringState`): free length, rate
+from the engine's own LifterSpring, installed height, permanent sag
+(a disclosed thermally-accelerated relaxation via `age()`), and a
+shim; seat load, open load and coil-bind margin follow from spring
+arithmetic, so a tired spring loses seat pressure and a too-thick shim
+binds. Bosses (plugs, injectors, drain cocks) are removable parts
+too, with a torque state.
+
+Meshes: `build_drivetrain_solid_parts(graph, covers_off=True)` omits
+the valve covers and draws the valve gear (helix springs, retainers,
+buckets/rockers/pushrods). Removal clearance sweeps from just past a
+part's own far face, so parts merely touching at rest are not
+blockers; the valve's box is its stem (the head is at the seat).
+
+## Implemented: casting ports and the port-to-port mating solver (`engine_toy/assembly_ports.py`)
+
+Corrected from the first cut: the head's own port is the FILL (a
+line port on top, open until a cap or line goes on it); drains are
+the pan's job. Each casting declares ports from the layout -- heads:
+fill, deck-face oil feed, two deck-face oil returns, coolant
+passages on jacketed engines; crankcase: the matching deck holes,
+main gallery, breather, dipstick, pump pickup, pan rim; pan: rim,
+pickup, drain plug. `mate_ports` pairs mating (gasket-face) ports
+across different parts that are compatible, face each other and sit
+within 12 mm, in n log n (bucketed by kind, sorted along the crank,
+neighbour scan), and reports seals, OPEN mating ports and line
+ports. Seals go into the drivetrain graph as zero-length
+"port-face-seal" edges in the fluid's circuit; ports as
+engine-block-port nodes with `mating`/`connected`. `transplant()`
+sets a donor head's ports on another block (with an offset along
+the crank) and reports what mates and what is left open -- the
+mechanism for both catastrophic parts mixing and hot-rod
+interchange (`deck_offset_m` models decking/spacing the donor head).
+
+Removability is a MATING-SURFACE spec, not a geometric proof: every
+`RemovablePart` carries a `MatingFace` (face, part it seats on,
+normal, seal, fasteners) and `must_remove_first`; the swept-box
+check survives only as an advisory (`assembly_manifest(...,
+advisory_clearance=True)`). Crankcase deck ports are per bank
+(`crankcase.deckN.*`) so V/flat engines seal both heads.
+
+## Implemented: vectorized valve state with machine error and carbon (`engine_toy/valve_state.py`)
+
+Every valve is one row in flat numpy arrays (cylinder, intake/
+exhaust, spring rate, free length, installed height, nominal lift,
+rocker ratio, lash, seat concentricity, sag, shim, seat recession,
+carbon). The build draws each valve's machine error within real shop
+tolerances from a seed of the engine identity, so cylinders differ
+and the differences are stable. Derived per valve in one vectorized
+pass: seat load, effective lift, open load, float speed (seat
+preload scaled, deposit mass lowering it), seat leak (recession,
+runout, weak seat, deposit), hot-spot risk. Reduced per cylinder
+with bincount/minimum.at: breathing (product of intake lift ratios),
+float speed (lowest valve), leak, carbon, hot spot. ~180 us per call
+on a six.
+
+The piston loop multiplies each cylinder's combustion strength by its
+own breathing x (1 - leak) x float penalty, so every cylinder fires
+uniquely; the engine-wide float figures now report the worst
+cylinder. Aging runs per tick: sag from cycles and block temperature,
+exhaust-seat recession, and carbon that grows under cold, rich,
+light-load running (intake valves only when direct-injected; port/
+carb intakes are fuel-washed) and burns off above ~620 K under load.
+Service: replace_springs, shim_valve, set_lash, decarbonize. The
+state persists across stop/start and feeds the parts manifest
+(removable_parts(valve_state=...)). Exposed on EngineCycleState as
+cylinder_breathing_frac / cylinder_float_rpm / cylinder_valve_factor /
+cylinder_carbon_frac / cylinder_hotspot_risk (hot-spot is not yet
+wired into the knock model).
+
+## Implemented: engine dressing (`engine_toy/dressing.py`)
+
+`derive_dressing(engine)` reads what the catalogue declares and picks
+real installations: lubrication (wet sump with spin-on filter; dry
+sump with reserve tank, scavenge pump and a shallow pan on race
+fuels; a splash-bath trough with no pump on an antique single; drip
+on expanders), air cleaner (paper/foam/gauze element, oil-bath on
+antiques, open stacks on velocity-stack intakes), fuel filter
+(inline, sediment bowl, diesel water separator), rail (port EFI rail
+feeding the port-injector bosses; common rail feeding the direct-
+injector bosses), ignition wiring (distributor + coil with a lead to
+every plug boss; coil-on-plug packs; magneto on the crank nose driven
+at half speed; glow-plug bus; the Otto-Langen's flame port) and the
+intake side.
+
+The intake is a DISTRIBUTOR, the mirror of the exhaust collector: N
+intake ports gathered into M inlet chambers, ports assigned to
+chambers by firing-order slot so every inlet sees evenly spaced
+pulses (the dual-plane rule). M comes from a declared
+ThrottleBodyAssembly's barrel count, else the typical build (single
+carb / two-barrel / four-barrel / double quad on race V8s / one
+throttle body / individual throttle bodies for velocity stacks); a
+diesel gets one unthrottled inlet. Each runner stubs out of its port,
+bends up to the rail level, runs along the bank to its chamber and
+bends in (the same algorithm as the headers); on a straight engine
+the runners therefore meet in the middle rather than at an end. The
+inlet (barrel / throttle body / open elbow) sits on each chamber, one
+air cleaner spans the inlets, or each ITB carries its own stack. A
+stock log exhaust on a straight engine now dumps from its centre.
+All of it goes into the drivetrain graph on the existing production
+nodes (plenum, throttle body, fuel rail/bowl, oil pump/pan, ignition
+driver), which are moved to where the dressing puts them; drum-
+shaped parts declare drum_axis/radius/length and vehicle_mesh draws
+them as capped drums. The graph carries a `dressing` report.
+
+Solver honesty: a splash-bath engine has NO oil pump, so the dressing
+removes the production pump node and everything that drove or fed it.
+The drivetrain solver now tolerates that honestly instead of needing a
+placeholder: a rotational edge with a missing endpoint carries no
+torque and is flagged (`_EdgeState.missing_endpoint`), and an oil
+circuit with no pump node but a splash edge takes its supply from the
+crank's own speed (a dipper, at a disclosed 0.4 of a gear pump's
+equivalent), which is also why such engines show low oil pressure.
+
+Caveats: the derivations follow the catalogue -- the hit-and-miss
+single is not declared carbureted, so it gets a throttle body; the
+Merlin is not declared carbureted, so it gets one throttle body
+rather than its twin-choke carb. Declaring those fixes the dressing
+without touching the code.
+
+## Implemented: crankcase participation (`engine_toy/crankcase_state.py`)
+
+Every crankcase splash-lubricates its bores, so the dressing joins
+the oil source (sump, or the trough on a pump-less engine) to every
+cylinder's bore bottom with an "oil-splash-path" edge -- a real,
+visible path the circuit solver does not flow as a pipe; the
+participation is computed per cylinder in flat arrays: an oil film on
+the bore deposited by splash (crank speed x sump level), scraped by
+the rings and burned past them (film x combustion strength x ring
+leak) as the engine's oil consumption and as a carbon source for the
+valves (valve_state.age's oil_burn_frac); blow-by gas per fire into
+the case, vented through the breather (case pressure, seal loss when
+it cannot vent); fuel dilution of the oil on cold rich running that
+boils off hot. Ring seal carries seeded machine error per cylinder.
+The film and case-gas updates are closed-form exponential
+relaxations, so a 2 ms sim tick and an hour of accelerated wear land
+on the same physics (verified: 3600 x 1 s == 1 x 3600 s). State on
+EngineCycleState: cylinder_oil_film_mg, oil_consumption_ml_per_h,
+blowby_l_per_min, crankcase_pressure_kpa, sump_oil_l,
+oil_fuel_dilution_frac; service: top_up, change_oil.
+
+Rendering: demo_animate.py draws the dressed engines with
+translucent castings and a legend, and animates a chosen engine over
+N frames of a 4*pi crank cycle (pistons, rods, crank, valves, lobes
+move) to a GIF.
+
+## Implemented: the engine as a mesh with materials, the live pygame view, and rays (`engine_mesh.py`, `mesh_visualizer.py`, `engine_rays.py`)
+
+`engine_mesh.build_engine_mesh(graph, crank_angle, covers_off)` lifts
+the dressed design into (static, moving) meshes: vertices, normals,
+triangles, and a material id per triangle from one material table.
+Materials mirror the spectral analyzer's records (PBR base: albedo,
+roughness, opacity; Phong: ambient, spec_strength, shininess), so
+`material_table()` can be uploaded to that renderer's SSBOs
+unchanged; `export_obj_mtl` writes OBJ + MTL (bake_snapshot now does
+this per engine). Moving parts are baked into an `EngineAnimation`
+at caller-chosen crank divisions (an integer count over 720 degrees
+or an explicit angle list); the game plays frames scaled with rpm by
+nearest baked angle and never re-derives geometry; baking is
+incremental (`start_animation`/`bake_next`, filling the cycle evenly)
+so switching engines never stalls the view. `mesh_primitives.DETAIL`
+is the one tessellation knob (the live view bakes at 0.5); springs
+render as plain cylinders at the compressed height in the game view
+(`spring_style="cylinder"`) and as helices for close-ups/exports.
+
+`mesh_visualizer.MeshVisualizer` draws that mesh on its background
+thread with the analyzer's Phong model on the CPU (per-triangle
+ambient + diffuse + Blinn specular from the material record,
+thermal tint on temperature-carrying castings, translucent parts
+composited back-to-front, opaque back faces culled), picks the baked
+frame for the sim's live crank angle, overlays the stats (rpm, power,
+temperatures, per-cylinder valve factor / float rpm / carbon, oil,
+blow-by, case pressure, supply) and exposes a material legend the
+pygame app draws under the view. Keys: O covers on/off. Live cost on
+a six: ~8k triangles at ~5 fps (pygame's per-polygon draws are the
+bottleneck; a vectorised rasteriser is the next step if it matters).
+
+`engine_rays.RayMesh` is the ray interface over the final mesh:
+`hits`/`traversals` (entry/exit per part, in order, with thickness
+crossed), `pick` (a click), and `penetrate` (a projectile spends
+energy per traversal as thickness x calibre area x the material's
+toughness, holes what it gets through, stops in what absorbs the
+rest; `holes_as_open_ports` hands the holes to the assembly layer as
+open ports). `screen_to_ray` inverts the live view's projection, so
+a left click on the view picks the part and a right click fires a
+7.62 mm / 3 kJ test round along the same ray (main_pygame).
+
 ## Standing backlog (for continuity)
 
 From earlier in the project:
