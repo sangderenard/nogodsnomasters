@@ -73,11 +73,17 @@ def _perp(axis):
     return u, v
 
 
-def part_ports(layout) -> list[PartPort]:
+def part_ports(layout, wet_sump: bool = True) -> list[PartPort]:
     """Every casting's ports for this layout: heads per bank, the
     crankcase, the pan. Expander and atmospheric layouts have no oil
     galleries in this sense (open cranks, drip lubricators) and get
-    only a lubricator line port each, already in their cylinder ports."""
+    only a lubricator line port each, already in their cylinder ports.
+
+    wet_sump=False (a total-loss two-stroke: oil is mixed into the fuel)
+    keeps only the crankcase breather -- there is no pan, no drain plug,
+    no dipstick, no main gallery, no head oil fill to declare. These
+    used to be emitted unconditionally, putting a dipstick on a 25 cc
+    string trimmer."""
     from head_mesh import banks
     from crank_mesh import crank_stations, _pitch
     ports: list[PartPort] = []
@@ -117,19 +123,22 @@ def part_ports(layout) -> list[PartPort]:
                     for part, dirn in ((head, -axis), (deck, axis)):
                         ports.append(PartPort(f"{part}.coolant_face_{k + 1}{'a' if sgn < 0 else 'b'}", "crankcase" if part == deck else part, "coolant",
                                               cp.copy(), dirn, 0.006, True, fluid="coolant"))
-        # the FILL: a line port on top of the head/cover, open until something is put on it
-        top = deck_c + axis * (bore * 0.9); top[0] = min(xs) + pitch * 0.2
-        ports.append(PartPort(f"{head}.oil_fill", head, "oil-fill", top, axis, 0.016, False))
+        if wet_sump:
+            # the FILL: a line port on top of the head/cover, open until something is put on it
+            top = deck_c + axis * (bore * 0.9); top[0] = min(xs) + pitch * 0.2
+            ports.append(PartPort(f"{head}.oil_fill", head, "oil-fill", top, axis, 0.016, False))
     # crankcase line ports and the pan joint
     x_a = stations[0][0] - _pitch(stations, bore) / 2.0
     x_b = stations[-1][0] + _pitch(stations, bore) / 2.0
     r_throw = max(g.crank_radius_m for _, gs in stations for g in gs)
     tunnel_r = r_throw + bore * 0.32
     rim_y = y0 - tunnel_r * 0.6
-    ports.append(PartPort("crankcase.main_gallery", "crankcase", "main-gallery", np.array([x_b + bore * 0.1, y0 + bore * 0.2, z0 + tunnel_r]),
-                          np.array([0.0, 0.0, 1.0]), 0.008, False))
     ports.append(PartPort("crankcase.breather", "crankcase", "breather", np.array([x_a + bore * 0.4, y0 + tunnel_r, z0 - bore * 0.3]),
                           np.array([0.0, 1.0, 0.0]), 0.009, False, fluid="crankcase-gas"))
+    if not wet_sump:
+        return ports
+    ports.append(PartPort("crankcase.main_gallery", "crankcase", "main-gallery", np.array([x_b + bore * 0.1, y0 + bore * 0.2, z0 + tunnel_r]),
+                          np.array([0.0, 0.0, 1.0]), 0.008, False))
     ports.append(PartPort("crankcase.dipstick", "crankcase", "dipstick", np.array([(x_a + x_b) / 2.0, y0 + tunnel_r * 0.8, z0 + tunnel_r * 0.9]),
                           np.array([0.0, 0.7, 0.7]), 0.005, False))
     for k, xr in enumerate((x_a + bore * 0.2, (x_a + x_b) / 2.0, x_b - bore * 0.2)):

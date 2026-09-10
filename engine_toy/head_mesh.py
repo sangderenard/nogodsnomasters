@@ -84,13 +84,15 @@ def banks(layout) -> list[list]:
     return list(groups.values())
 
 
-def head_oil_ports(layout) -> list[dict]:
+def head_oil_ports(layout, wet_sump: bool = True) -> list[dict]:
     """Kept for the mesh: the ports themselves live in assembly_ports
     (heads: a FILL on top plus deck-face feed/return/coolant holes;
-    crankcase and pan: their own). Drawn as stubs by build_head_parts."""
+    crankcase and pan: their own). Drawn as stubs by build_head_parts.
+    wet_sump must match what drivetrain_graph declared, or the mesh
+    draws stubs for ports the graph no longer has."""
     from assembly_ports import part_ports
     out = []
-    for p in part_ports(layout):
+    for p in part_ports(layout, wet_sump=wet_sump):
         out.append({"identity": f"powertrain.{p.identity}", "position": [float(v) for v in p.position],
                     "direction": [float(v) for v in p.direction], "radius_m": p.radius_m, "port_kind": p.kind,
                     "fluid_role": p.fluid, "mating": p.mating, "part": p.part})
@@ -102,7 +104,8 @@ def build_head_parts(layout, covers_off: bool = False, engine=None, crank_angle_
     from vehicle_mesh import SolidPart
     parts: list = []
     bank_list = banks(layout)
-    for port in head_oil_ports(layout):
+    wet_sump = engine is None or not engine.architecture.two_stroke
+    for port in head_oil_ports(layout, wet_sump=wet_sump):
         d = np.array(port["direction"]); pos = np.array(port["position"])
         depth = 0.006 if port["mating"] else 0.018
         vtx, nrm = _tube(pos - d * 0.004, pos + d * depth, port["radius_m"], sides=10)

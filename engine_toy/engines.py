@@ -675,6 +675,10 @@ class ForcedInduction:
     lobe_count: int = 3                  # supercharger only: rotor lobes, sets whine order
     belt_ratio: float = 2.6              # supercharger only: blower shaft speed / crank speed
     anti_lag_capable: bool = False        # turbo only: can this car run an anti-lag map at all
+    # turbo only: how many real turbochargers -- a "twin turbo" is two
+    # compressor/turbine assemblies, each with its own oil feed/drain and
+    # wastegate; the graph emits one set per unit, mirrored across banks
+    turbo_count: int = 1
 
 
 # Real fuel chemistry -- lower heating value (J/kg), stoichiometric
@@ -1592,7 +1596,8 @@ _FORCED_INDUCTION: dict[str, ForcedInduction] = {
     "monster-540-blown-methanol": ForcedInduction(
         kind="supercharger", max_boost_frac=1.00, lobe_count=3, belt_ratio=2.9),
     "monster-632-twin-turbo": ForcedInduction(
-        kind="turbo", max_boost_frac=0.90, spool_tau_s=0.9, wastegate_frac=0.85, anti_lag_capable=True),
+        kind="turbo", max_boost_frac=0.90, spool_tau_s=0.9, wastegate_frac=0.85, anti_lag_capable=True,
+        turbo_count=2),
     # historically a gear-driven two-stage centrifugal supercharger, not a turbo
     "packard-merlin-v1650": ForcedInduction(
         kind="supercharger", max_boost_frac=0.55, lobe_count=1, belt_ratio=7.0),
@@ -1817,7 +1822,7 @@ def _build_specialty_engines() -> list[Engine]:
         fuel_compatibility=_pump_gas_profile("pump-gasoline-87"),
         lifter_spring=LIFTER_SPRING_PRESETS["soft"],
         rev_limiter=RevLimiterProfile.stock(),
-        carburetor=CarburetorProfile(),
+        carburetor=CarburetorProfile(is_carbureted=True, has_choke=False),  # a mixer/vaporizer IS a carburetor here -- the injected default put an EFI rail on a 1910 oilfield engine
         intake_system=IntakeSystem(filter_material="paper", filter_surface_area_cm2=500.0, plenum_volume_l=0.5),
         exhaust_system=ExhaustSystem(header_type="open-header", primary_diameter_mm=60.0),
         governor_mode="hit_and_miss", governor_target_rpm=500.0,

@@ -341,7 +341,12 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # a real turbocharger, oil-fed off the same real gallery the
         # engine itself uses (unlike a supercharger, which gets no
         # oil-line -- see _vehicle_powertrain_graph's own reasoning)
-        has_turbo=engine.forced_induction.kind == "turbo" and not engine.architecture.two_stroke,
+        # the old "and not two_stroke" gate here was wrong: a large marine
+        # two-stroke (the Wärtsilä) cannot run at all without its turbos
+        # -- the scavenge air comes from them. What a two-stroke lacks is
+        # a wet sump, and the production subunit already gates the turbo
+        # OIL lines on has_oil_pan separately.
+        has_turbo=engine.forced_induction.kind == "turbo",
         # boost-independent flow-capacity calibration -- see
         # _vehicle_powertrain_graph's own reasoning at
         # powertrain.intake_plenum_port
@@ -494,6 +499,38 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # wrench) sits just past the crank's own real x_max, preserving
     # every node's original spacing/lateral offset relative to each
     # other -- only the whole chain's start point moves.
+    # A "twin turbo" is two real compressor/turbine assemblies, each with
+    # its own bearing oil feed/drain and its own exhaust take-off. The
+    # production subunit emits exactly one; every additional unit is a
+    # clone of that real one, mirrored across the bank (z) so a V engine's
+    # second turbo sits on its other bank, with its own oil lines and its
+    # own share of the exhaust heat path.
+    fi_ = engine.forced_induction
+    base_turbo = next((n for n in nodes if n["identity"] == "powertrain.turbocharger"), None)
+    if fi_.kind == "turbo" and base_turbo is not None and fi_.turbo_count > 1:
+        turbo_nodes = [n for n in nodes if n["identity"].startswith("powertrain.turbocharger")]
+        turbo_edges = [e for e in edges if e["a"].startswith("powertrain.turbocharger")
+                       or e["b"].startswith("powertrain.turbocharger")]
+        for k in range(2, fi_.turbo_count + 1):
+            suffix = f"_{k}"
+            z_sign = -1.0 if k % 2 == 0 else 1.0
+            for n in turbo_nodes:
+                clone = {kk: (list(v) if isinstance(v, list) else v) for kk, v in n.items()}
+                clone["identity"] = n["identity"].replace("powertrain.turbocharger", f"powertrain.turbocharger{suffix}", 1)
+                clone["reference_position"][2] = abs(clone["reference_position"][2]) * z_sign
+                nodes.append(clone)
+            for e in turbo_edges:
+                ce = dict(e)
+                ce["identity"] = f"{e['identity']}{suffix}"
+                for end in ("a", "b"):
+                    if ce[end].startswith("powertrain.turbocharger"):
+                        ce[end] = ce[end].replace("powertrain.turbocharger", f"powertrain.turbocharger{suffix}", 1)
+                edges.append(ce)
+        # the one real exhaust heat path is now split across N turbines
+        for e in edges:
+            if e["identity"].startswith("thermal.exhaust_to_turbine") and "heat_share_frac" in e:
+                e["heat_share_frac"] = e["heat_share_frac"] / fi_.turbo_count
+
     driveline_chain_identities = (
         "powertrain.pre_clutch_flywheel_wrench", "powertrain.clutch", "powertrain.transmission",
         "powertrain.transfer_case", "powertrain.direct_drive_bypass",
@@ -590,6 +627,27 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # rather than left in place pretending it exists
         nodes[:] = [n for n in nodes if n["identity"] != "powertrain.camshaft"]
         edges[:] = [e for e in edges if "camshaft" not in e["identity"]]
+    # The production subunit is a PISTON-engine subunit: it always builds a
+    # camshaft, a piston intake plenum, a PCV port, and a wet-sump oil pan/
+    # pump. None of those exist on an electric or servo drive unit, a gas
+    # turbine, a free-piston atmospheric engine, or a steam/air expander --
+    # a dyno-side drive unit with a camshaft and a PCV valve is not a
+    # simplification, it is wrong hardware. Purged by kind (the audit's
+    # own finding); the driveline chain (clutch/transmission/transfer
+    # case) stays because it is this toy's real dyno coupling for every
+    # kind. A turbine keeps its oil pump/pan (a real APU has a pressure
+    # oil system); the rest have no wet sump at all.
+    _PISTON_ONLY = ("powertrain.camshaft", "powertrain.intake_plenum", "powertrain.engine_block_port.pcv")
+    _WET_SUMP_ONLY = ("powertrain.oil_pan", "powertrain.oil_pump", "powertrain.engine_block_port.oil_pan")
+    purge: tuple[str, ...] = ()
+    if engine.kind in ("electric", "servo-electric", "atmospheric", "expander"):
+        purge = _PISTON_ONLY + _WET_SUMP_ONLY
+    elif engine.kind == "turbine":
+        purge = _PISTON_ONLY
+    if purge:
+        gone = set(purge)
+        nodes[:] = [n for n in nodes if n["identity"] not in gone]
+        edges[:] = [e for e in edges if e["a"] not in gone and e["b"] not in gone]
     if not engine.accessories.alternator:
         nodes[:] = [n for n in nodes if n["identity"] != "electrical.alternator"]
         edges[:] = [e for e in edges if "alternator" not in e["identity"]]
@@ -750,7 +808,9 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # dipstick, drain plug, main gallery) stay unconnected until a
     # hose, cap or plug part is put on them.
     from assembly_ports import part_ports, mate_ports, emit_ports_graph
-    casting_ports = part_ports(layout)
+    # a total-loss two-stroke has no wet sump: no pan/drain/dipstick/
+    # gallery/fill ports to declare, only the crankcase breather
+    casting_ports = part_ports(layout, wet_sump=not engine.architecture.two_stroke)
     mating_result = mate_ports(casting_ports)
     emit_ports_graph(casting_ports, mating_result, node, edge)
     # the dressing (dressing.py): lubrication, filters, rail, ignition

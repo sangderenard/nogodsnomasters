@@ -559,6 +559,39 @@ engine) still carries the production subunit's generic `intake_plenum`/
 loop. A real blown drag engine runs a hat/plenum over the blower; the
 right representation there is a hardware decision, not a guess.
 
+## Parts catalogue, stage 1: the data bugs a real-parts audit exposed
+
+A per-engine audit (what each of the 26 engines declares vs. what a
+real one of that type carries) ranked 20 part families to add. Before
+adding anything, the audit surfaced wrong hardware already present,
+fixed here first:
+- **Total-loss two-strokes carried wet-sump ports** (drain plug,
+  dipstick, main gallery, head oil fill, pan rim faces) because
+  `assembly_ports.part_ports` emitted them unconditionally. It now takes
+  `wet_sump`; `drivetrain_graph` and `head_mesh` both pass
+  `not two_stroke`, so the graph and the drawn stubs agree.
+- **Non-piston kinds carried a piston core**: electric, servo-electric,
+  atmospheric and expander engines had a camshaft, a piston intake
+  plenum, a PCV port and a wet-sump pan/pump; the turbine had the first
+  three. Purged by kind. The driveline chain stays for every kind (it is
+  the toy's real dyno coupling); the turbine keeps its oil system (a
+  real APU has one).
+- **A 1910 hit-and-miss engine had an EFI rail** — `CarburetorProfile()`
+  defaults to injected. Fairbanks-Morse is now `is_carbureted=True` (a
+  mixer/vaporizer is a carburetor in this vocabulary) and gets its bowl.
+- **"Twin turbo" had one turbo.** `ForcedInduction.turbo_count` (default
+  1; 2 on the 632) clones the production turbo node with its own oil
+  feed/drain and exhaust take-off, mirrored to the other bank, and
+  splits the exhaust heat path across the units. The old
+  `not two_stroke` gate on `has_turbo` is gone (a large marine
+  two-stroke cannot run without its turbos; what it lacks is a wet
+  sump, which production already gates separately).
+
+**Flagged, not decided:** the Wärtsilä declares no forced induction at
+all, so it still has no turbo nodes. Giving it its real 3–4 turbos means
+declaring a real scavenge boost that changes its physics — a hardware
+value to set deliberately, not fudged in with zero boost.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/
