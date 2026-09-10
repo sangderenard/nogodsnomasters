@@ -1535,10 +1535,15 @@ _FUEL: dict[str, dict] = {
     # drag/exhibition builds: genuinely built around exotic fuel, pump gas
     # is the downgrade here, not the baseline
     "supercharged-drag-v8-8200": dict(
+        # a blown nitro/alcohol engine runs a cam- or belt-driven MECHANICAL
+        # barrel pump on the block, not an electric in-tank pump -- every
+        # catalogue engine used to read "electric"
+        fuel_delivery=FuelDeliverySystem(tank_capacity_l=20.0, pump_kind="mechanical", pump_flow_capacity_kg_s=0.45, line_diameter_mm=12.0),
         preferred_fuel_profile="nitromethane-race",
         fuel_compatibility={**_pump_gas_profile("pump-gasoline-93", **{"pump-gasoline-93": 0.55}),
                              "nitromethane-race": 1.0}),
     "monster-540-blown-methanol": dict(
+        fuel_delivery=FuelDeliverySystem(tank_capacity_l=25.0, pump_kind="mechanical", pump_flow_capacity_kg_s=0.30, line_diameter_mm=10.0),
         preferred_fuel_profile="methanol-race",
         fuel_compatibility={**_pump_gas_profile("pump-gasoline-93", **{"pump-gasoline-93": 0.40}),
                              "nitromethane-race": 0.85, "methanol-race": 1.0}),

@@ -309,6 +309,11 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
             # for identity, mass and picking -- drawing a box here too
             # would put a second body on top of the real one
             continue
+        if node.get("chassis_side"):
+            # hung from the body, not the engine (tank, electric pump,
+            # muffler, tailpipe): real, in the graph, not in the engine's
+            # own view -- the same cut EnginePackage makes for sourcing
+            continue
         if layout_data and (node["identity"].startswith("powertrain.engine_block_body")
                             or node["identity"] == "powertrain.oil_pan"):
             # the generic block/pan boxes stand in only when there is no

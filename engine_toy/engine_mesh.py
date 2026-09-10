@@ -94,6 +94,13 @@ MATERIAL_RULES = [
     (("egr_valve",), Material("egr", "EGR valve", _rgb("#8a5a3a"), 1.0, 0.55, 0.25, 0.3, 20.0)),
     (("pcv_valve",), Material("pcv", "PCV valve", _rgb("#202020"), 1.0, 0.6, 0.3, 0.2, 14.0)),
     (("timing_cover", "bellhousing"), Material("housing", "timing cover / bellhousing", _rgb("#3f4349"), 0.3, 0.6, 0.25, 0.25, 16.0)),
+    # forced induction (engine_parts.py)
+    (("blower_case", "blower_manifold", "blower_snout"), Material("blower", "blower case / manifold / snout", _rgb("#b9bec6"), 1.0, 0.3, 0.22, 0.6, 48.0, 0.85)),
+    (("blower_burst_panel",), Material("burst_panel", "burst panel / restraint", _rgb("#2a2a2e"), 1.0, 0.6, 0.25, 0.25, 16.0)),
+    (("blower_pulley",), Material("blower_pulley", "blower drive pulley", _rgb("#3a3d44"), 1.0, 0.4, 0.22, 0.5, 34.0, 0.7)),
+    (("compressor_housing", "blow_off_valve", "charge_cooler", "charge_pipe"), Material("charge_side", "compressor / charge cooler / BOV", _rgb("#c9ced6"), 0.95, 0.35, 0.24, 0.55, 40.0, 0.8)),
+    (("turbine_housing", "wastegate", "downpipe", "up_pipe"), Material("hot_side", "turbine housing / wastegate / downpipe", _rgb("#8c5a3c"), 0.9, 0.55, 0.25, 0.3, 20.0)),
+    (("barrel_valve",), Material("barrel_valve", "barrel valve", _rgb("#3ccf6a"), 1.0, 0.4, 0.25, 0.4, 30.0)),
 ]
 DEFAULT_MATERIAL = Material("other", "other graph parts", _rgb("#b0b0b8"), 0.35, 0.7, 0.25, 0.2, 14.0)
 MATERIALS: list[Material] = [m for _, m in MATERIAL_RULES] + [DEFAULT_MATERIAL]
@@ -134,14 +141,20 @@ def wanted_in_view(name: str) -> bool:
                                        # universal bolt-ons (engine_parts.py)
                                        "harmonic_balancer", "flywheel", "starter_motor", "recoil_starter", "crank_nose_fitting",
                                        "_pulley", "belt_tensioner", "timing_cover", "timing_drive", "expansion_bottle",
-                                       "heater_core", "egr_valve", "pcv_valve", "bellhousing"))
+                                       "heater_core", "egr_valve", "pcv_valve", "bellhousing",
+                                       # forced induction
+                                       "blower_", "supercharger_rotor", "compressor_housing", "turbine_housing",
+                                       "wastegate", "blow_off_valve", "charge_cooler", "downpipe", "barrel_valve",
+                                       "fuel_pump"))
     if name.startswith("edge_"):
         return any(k in name for k in ("cylinder", "exhaust", "runner", "lead", "rail_feed", "oil", "pan", "trough", "scavenge",
                                        "air_filter", "stack", "coil", "throttle", "splash",
                                        # real visible lines from engine_parts.py: hoses, the EGR
                                        # tube, the timing run -- NOT the hub/bolted-joint edges,
                                        # which are joints, not pipes, and stay unlisted
-                                       "heater_", "expansion_bottle", "egr_tube", "timing_chain"))
+                                       "heater_", "expansion_bottle", "egr_tube", "timing_chain",
+                                       "blower_belt", "charge_pipe", "up_pipe", "turbine_to_downpipe",
+                                       "blower_case_to_plenum_charge", "hat_nozzle", "barrel_valve"))
     return True
 
 

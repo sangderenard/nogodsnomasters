@@ -335,6 +335,185 @@ def _emit_bellhousing(engine, nodes, edges, node, edge, node_by_id) -> None:
     edge("powertrain.bellhousing_to_transmission", "powertrain.bellhousing", "powertrain.transmission", "rigid-bolted-joint", radius=0.008)
 
 
+# ---------------------------------------------------------------------
+# forced induction: the blower on its manifold with the hat on top; each
+# turbo as real housings with wastegate, blow-off and downpipe; the
+# charge cooler and its pipes; mechanical injection's barrel valve and
+# hat nozzles
+# ---------------------------------------------------------------------
+
+def _emit_supercharger(engine, nodes, edges, node, edge, node_by_id) -> None:
+    fi = engine.forced_induction
+    rotor = node_by_id.get("supercharger_rotor")
+    plenum = node_by_id.get("powertrain.intake_plenum")
+    if fi.kind != "supercharger" or rotor is None or plenum is None:
+        return
+    half = engine_geometry.block_half_yz_m(engine)
+    pp = _pos(plenum)
+    # the case is sized by the real declared rotor pack: lobe count sets
+    # the rotor diameter class, boost fraction the case length (a 14-71
+    # is longer than a 6-71; both real Roots sizes), belt ratio nothing
+    # geometric -- disclosed proportions of the block's own half-width
+    lobes = max(2, int(fi.lobe_count))
+    r_rotor = half * (0.34 + 0.05 * (lobes - 2))
+    case_half = np.array([half * (1.3 + 0.6 * min(fi.max_boost_frac, 1.5)), r_rotor * 1.15, r_rotor * 2.25])
+    plate_c = pp + UP * (float(plenum.get("body_half_extent_m", [0, half * 0.3, 0])[1]) + 0.015)
+    case_c = plate_c + UP * (0.015 + case_half[1])
+    node("powertrain.blower_manifold", [float(v) for v in plate_c], "engine-block-component", mass_kg=engine.mass_kg * 0.03,
+         body_half_extent_m=[float(case_half[0]), 0.015, float(case_half[2])])
+    edge("powertrain.blower_manifold_to_plenum", "powertrain.blower_manifold", "powertrain.intake_plenum", "rigid-bolted-joint", radius=0.008)
+    node("powertrain.blower_case", [float(v) for v in case_c], "engine-block-component", mass_kg=engine.mass_kg * 0.09,
+         lobe_count=lobes, body_half_extent_m=[float(v) for v in case_half])
+    edge("powertrain.blower_case_to_manifold", "powertrain.blower_case", "powertrain.blower_manifold", "rigid-bolted-joint", radius=0.008)
+    # the production rotor node becomes rotor 1 inside the case; rotor 2
+    # beside it, timed to it by the gear pair at the front bearing plate
+    rotor["reference_position"] = [float(v) for v in (case_c + np.array([0.0, 0.0, -r_rotor]))]
+    rotor["drum_axis"] = [1.0, 0.0, 0.0]; rotor["drum_radius_m"] = float(r_rotor * 0.96); rotor["drum_length_m"] = float(case_half[0] * 1.9)
+    rotor["mass_kg"] = engine.mass_kg * 0.02
+    node("supercharger_rotor_2", [float(v) for v in (case_c + np.array([0.0, 0.0, r_rotor]))], "rotating-mass",
+         mass_kg=engine.mass_kg * 0.02, inertia_kg_m2=float(rotor.get("inertia_kg_m2", 0.0015)),
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(r_rotor * 0.96), drum_length_m=float(case_half[0] * 1.9))
+    edge("supercharger_rotor_timing_gears", "supercharger_rotor", "supercharger_rotor_2", "geared-timing-drive",
+         radius=0.006, ratio=-1.0)
+    # drive snout forward to the belt plane, blower pulley on it, crank
+    # pulley below on the damper, the cogged belt between them
+    snout_len = max(0.06, abs(float(rotor["reference_position"][0]) - float(case_c[0]) - case_half[0]) + 0.08)
+    snout_c = case_c + np.array([-(case_half[0] + snout_len / 2.0), 0.0, 0.0])
+    node("powertrain.blower_snout", [float(v) for v in snout_c], "engine-block-component", mass_kg=3.0,
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(r_rotor * 0.5), drum_length_m=float(snout_len))
+    edge("powertrain.blower_snout_to_case", "powertrain.blower_snout", "powertrain.blower_case", "rigid-bolted-joint", radius=0.006)
+    pulley_c = snout_c + np.array([-(snout_len / 2.0 + 0.02), 0.0, 0.0])
+    node("powertrain.blower_pulley", [float(v) for v in pulley_c], "rotating-mass", mass_kg=1.5,
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(r_rotor * 0.9), drum_length_m=0.04)
+    edge("powertrain.blower_pulley_hub", "powertrain.blower_pulley", "supercharger_rotor", "rigid-keyed-hub", radius=0.008)
+    if "powertrain.harmonic_balancer" in node_by_id:
+        edge("powertrain.blower_belt", "powertrain.harmonic_balancer", "powertrain.blower_pulley", "cosmetic-belt-wrap", radius=0.006)
+    # the burst panel / restraint strap over the case: real, mandated on
+    # a nitro/alcohol blower, a plate and a strap over the top
+    node("powertrain.blower_burst_panel", [float(v) for v in (case_c + UP * (case_half[1] + 0.006))], "engine-block-component",
+         mass_kg=1.0, body_half_extent_m=[float(case_half[0] * 0.5), 0.006, float(case_half[2] * 0.9)])
+    edge("powertrain.burst_panel_to_case", "powertrain.blower_burst_panel", "powertrain.blower_case", "rigid-bolted-joint", radius=0.005)
+    # the hat (the throttle body dressing placed 1.3 radii over the plenum)
+    # moves on top of the case, its butterflies now above the blower; the
+    # scoop (air_filter "stacks") sits on the hat
+    hat = node_by_id.get("powertrain.throttle_body")
+    if hat is not None:
+        hat_h = max(float(hat.get("body_half_extent_m", [0, half * 0.3, 0])[1]), half * 0.25)
+        hat_c = case_c + UP * (case_half[1] + 0.012 + hat_h)
+        delta = hat_c - _pos(hat)
+        hat["reference_position"] = [float(v) for v in hat_c]
+        hat["inlet_kind"] = "injector-hat"
+        # the hat's own bungs (dressing's vacuum tap) ride up with it
+        for n in nodes:
+            if n.get("part") == "powertrain.throttle_body" and n.get("kind") == "engine-block-port":
+                n["reference_position"] = [float(v) for v in (_pos(n) + delta)]
+        for e in edges:
+            if e["identity"] == "powertrain.throttle_body_to_plenum":
+                e["b"] = "powertrain.blower_case"   # the hat feeds the blower, the blower feeds the plenum
+        edge("powertrain.blower_case_to_plenum_charge", "powertrain.blower_case", "powertrain.intake_plenum", "low-pressure-air-line",
+             radius=float(r_rotor * 0.6), circuit_identity="intake-air", medium_rate_state="intake-air-flow-and-temperature")
+        af = node_by_id.get("powertrain.air_filter")
+        if af is not None:
+            af["reference_position"] = [float(v) for v in (hat_c + UP * (hat_h + half * 0.35))]
+            af["scoop"] = True
+            af["body_half_extent_m"] = [float(case_half[0] * 0.55), half * 0.3, float(case_half[2] * 0.6)]
+            af["drum_axis"] = None
+
+
+def _emit_mechanical_injection(engine, nodes, edges, node, edge, node_by_id) -> None:
+    """Hat nozzles and the barrel valve of a mechanical (constant-flow)
+    injection system: present when the build declares a mechanical pump
+    AND runs an injector hat. Port nozzles are the real injector bosses
+    the rail already feeds."""
+    if engine.fuel_delivery.pump_kind != "mechanical":
+        return
+    hat = node_by_id.get("powertrain.throttle_body")
+    if hat is None or hat.get("inlet_kind") != "injector-hat":
+        return
+    hp = _pos(hat)
+    half = engine_geometry.block_half_yz_m(engine)
+    barrels = int(hat.get("barrels", 2))
+    pitch = float(hat.get("barrel_pitch_m", half * 0.5))
+    # the barrel valve rides the throttle linkage on the hat's side
+    bv = hp + np.array([0.0, 0.0, float(hat.get("body_half_extent_m", [0, 0, half * 0.4])[2]) + 0.03])
+    node("powertrain.barrel_valve", [float(v) for v in bv], "engine-block-component", mass_kg=0.8,
+         body_half_extent_m=[0.03, 0.025, 0.02])
+    edge("powertrain.barrel_valve_to_hat", "powertrain.barrel_valve", "powertrain.throttle_body", "rigid-bolted-joint", radius=0.005)
+    edge("powertrain.pump_to_barrel_valve", "fuel.pump", "powertrain.barrel_valve", "fuel-supply-line",
+         radius=0.005, circuit_identity="fuel", medium_rate_state="fuel-flow-and-pressure")
+    if "powertrain.fuel_rail" in node_by_id:
+        edge("powertrain.barrel_valve_to_port_rail", "powertrain.barrel_valve", "powertrain.fuel_rail", "fuel-supply-line",
+             radius=0.004, circuit_identity="fuel", medium_rate_state="fuel-flow-and-pressure")
+    for bi in range(barrels):
+        x = hp[0] + (bi - (barrels - 1) / 2.0) * pitch
+        for side in (-1.0, 1.0):
+            nid = f"powertrain.throttle_body.hat_nozzle_{bi + 1}{'l' if side < 0 else 'r'}"
+            pos = np.array([x, hp[1] + 0.01, hp[2] + side * float(hat.get("body_half_extent_m", [0, 0, half * 0.4])[2]) * 0.6])
+            node(nid, [float(v) for v in pos], "engine-block-port", port_kind="hat-nozzle",
+                 port_direction=[0.0, 0.0, -side], port_radius_m=0.004, fluid_role="fuel", mating=False,
+                 connected=True, plugged=False, part="powertrain.throttle_body", bung=True)
+            edge(f"{nid}.feed", "powertrain.barrel_valve", nid, "fuel-supply-line", radius=0.003,
+                 circuit_identity="fuel", medium_rate_state="fuel-flow-and-pressure")
+
+
+def _emit_turbo_hardware(engine, nodes, edges, node, edge, node_by_id) -> None:
+    fi = engine.forced_induction
+    if fi.kind != "turbo":
+        return
+    turbos = [n for n in nodes if n["identity"].startswith("powertrain.turbocharger")
+              and n.get("kind") == "rotating-mass"]
+    if not turbos:
+        return
+    half = engine_geometry.block_half_yz_m(engine)
+    collectors = [n for n in nodes if n.get("kind") == "exhaust-collector"]
+    plenum = node_by_id.get("powertrain.intake_plenum")
+    # the charge cooler: one air-to-air core ahead of the engine, fed by
+    # every compressor, feeding the plenum -- present whenever the intake
+    # resolved to the piped placement (dressing) or any turbo exists
+    x_min, _ = engine_geometry.crank_extent(engine_geometry.cylinder_sites(engine))
+    cooler_c = np.array([x_min - half * 2.2, half * 0.9, 0.0])
+    node("powertrain.charge_cooler", [float(v) for v in cooler_c], "engine-block-component", mass_kg=engine.mass_kg * 0.02,
+         exchanger_kind="air-to-air-charge-cooler", body_half_extent_m=[half * 0.25, half * 1.1, half * 1.9])
+    if plenum is not None:
+        edge("powertrain.cold_side_charge_pipe", "powertrain.charge_cooler", "powertrain.intake_plenum", "low-pressure-air-line",
+             radius=0.03, circuit_identity="intake-air", medium_rate_state="intake-air-flow-and-temperature")
+    for t in turbos:
+        tp = _pos(t)
+        side = 1.0 if tp[2] >= 0 else -1.0
+        base = t["identity"]
+        # real housings around the production point mass: compressor
+        # (cold, inboard toward the charge pipe) and turbine (hot,
+        # outboard toward the header), the cartridge between them
+        r_c = half * 0.55
+        node(f"{base}.compressor_housing", [float(v) for v in (tp + np.array([-r_c * 0.9, 0.0, 0.0]))], "engine-block-component",
+             mass_kg=2.5, drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(r_c), drum_length_m=float(r_c * 0.9))
+        node(f"{base}.turbine_housing", [float(v) for v in (tp + np.array([r_c * 0.9, 0.0, 0.0]))], "exhaust-component",
+             mass_kg=3.5, drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(r_c * 0.85), drum_length_m=float(r_c * 0.9))
+        edge(f"{base}.chra_compressor", base, f"{base}.compressor_housing", "rigid-bolted-joint", radius=0.005)
+        edge(f"{base}.chra_turbine", base, f"{base}.turbine_housing", "rigid-bolted-joint", radius=0.005)
+        # wastegate on the turbine housing, blow-off on the compressor side
+        node(f"{base}.wastegate", [float(v) for v in (tp + np.array([r_c * 0.9, r_c * 1.05, 0.0]))], "exhaust-component",
+             mass_kg=0.8, wastegate_frac=float(fi.wastegate_frac), body_half_extent_m=[0.03, 0.03, 0.025])
+        edge(f"{base}.wastegate_to_turbine", f"{base}.wastegate", f"{base}.turbine_housing", "rigid-bolted-joint", radius=0.004)
+        node(f"{base}.blow_off_valve", [float(v) for v in (tp + np.array([-r_c * 0.9, r_c * 1.05, 0.0]))], "engine-block-component",
+             mass_kg=0.4, drum_axis=[0.0, 1.0, 0.0], drum_radius_m=0.02, drum_length_m=0.05)
+        edge(f"{base}.bov_to_compressor", f"{base}.blow_off_valve", f"{base}.compressor_housing", "rigid-bolted-joint", radius=0.004)
+        # hot side: the nearest collector feeds this turbine; a downpipe
+        # leaves the turbine outlet rearward
+        if collectors:
+            coll = min(collectors, key=lambda c: abs(_pos(c)[2] - tp[2]) + abs(_pos(c)[0] - tp[0]) * 0.3)
+            edge(f"{base}.up_pipe", coll["identity"], f"{base}.turbine_housing", "exhaust-flow-path", radius=0.028,
+                 circuit_identity="exhaust", medium_rate_state="exhaust-pulse-pressure-and-temperature")
+        dp_end = tp + np.array([r_c * 0.9 + 0.30, -half * 0.6, side * half * 0.4])
+        node(f"{base}.downpipe", [float(v) for v in dp_end], "exhaust-component", mass_kg=2.0, chassis_side=False,
+             drum_axis=[float(v) for v in _unit(dp_end - (tp + np.array([r_c * 0.9, 0.0, 0.0])))], drum_radius_m=0.032, drum_length_m=0.30)
+        edge(f"{base}.turbine_to_downpipe", f"{base}.turbine_housing", f"{base}.downpipe", "exhaust-flow-path", radius=0.032,
+             circuit_identity="exhaust", medium_rate_state="exhaust-pulse-pressure-and-temperature")
+        # cold side: compressor outlet to the charge cooler
+        edge(f"{base}.hot_side_charge_pipe", f"{base}.compressor_housing", "powertrain.charge_cooler", "low-pressure-air-line",
+             radius=0.028, circuit_identity="intake-air", medium_rate_state="intake-air-flow-and-temperature")
+
+
 def emit_universal_parts(engine, layout, nodes, edges, node, edge) -> None:
     """Called once per graph after dressing and headers, so every anchor
     node it hangs a part off already sits at its final real position."""
@@ -349,3 +528,11 @@ def emit_universal_parts(engine, layout, nodes, edges, node, edge) -> None:
     _emit_coolant_plumbing(engine, nodes, edges, node, edge, node_by_id)
     _emit_emissions(engine, nodes, edges, node, edge, node_by_id)
     _emit_bellhousing(engine, nodes, edges, node, edge, node_by_id)
+    # forced induction -- after the crank-end hardware so the blower belt
+    # can reach the damper, and after the exhaust chain so a turbine can
+    # take its up-pipe off a real collector
+    node_by_id = {n["identity"]: n for n in nodes}
+    _emit_supercharger(engine, nodes, edges, node, edge, node_by_id)
+    node_by_id = {n["identity"]: n for n in nodes}
+    _emit_mechanical_injection(engine, nodes, edges, node, edge, node_by_id)
+    _emit_turbo_hardware(engine, nodes, edges, node, edge, node_by_id)

@@ -660,6 +660,56 @@ Three corrections from looking at those frames, all real hardware:
   leads are the red aftermarket-ignition look; magneto and glow-plug
   bus keep their dark material.
 
+## Parts catalogue, stage 3: forced induction and mechanical injection (`engine_parts.py`, `dressing.py`)
+
+- **The blown engine is not ITBs on the ports.** `derive_dressing` now
+  yields a `"hat"` throttle style for a supercharger with open stacks:
+  one unit -- the injector hat (bugcatcher) -- whose barrels are the
+  hat's butterflies (a declared `ThrottleBodyAssembly` if any, else the
+  classic pair), one open plenum, because the blower case IS the
+  manifold. Dressing still places a single chamber and throttle body;
+  `_emit_supercharger` then builds the real stack around the existing
+  `supercharger_rotor`: manifold plate on the plenum, case sized by the
+  declared rotor pack (lobe count -> rotor diameter class, boost
+  fraction -> case length, disclosed proportions of the block's own
+  half-width), the production rotor node becomes rotor 1 with a timed
+  rotor 2 beside it, drive snout forward to the belt plane with the
+  blower pulley on it and a belt run to the damper, the burst panel /
+  restraint over the case, and the hat moved on top of the case (its
+  own bungs riding with it) with the scoop on the hat.
+- **Mechanical injection** when the build declares a mechanical pump:
+  `FuelDeliverySystem.pump_kind="mechanical"` on the two blown alcohol/
+  nitro engines (every catalogue engine used to read electric). A
+  mechanical pump is engine-mounted, so `drivetrain_graph` places it on
+  the block's front flank rather than at the chassis with an electric
+  pump. `_emit_mechanical_injection` adds the barrel valve on the hat's
+  linkage, fed from the pump and feeding the port rail, and hat nozzles
+  (two per butterfly) as connected fuel ports; port nozzles are the
+  injector bosses the rail already feeds.
+- **Each turbo as real hardware.** Around every `powertrain.
+  turbocharger[_N]` point mass: compressor housing (cold, inboard) and
+  turbine housing (hot, outboard) on the cartridge, wastegate on the
+  turbine, blow-off on the compressor, an up-pipe from the nearest real
+  collector, a downpipe rearward; one air-to-air charge cooler ahead of
+  the engine with hot-side pipes from every compressor and a cold-side
+  pipe to the plenum.
+- The tank and an electric pump carry `chassis_side` (with muffler and
+  tailpipe); `vehicle_mesh` skips such nodes in the engine view and
+  `EnginePackage` classifies them supplied-elsewhere -- one attribute,
+  one rule, for everything hung from the body.
+- Ordering: `emit_universal_parts` now runs LAST in
+  `build_drivetrain_graph`, after the accessory ring and the
+  supercharger rotor -- the blower case is built around that rotor, and
+  a turbine takes its up-pipe off a real collector.
+
+Verified over all 26 engines (graph + dangling-edge check, mesh build,
+crate builds in three modes) and by eye at full detail on the blown
+drag V8 and the twin-turbo 632.
+
+Still open in this family: the Wärtsilä's turbos (needs a declared
+scavenge boost), the Merlin's two-stage/two-speed blower and aftercooler
+circuit, the Wasp's supercharger in its rear accessory case.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/

@@ -1045,12 +1045,23 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # close, at `front`.
         chassis_remote = (front[0] - 0.35, -0.30, 0.40)
         tank_pos = (chassis_remote[0], chassis_remote[1], chassis_remote[2])
-        pump_pos = (chassis_remote[0] + 0.06, chassis_remote[1] + 0.03, chassis_remote[2] - 0.03)
+        if fd.pump_kind == "mechanical":
+            # a mechanical pump is ENGINE-mounted -- driven off the cam
+            # (a diaphragm pump on the timing-cover flank) or the belt (a
+            # race barrel pump) -- so it sits on the block's front flank,
+            # not out at the chassis with the electric in-tank pump
+            pump_pos = (front[0] - 0.02, front[1] - 0.04, front[2] + engine_geometry.block_half_yz_m(engine) * 1.1)
+        else:
+            pump_pos = (chassis_remote[0] + 0.06, chassis_remote[1] + 0.03, chassis_remote[2] - 0.03)
         rail_pos = (front[0] + 0.03, front[1] + 0.02, front[2])
         node("fuel.tank", tank_pos, "high-pressure-canister",
-             mass_kg=2.0 + tank_capacity_kg * 0.05, capacity_kg=tank_capacity_kg)
+             mass_kg=2.0 + tank_capacity_kg * 0.05, capacity_kg=tank_capacity_kg, chassis_side=True)
+        # chassis_side: the tank always, the pump only when it is the
+        # electric in-tank/inline kind -- a mechanical pump is bolted to
+        # the engine (see pump_pos above) and belongs in its view/crate
         node("fuel.pump", pump_pos,
-             "electro-mechanical-pump" if fd.pump_kind == "electric" else "mechanical-diaphragm-pump")
+             "electro-mechanical-pump" if fd.pump_kind == "electric" else "mechanical-diaphragm-pump",
+             chassis_side=(fd.pump_kind != "mechanical"))
         # dressing.emit_dressing_graph (already run, above) creates this
         # exact rail/bowl identity itself whenever it finds real
         # injector/float-bowl bosses to hang it off of -- creating it
@@ -1388,15 +1399,6 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # dispatched by DrivetrainSolver.step() and carries no physics; the
     # real torque coupling for AC/pneumatics is the friction-clutch-shaft
     # edge _add_belt_driven_compressor already built above.
-    # the universal bolt-on parts every real crank engine carries (engine_
-    # parts.py): exhaust downstream of the collectors, damper/flywheel/
-    # ring gear + the starter hardware that meshes with it, belt pulleys
-    # and tensioner, timing cover and drive, coolant bottle/heater core,
-    # PCV/EGR, bellhousing -- emitted here, after headers and dressing,
-    # so every anchor node already sits at its final real position
-    from engine_parts import emit_universal_parts
-    emit_universal_parts(engine, layout, nodes, edges, node, edge)
-
     accessory_node_identity = {
         "alternator": "electrical.alternator", "water_pump": "powertrain.water_pump",
         "fan": "powertrain.cooling_fan", "ac_compressor": "ac_compressor",
@@ -1424,6 +1426,17 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
              damping_nm_per_rad_s=engine.peak_torque_nm * 0.3,
              max_torque_nm=engine.peak_torque_nm * 0.20,
              backlash_rad=0.004)
+
+    # the universal bolt-on parts every real crank engine carries (engine_
+    # parts.py): exhaust downstream of the collectors, damper/flywheel/
+    # ring gear + the starter hardware that meshes with it, belt pulleys
+    # and tensioner, timing cover and drive, coolant bottle/heater core,
+    # PCV/EGR, bellhousing, and the forced-induction hardware -- emitted
+    # LAST, after headers, dressing, the accessory ring and the
+    # supercharger rotor, so every anchor node already exists at its
+    # final real position (the blower case is built around that rotor)
+    from engine_parts import emit_universal_parts
+    emit_universal_parts(engine, layout, nodes, edges, node, edge)
 
     # The dyno absorber: test equipment, not a vehicle part -- no real
     # vehicle graph would ever have one, so it stays genuinely this toy's

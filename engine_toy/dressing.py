@@ -49,7 +49,7 @@ class DressingSpec:
     fuel_filter: str   # "inline" | "sediment-bowl" | "water-separator" | "none"
     rail: str          # "port-rail" | "common-rail" | "none"
     ignition: str      # "distributor" | "coil-on-plug" | "magneto" | "glow" | "flame" | "none"
-    throttle: str      # "central" | "carburetor" | "individual" | "none"
+    throttle: str      # "central" | "carburetor" | "individual" | "hat" (injector hat on a blower) | "none"
 
 
 def derive_dressing(engine) -> DressingSpec:
@@ -82,7 +82,12 @@ def derive_dressing(engine) -> DressingSpec:
         ignition = "coil-on-plug"
     else:
         ignition = "distributor"
-    throttle = "none" if ci else ("individual" if fm == "velocity_stack" else ("carburetor" if carbureted else "central"))
+    # a blown engine with open stacks is not ITBs on the ports: the
+    # throttle is the injector HAT (bugcatcher) on top of the blower,
+    # butterflies in the hat, nozzles in the hat and at the ports
+    blown = engine.forced_induction.kind == "supercharger"
+    throttle = ("none" if ci else "hat" if (blown and fm == "velocity_stack")
+                else "individual" if fm == "velocity_stack" else ("carburetor" if carbureted else "central"))
     return DressingSpec(lube, oil_filter, air_filter, fuel_filter, rail, ignition, throttle)
 
 
@@ -142,6 +147,13 @@ def derive_intake_hardware(engine, spec: DressingSpec, n_ports: int, n_banks: in
         return IntakeHardware(intake.inlet_units or 1, 1, intake.plenum_planes or 1, placement, "unthrottled manifold")
     if spec.throttle == "individual":
         return IntakeHardware(n_ports, 1, 1, placement, "individual throttle bodies")
+    if spec.throttle == "hat":
+        # one unit: the hat on top of the blower; its barrels are the hat's
+        # butterflies (a declared assembly if any, else the classic pair);
+        # one open plenum -- the blower case IS the manifold
+        tb = getattr(engine, "throttle_body", None)
+        barrels = len(tb.barrels) if (tb is not None and getattr(tb, "barrels", None)) else 2
+        return IntakeHardware(intake.inlet_units or 1, barrels, 1, placement, "injector hat over blower")
 
     tb = getattr(engine, "throttle_body", None)
     declared_barrels = len(tb.barrels) if (tb is not None and getattr(tb, "barrels", None)) else None
