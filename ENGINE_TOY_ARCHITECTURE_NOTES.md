@@ -351,6 +351,59 @@ run unaffected, since the new head nodes carry no visual geometry of
 their own and `vehicle_mesh.py`'s `body_half_extent_m` reader already
 has a real fallback for a node that doesn't declare one.
 
+## Updated: a universal stability gate, an optional TRA decoupling check, and a subframe fallback (`engine_mounts.py`, `engine_mass_properties.py`)
+
+Real industry practice splits mount validation into two tiers, and
+this follows both rather than inventing a bespoke check: (1) a cheap,
+near-universal geometric invariant every real mount layout satisfies
+regardless of technique — at least 3 non-collinear support points
+whose horizontal (X-Z) footprint contains the assembly's real center
+of gravity (2-point mounts can never resist roll/tip-over no matter
+how stiff); (2) the real, standard automotive NVH method for anything
+deeper — Torque Roll Axis (TRA) rigid-body decoupling, a 6-DOF (3
+translation + 3 rotation about the real center of gravity) generalized
+eigenproblem built from each mount's own real position and stiffness,
+run only for compliant technique families (rubber isolator/cradle;
+skipped for solid/bar-cage/aircraft, matching real practice — NVH
+refinement isn't the point of a rigid install).
+
+`engine_mass_properties.py` is the real foundation this needed: total
+mass, center of gravity, and a real 3x3 inertia tensor, computed as a
+real point-mass distribution over every `mass_in_total` node in the
+graph (the block/head/crank split above, plus whatever else the
+production subunit already marks that way) — not a separate hand-
+placed estimate.
+
+`assign_mounting` now returns a `MountingPlan` (mounts + technique +
+`StabilityResult` + `RigidBodyProperties` + optional `TRAResult`)
+instead of a bare list. When the direct real mount points (`mount.
+engine_left/right`, optionally the driveline's own) fail the
+stability gate, technique falls back to `CRADLE_SUBFRAME` and a real
+subframe is generated: a rectangle sized directly off the assembly's
+own real mass-bearing X-extent and Z-spread, which GUARANTEES CG
+containment by construction rather than checking afterward and hoping.
+`EnginePackage.correlate_mounts` and its `.mounting` field updated to
+the new `MountingPlan` shape (`.mounting.mounts`).
+
+**A real, disclosed finding from actually running this, not assumed:**
+every catalogue engine falls back to the subframe today, for a real,
+understood reason, not a bug in the check. `mount.engine_left/right`
+sit at the crank's own single X position (the production subunit's own
+declared geometry) — for anything longer than a single-cylinder
+engine, the block/head casting's own real mass extends well fore/aft
+of that one station, so the true center of gravity routinely lands
+outside a support footprint anchored at one X value, even with the
+driveline's own mount points added on the aft side. The subframe
+fallback is the check doing its actual job on the currently-declared
+mount geometry — a real, disclosed limitation of `mount.engine_left/
+right`'s own single-station placement (a production-subunit concern,
+out of this toy's own scope to relocate), not evidence the gate itself
+is wrong. Verified across all 26 catalogue engines and 6 install-
+context combinations: builds clean, `BAR_CAGE` correctly never
+triggers the subframe fallback (a supplied cage's own stability stays
+the vehicle/game's responsibility, honestly reported unmatched rather
+than silently overridden).
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/

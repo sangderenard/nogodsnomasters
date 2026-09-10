@@ -35,11 +35,15 @@ that already-chosen family.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
-from block_dynamics import build_block_network, solve_block_modes, select_mount_points
+import numpy as np
+
+from block_dynamics import build_block_network, solve_block_modes, select_mount_points, dominant_excitation_hz
 from drivetrain_graph import build_drivetrain_graph
+from engine_mass_properties import rigid_body_properties, RigidBodyProperties
 import engine_geometry
 
 
@@ -158,6 +162,191 @@ def wants_torque_strap(engine, technique: MountingTechnique) -> bool:
     return specific_torque >= TORQUE_STRAP_SPECIFIC_TORQUE_NM_PER_KG or boosted
 
 
+# ---------------------------------------------------------------------
+# Universal stability gate: real, engine-agnostic, and cheap -- the
+# mount points, projected onto the horizontal (X-Z) plane, must form a
+# real polygon (at least 3 non-collinear points -- 2 points are a real
+# line, which can never resist roll/tip-over no matter how stiff) that
+# CONTAINS the assembly's own real center of gravity. This is the one
+# check every real mount layout satisfies regardless of technique or
+# application (a bolted industrial skid needs it exactly as much as a
+# rubber-isolated road engine) -- not a bespoke per-engine heuristic.
+# ---------------------------------------------------------------------
+
+def _cross2(o: np.ndarray, a: np.ndarray, b: np.ndarray) -> float:
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _convex_hull_2d(points: np.ndarray) -> np.ndarray:
+    """Standard Andrew's monotone chain -- plain, small-n, no external
+    dependency needed for the handful of real mount points this ever
+    runs on."""
+    pts = sorted(set(map(tuple, points.tolist())))
+    if len(pts) <= 2:
+        return np.array(pts)
+    lower: list[tuple[float, float]] = []
+    for p in pts:
+        while len(lower) >= 2 and _cross2(np.array(lower[-2]), np.array(lower[-1]), np.array(p)) <= 0:
+            lower.pop()
+        lower.append(p)
+    upper: list[tuple[float, float]] = []
+    for p in reversed(pts):
+        while len(upper) >= 2 and _cross2(np.array(upper[-2]), np.array(upper[-1]), np.array(p)) <= 0:
+            upper.pop()
+        upper.append(p)
+    return np.array(lower[:-1] + upper[:-1])
+
+
+def _point_in_convex_polygon(pt: tuple[float, float], hull: np.ndarray) -> bool:
+    n = len(hull)
+    if n < 3:
+        return False   # a line or a single point can't contain anything
+    sign = None
+    for i in range(n):
+        a, b = hull[i], hull[(i + 1) % n]
+        cross = (b[0] - a[0]) * (pt[1] - a[1]) - (b[1] - a[1]) * (pt[0] - a[0])
+        if abs(cross) < 1e-9:
+            continue   # on the edge line -- inclusive, not a failure
+        s = cross > 0
+        if sign is None:
+            sign = s
+        elif s != sign:
+            return False
+    return True
+
+
+@dataclass(frozen=True)
+class StabilityResult:
+    ok: bool
+    reason: str
+    point_count: int
+    cg_xz: tuple[float, float]
+
+
+def check_stability(positions: list[tuple[float, float, float]],
+                    cg: tuple[float, float, float]) -> StabilityResult:
+    cg_xz = (cg[0], cg[2])
+    if len(positions) < 3:
+        return StabilityResult(False, f"only {len(positions)} real support point(s) -- at least 3 "
+                               "non-collinear points are needed to resist roll/tip-over", len(positions), cg_xz)
+    pts_xz = np.array([[p[0], p[2]] for p in positions])
+    hull = _convex_hull_2d(pts_xz)
+    if len(hull) < 3:
+        return StabilityResult(False, "real support points are collinear -- no real polygon to "
+                               "carry the load", len(positions), cg_xz)
+    if not _point_in_convex_polygon(cg_xz, hull):
+        return StabilityResult(False, "center of gravity falls outside the support polygon -- "
+                               "real tip-over risk", len(positions), cg_xz)
+    return StabilityResult(True, "stable", len(positions), cg_xz)
+
+
+# ---------------------------------------------------------------------
+# Optional deeper check: Torque Roll Axis (TRA) rigid-body decoupling
+# -- the real, standard automotive NVH method, not a bespoke addition.
+# Only meaningful for a COMPLIANT technique (rubber isolator/cradle):
+# a rigid mount has no compliance to decouple, and real industrial/
+# aircraft installs never run this analysis in practice (see the
+# design discussion this module's docstring reflects). Deliberately
+# plain numpy, not turing's compiled eigh -- that path earned its
+# keep on block_dynamics.py's own larger per-cylinder problem (n=3..24,
+# "measured 126-174x faster"); this is a fixed, tiny n=6 rigid-body
+# problem where reaching for the same machinery would be needless
+# machinery for machinery's sake.
+# ---------------------------------------------------------------------
+
+def _skew(r: np.ndarray) -> np.ndarray:
+    return np.array([[0.0, -r[2], r[1]], [r[2], 0.0, -r[0]], [-r[1], r[0], 0.0]])
+
+
+@dataclass(frozen=True)
+class TRAResult:
+    frequencies_hz: np.ndarray       # 6 real rigid-body mode frequencies, ascending
+    dominant_hz: float               # the mode nearest this engine's own firing harmonic at idle
+    resonance_margin_hz: float       # |dominant_hz - firing harmonic| -- bigger is safer
+
+
+def evaluate_tra(engine, rigid_body: RigidBodyProperties,
+                 mounts: list["MountAssignment"], rpm: float | None = None) -> TRAResult | None:
+    """Builds the real 6x6 rigid-body mass/stiffness system (3
+    translation + 3 rotation about the assembly's own real center of
+    gravity) from each mount's own real position and (isotropic,
+    disclosed-simplified -- MountHardware carries one scalar stiffness,
+    not a real direction-dependent rate) stiffness, and solves the
+    generalized eigenproblem for the 6 real rigid-body mode
+    frequencies. Returns None when there's nothing real to decouple
+    (fewer than 3 points, or every mount in the set is rigid)."""
+    positions = [m.position for m in mounts]
+    stiffnesses = [m.hardware.stiffness_n_per_m for m in mounts]
+    if len(positions) < 3 or rigid_body.total_mass_kg <= 0.0:
+        return None
+    cg = np.array(rigid_body.center_of_gravity)
+    K = np.zeros((6, 6))
+    for pos, k in zip(positions, stiffnesses):
+        if k is None:
+            continue   # a rigid mount contributes no compliance to decouple
+        r = np.array(pos) - cg
+        A = np.zeros((3, 6))
+        A[:, :3] = np.eye(3)
+        A[:, 3:] = -_skew(r)
+        K += k * (A.T @ A)
+    if not np.any(K):
+        return None
+
+    M = np.zeros((6, 6))
+    M[:3, :3] = rigid_body.total_mass_kg * np.eye(3)
+    M[3:, 3:] = rigid_body.inertia_tensor_kg_m2
+
+    w_rot, v_rot = np.linalg.eigh(rigid_body.inertia_tensor_kg_m2)
+    inv_sqrt_rot = v_rot @ np.diag(1.0 / np.sqrt(np.maximum(w_rot, 1e-9))) @ v_rot.T
+    M_inv_sqrt = np.zeros((6, 6))
+    M_inv_sqrt[:3, :3] = np.eye(3) / math.sqrt(rigid_body.total_mass_kg)
+    M_inv_sqrt[3:, 3:] = inv_sqrt_rot
+
+    K_scaled = M_inv_sqrt @ K @ M_inv_sqrt
+    K_scaled = 0.5 * (K_scaled + K_scaled.T)
+    w2 = np.linalg.eigvalsh(K_scaled)
+    freqs = np.sort(np.sqrt(np.maximum(w2, 0.0)) / (2.0 * math.pi))
+
+    rpm_ = engine.idle_rpm if rpm is None else rpm
+    excitation_hz = dominant_excitation_hz(engine, rpm_)
+    real_freqs = freqs[freqs > 1.0]
+    if len(real_freqs) == 0:
+        return TRAResult(frequencies_hz=freqs, dominant_hz=0.0, resonance_margin_hz=float("inf"))
+    idx = int(np.argmin(np.abs(real_freqs - excitation_hz)))
+    return TRAResult(frequencies_hz=freqs, dominant_hz=float(real_freqs[idx]),
+                     resonance_margin_hz=float(abs(real_freqs[idx] - excitation_hz)))
+
+
+# ---------------------------------------------------------------------
+# Universal subframe fallback -- for whatever real block-mount geometry
+# genuinely can't achieve on its own (too short/wide, an asymmetric
+# mass distribution, a single-cylinder unit with no real axial spread
+# at all). A real, wide rectangular subframe sized directly off the
+# assembly's own real mass-bearing extent GUARANTEES CG containment BY
+# CONSTRUCTION (every corner spans at least as far as every real
+# mass-bearing component that went into computing the same CG), not
+# something checked afterward and hoped for.
+# ---------------------------------------------------------------------
+
+def _subframe_points(engine, graph: dict) -> list[tuple[str, tuple[float, float, float]]]:
+    positions = [n["reference_position"] for n in graph["nodes"] if n.get("mass_in_total")]
+    if not positions:
+        positions = [[0.0, 0.0, 0.0]]
+    xs = [p[0] for p in positions]
+    ys = [p[1] for p in positions]
+    zs = [abs(p[2]) for p in positions]
+    x_min, x_max = min(xs), max(xs)
+    x_margin = max(0.05, (x_max - x_min) * 0.1)
+    half_z = max(zs) * 1.15 + 0.02
+    y = min(ys) - engine_geometry.block_half_yz_m(engine)
+    return [
+        ("mount.subframe_front_left", (x_min - x_margin, y, -half_z)),
+        ("mount.subframe_front_right", (x_min - x_margin, y, half_z)),
+        ("mount.subframe_rear_left", (x_max + x_margin, y, -half_z)),
+        ("mount.subframe_rear_right", (x_max + x_margin, y, half_z)),
+    ]
+
+
 @dataclass(frozen=True)
 class MountAssignment:
     identity: str                          # the real graph node identity (or a synthetic strap name)
@@ -182,10 +371,24 @@ def _role_for(identity: str) -> str | None:
     return None
 
 
+@dataclass(frozen=True)
+class MountingPlan:
+    mounts: list[MountAssignment]
+    technique: MountingTechnique
+    stability: StabilityResult
+    rigid_body: RigidBodyProperties
+    tra: TRAResult | None = None
+    subframe_used: bool = False
+
+
 def assign_mounting(engine, install_context: str = "automotive", include_transmission: bool = False,
-                    transmission_mass_kg: float = 0.0, rpm: float | None = None) -> list[MountAssignment]:
+                    transmission_mass_kg: float = 0.0, rpm: float | None = None) -> MountingPlan:
     """The real, automated policy: resolve every real mount point this
-    engine's own graph declares to a technique + hardware grade.
+    engine's own graph declares to a technique + hardware grade, then
+    run it through the universal CG-in-support-polygon stability gate
+    (falling back to a real subframe when the direct points can't pass
+    it) and, for a compliant technique, the optional deeper Torque
+    Roll Axis rigid-body decoupling check.
 
     include_transmission gates whether mount.transmission_*/mount.
     transfer_case_* are assigned at all -- most crate-engine installs
@@ -243,6 +446,35 @@ def assign_mounting(engine, install_context: str = "automotive", include_transmi
             hardware=hw, modal_displacement=(risk[0] if risk else None),
             resonance_margin_hz=(risk[1] if risk else None)))
 
+    rigid_body = rigid_body_properties(engine, graph)
+
+    # The universal gate: does this technique's own real support points
+    # (a torque strap never counts -- it isn't rated to carry static
+    # weight, see its own hardware description) actually contain the
+    # assembly's real center of gravity? Skipped for BAR_CAGE: a
+    # supplied structure's own stability is the vehicle/game's real
+    # responsibility, not this toy's to second-guess (same reasoning
+    # as correlate_mounts never inventing cage geometry of its own).
+    support_positions = [m.position for m in out if m.role in ("engine", "transmission", "transfer_case")]
+    stability = check_stability(support_positions, rigid_body.center_of_gravity)
+    subframe_used = False
+
+    if technique is not MountingTechnique.BAR_CAGE and not stability.ok:
+        # A genuinely "strange" build -- too few/too collinear real
+        # mount points to ever contain the CG on their own (a very
+        # short engine, an asymmetric accessory load, a single-
+        # cylinder unit). A subframe sidesteps the whole question:
+        # sized directly off the real mass-bearing extent, so
+        # containment is guaranteed BY CONSTRUCTION, not hoped for
+        # after the fact -- see _subframe_points' own docstring.
+        technique = MountingTechnique.CRADLE_SUBFRAME
+        subframe_hw = _HARDWARE[(MountingTechnique.CRADLE_SUBFRAME, "standard")]
+        out = [MountAssignment(identity=name, role="engine", position=pos, hardware=subframe_hw)
+              for name, pos in _subframe_points(engine, graph)]
+        support_positions = [m.position for m in out]
+        stability = check_stability(support_positions, rigid_body.center_of_gravity)
+        subframe_used = True
+
     if wants_torque_strap(engine, technique):
         strap_hw = _HARDWARE[(MountingTechnique.TORQUE_STRAP, "standard")]
         mounts = engine_geometry.mount_points(engine)
@@ -255,4 +487,11 @@ def assign_mounting(engine, install_context: str = "automotive", include_transmi
             resonance_margin_hz=(front_risk[1] if front_risk else None)))
 
     out.sort(key=lambda m: m.identity)
-    return out
+
+    tra = None
+    if technique in (MountingTechnique.RUBBER_ISOLATOR, MountingTechnique.CRADLE_SUBFRAME):
+        structural = [m for m in out if m.role != "torque_strap"]
+        tra = evaluate_tra(engine, rigid_body, structural, rpm=rpm)
+
+    return MountingPlan(mounts=out, technique=technique, stability=stability,
+                        rigid_body=rigid_body, tra=tra, subframe_used=subframe_used)

@@ -149,7 +149,7 @@ class EnginePackage:
     connectors: list[Connector]
     built_in_node_ids: frozenset[str]
     supplied_node_ids: frozenset[str]
-    mounting: list[engine_mounts.MountAssignment]
+    mounting: engine_mounts.MountingPlan
 
     @classmethod
     def build(cls, engine: Engine, install_context: str = "automotive",
@@ -212,7 +212,7 @@ class EnginePackage:
         mount to come back unmatched, honestly, rather than a fake
         match."""
         results: list[MountCorrelation] = []
-        for m in self.mounting:
+        for m in self.mounting.mounts:
             best_node, best_dist = None, None
             for cage_name, cage_pos in cage_nodes.items():
                 dist = math.dist(m.position, cage_pos)
