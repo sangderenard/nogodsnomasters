@@ -140,9 +140,29 @@ def build_block_network(engine, include_transmission: bool = False,
             return BlockNetwork()
         segment_ids = ["powertrain.engine_block_body"]
 
-    crank_node = node_by_id.get("powertrain.engine")
-    total_block_mass_kg = float(crank_node.get("mass_kg", 0.0)) if crank_node is not None else 0.0
-    mass_per_cylinder = total_block_mass_kg / max(len(segment_ids), 1)
+    # Each segment now carries its own real mass directly (drivetrain_
+    # graph.py splits engine.mass_kg's real block/head/crank shares onto
+    # their own real nodes instead of lumping the whole bare-casting
+    # figure onto "powertrain.engine"), so this reads real per-node data
+    # instead of re-deriving an even split of one lumped total. The
+    # cylinder head bolted to a given block segment has no genuinely
+    # separate axial dynamics at this model's own 1-DOF-per-station
+    # fidelity (see this function's own docstring), so its real mass is
+    # folded into the same station rather than kept as an independent
+    # DOF -- honest for THIS reduced model; the finer 3D position (used
+    # for CG/inertia work elsewhere) still lives on the head's own
+    # separate node in the graph, untouched by this folding.
+    def _station_mass(segment_id: str) -> float:
+        mass = float(node_by_id[segment_id].get("mass_kg", 0.0))
+        # the monolithic radial/electric fallback node already carries
+        # its head share folded in (drivetrain_graph.py) -- only a real
+        # per-cylinder segment has a separate head node to add
+        if ".engine_block_body.cylinder_" in segment_id:
+            head_id = segment_id.replace(".engine_block_body.cylinder_", ".cylinder_head.cylinder_")
+            head_node = node_by_id.get(head_id)
+            if head_node is not None:
+                mass += float(head_node.get("mass_kg", 0.0))
+        return mass
 
     # A V/W-bank engine's own cylinder_sites() puts more than one real
     # cylinder at the SAME x (one per bank, sharing a crank throw --
@@ -171,7 +191,7 @@ def build_block_network(engine, include_transmission: bool = False,
 
     identities = ["+".join(stations[x]) for x in station_order]
     positions = [[x, 0.0, 0.0] for x in station_order]
-    masses = [mass_per_cylinder * len(stations[x]) for x in station_order]
+    masses = [sum(_station_mass(nid) for nid in stations[x]) for x in station_order]
 
     web_area = _cross_section_area_m2(engine, WEBBING_CROSS_SECTION_FRACTION)
     edges: list[BlockNetworkEdge] = []

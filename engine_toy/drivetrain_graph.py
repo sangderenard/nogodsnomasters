@@ -71,6 +71,23 @@ AIR_DENSITY_AT_1_ATM_KG_M3 = 1.2
 FLUID_LINE_KINDS = (THERMAL_LIQUID_KINDS | COMPRESSIBLE_GAS_KINDS
                     | INCOMPRESSIBLE_HYDRAULIC_KINDS | HIGH_PRESSURE_LIQUID_SUPPLY_KINDS)
 
+# engine.mass_kg (and, until now, "powertrain.engine"'s own node mass)
+# is documented (block_dynamics.py's own build_block_network docstring)
+# as "the bare block+crank+heads casting" -- deliberately excluding
+# accessories (alternator, camshaft, etc. already carry their own real,
+# separate mass_kg elsewhere in this same graph) and the oil pan (its
+# own separate node). Real, disclosed, order-of-magnitude split of
+# THAT bucket across its three real named parts -- not tuned to fit
+# anything, and not claiming finer precision than "bare casting mass
+# roughly divides this way" for a typical cast-iron block/head/crank
+# combination:
+#   block casting (crankcase + cylinder walls): the single largest chunk
+#   cylinder heads (with valvetrain hardware bolted on): a close second
+#   crankshaft + flywheel: smaller, but real and genuinely off-centerline once flywheel is at the rear
+ENGINE_BLOCK_MASS_FRACTION = 0.50
+ENGINE_HEAD_MASS_FRACTION = 0.30
+ENGINE_CRANK_FLYWHEEL_MASS_FRACTION = 0.20
+
 
 def parametric_volume_pressure_exchange(p_a: float, v_a: float, p_b: float, v_b: float) -> float:
     """Real two-volume equilibrium pressure when a real valve opens and
@@ -297,7 +314,16 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # outside the block's real skirt width instead of a separate
         # invented constant.
         half_width=engine_geometry.block_half_yz_m(engine),
-        component_masses={"engine": engine.mass_kg},
+        # "powertrain.engine" is the crank's own real node (kept below as
+        # the physics reference point) -- it now carries only the crank/
+        # flywheel's own real SHARE of engine.mass_kg, not the whole
+        # bare-casting figure. The block and head shares land on their
+        # own real, separately-positioned nodes further down (block
+        # segments already existed; head nodes are new), so a real,
+        # non-degenerate center of gravity and inertia distribution can
+        # be computed directly off the graph's own node masses/positions
+        # instead of one lumped point mass at the crank centerline.
+        component_masses={"engine": engine.mass_kg * ENGINE_CRANK_FLYWHEEL_MASS_FRACTION},
         include_wheel_output=False,
         use_belt_accessories=True,
         peak_torque_nm=engine.peak_torque_nm,
@@ -389,16 +415,38 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # cylinder in a row shares one crank throw, differing in angle, not
     # x) -- and neither does an electric/0-cylinder unit -- so both
     # keep the single block this always was.
+    # Block-casting and cylinder-head mass now lands for real on these
+    # segments/head nodes (mass_in_total=True) instead of "powertrain.
+    # engine" carrying the whole bare-casting figure at one point -- see
+    # ENGINE_BLOCK_MASS_FRACTION/ENGINE_HEAD_MASS_FRACTION above. Head
+    # nodes are new (no real per-cylinder head mass existed anywhere
+    # before this), placed at each cylinder's own real 3D site position
+    # (engine_geometry.cylinder_sites already carries the real bank-
+    # angle lateral offset a V/opposed engine's heads genuinely sit at
+    # -- reused directly, not re-derived) rather than collapsed onto
+    # the crank centerline the way the block segments deliberately are
+    # (their body geometry, not their real mass distribution).
+    block_mass_kg = engine.mass_kg * ENGINE_BLOCK_MASS_FRACTION
+    head_mass_kg = engine.mass_kg * ENGINE_HEAD_MASS_FRACTION
     if engine.architecture.cylinders and not engine.architecture.radial:
         n_cyl = engine.architecture.cylinders
         seg_half_x = max(0.01, block_half_x / n_cyl)
         for site in crank_sites:
             node(f"powertrain.engine_block_body.cylinder_{site.number}",
-                 [site.position[0], 0.0, 0.0], "engine-block-component", mass_in_total=False,
+                 [site.position[0], 0.0, 0.0], "engine-block-component", mass_in_total=True,
+                 mass_kg=block_mass_kg / n_cyl,
                  body_half_extent_m=[seg_half_x, block_half_y, block_half_z])
+            node(f"powertrain.cylinder_head.cylinder_{site.number}",
+                 list(site.position), "engine-head-component", mass_in_total=True,
+                 mass_kg=head_mass_kg / n_cyl)
     else:
+        # radial/electric: no real per-cylinder axial spread to hang
+        # separate head nodes off of (radial cylinders share one crank
+        # station, differing in angle only -- see _radial_cylinder_
+        # sites' own docstring); the head share stays folded into the
+        # one block node rather than fabricating a position for it.
         node("powertrain.engine_block_body", [0.0, 0.0, 0.0],
-             "engine-block-component", mass_in_total=False,
+             "engine-block-component", mass_in_total=True, mass_kg=block_mass_kg + head_mass_kg,
              body_half_extent_m=[block_half_x, block_half_y, block_half_z])
 
     # "powertrain.engine" (the crank's own real node -- kept, it's the

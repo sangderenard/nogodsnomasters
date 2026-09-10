@@ -308,6 +308,49 @@ engines: builds clean with and without `include_transmission`, and a
 synthetic cage placed exactly at the real `mount.engine_left/right`
 positions matches every one of them at zero distance.
 
+## Updated: real per-component mass distribution instead of one lumped point mass (`drivetrain_graph.py`, `block_dynamics.py`)
+
+A real center of gravity and a real inertia tensor can't come out of
+`engine.mass_kg` sitting entirely on one node at the crank centerline
+-- that's a point mass, not a distribution, and any mount-stability
+check built on it would be judging a fiction. `block_dynamics.py`'s
+own docstring already documented what `engine.mass_kg`/"powertrain.
+engine" is real supposed to represent: "the bare block+crank+heads
+casting" -- accessories (alternator, camshaft, ...) and the oil pan
+already carry their own separate, real masses elsewhere in the same
+graph, untouched here.
+
+Real, disclosed, order-of-magnitude split of THAT bucket across its
+three real named parts (not tuned to fit anything, same "genuine
+literature value" spirit as `block_dynamics.py`'s own cast-iron
+modulus constant): `ENGINE_BLOCK_MASS_FRACTION = 0.50` (block casting,
+onto the existing per-cylinder `powertrain.engine_block_body.cylinder_
+N` segments -- collapsed to the crank centerline, same as before, this
+is bounding geometry, not a claim about real block cross-section
+shape), `ENGINE_HEAD_MASS_FRACTION = 0.30` (new `powertrain.cylinder_
+head.cylinder_N` nodes, one per real cylinder, placed at that
+cylinder's own real 3D site position -- `engine_geometry.cylinder_
+sites()` already carries the real bank-angle lateral offset a V/
+opposed engine's heads genuinely sit at, reused directly rather than
+re-derived), `ENGINE_CRANK_FLYWHEEL_MASS_FRACTION = 0.20` (stays on
+"powertrain.engine" itself, the crank's own already-real reference
+node). A radial/electric engine (no real per-cylinder axial spread)
+folds the head share into the single monolithic block node instead of
+fabricating a position for it. All three land with `mass_in_total=
+True` -- a real field the production subunit already writes with real
+meaning (whole-assembly mass accounting) but the toy never read.
+
+`block_dynamics.build_block_network` no longer re-derives an even
+mass split off "powertrain.engine"'s (now much smaller) total; each
+station reads its own real segment mass plus its co-located head's
+real mass directly off the graph. Verified two ways across all 26
+catalogue engines: block+head+crank shares sum EXACTLY to `engine.
+mass_kg` (zero drift, every engine); the full mesh/GL build pipeline
+(`build_engine_mesh`) and the live sim (`EngineCycleSim.step`) both
+run unaffected, since the new head nodes carry no visual geometry of
+their own and `vehicle_mesh.py`'s `body_half_extent_m` reader already
+has a real fallback for a node that doesn't declare one.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/
