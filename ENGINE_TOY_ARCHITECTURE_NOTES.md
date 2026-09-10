@@ -710,6 +710,55 @@ Still open in this family: the Wärtsilä's turbos (needs a declared
 scavenge boost), the Merlin's two-stage/two-speed blower and aftercooler
 circuit, the Wasp's supercharger in its rear accessory case.
 
+## Parts catalogue, stage 4: aircraft, industrial and air-cooled families
+
+- **Lubrication is declared.** `Engine.lubrication` ("auto" | wet-sump |
+  dry-sump | splash-bath | drip | total-loss), applied per identity in
+  the same finalize loop that assigns `ignition_profile`; the Merlin,
+  the Wasp and the GT flat-six are real dry-sump engines the race-fuel
+  rule alone never caught, the trimmer is total-loss. `derive_dressing`
+  honours it. A dry sump now also gets its oil cooler on the return to
+  the tank and a belt drive from the damper to the scavenge pump.
+- **Dual ignition.** On `aircraft-dual-magneto` engines `cylinder_ports`
+  adds a second plug boss across the bore, and dressing emits two
+  magnetos on the rear accessory end (where an aircraft's accessory
+  drive is), plug 1 of every cylinder on magneto 1, plug 2 on magneto 2
+  -- the real certified redundancy. Merlin: 12 + 12 plugs.
+- **Aircraft drive.** No clutch, gearbox, transfer case or bellhousing
+  on an aircraft engine: `_emit_aircraft_drive` purges the car chain
+  (mounts and all) and adds the propeller reduction gearbox on the
+  block's front face, the prop shaft and hub on the crank axis, and the
+  constant-speed governor on the gearcase. The dyno couples to
+  `powertrain.engine` directly, so the solver sees no change.
+- **Governors and pumps.** A hit-and-miss engine's flyball governor
+  with its latch-out linkage; a compression-ignition engine's
+  cam-driven injection pump on the block flank feeding the rail, the
+  lift pump now feeding the injection pump's gallery instead of the
+  rail.
+- **Air cooling.** The production cooling stack is gated on a water
+  pump, so an air-cooled engine had NO cooling hardware; a boxer/inline
+  now gets the fan, its housing and a tin over each bank ducting the
+  blast across the fins, and a radial gets a baffle per cylinder (from
+  the real cylinder sites -- radials fold their heads into one block
+  node) and a ring of cowl flaps behind the row.
+- **Wet-sump gate completed**: the per-head deck oil feed/return faces
+  were still emitted on the total-loss two-stroke; they are gated now.
+
+Verified over all 26 engines (graph + dangling-edge check, mesh build,
+crate builds in three modes) and by eye at full detail on the Merlin,
+the air-cooled flat-four and the Cat C18.
+
+**Flagged, not decided:** `_emit_supercharger` builds a Roots-style
+case in the valley with the throttle on top for ANY supercharger. That
+is right for the two blown drag engines and wrong for both aircraft
+engines, whose blowers are gear-driven centrifugal stages at the rear
+(the Merlin's two-stage, two-speed, with its own aftercooler circuit;
+the Wasp's single-stage in the rear accessory case) fed by a pressure
+carburettor. `ForcedInduction` has no supercharger TYPE field
+(roots / screw / centrifugal) to key on -- a declaration to add, not a
+guess to make here. Also still open: the Wärtsilä's turbos (needs a
+declared scavenge boost) and whether the charge cooler is chassis-side.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/

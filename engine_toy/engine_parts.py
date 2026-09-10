@@ -514,6 +514,210 @@ def _emit_turbo_hardware(engine, nodes, edges, node, edge, node_by_id) -> None:
              radius=0.028, circuit_identity="intake-air", medium_rate_state="intake-air-flow-and-temperature")
 
 
+# ---------------------------------------------------------------------
+# aircraft / industrial / air-cooled families
+# ---------------------------------------------------------------------
+
+def _purge(nodes, edges, identities: set[str]) -> None:
+    nodes[:] = [n for n in nodes if n["identity"] not in identities]
+    edges[:] = [e for e in edges if e["a"] not in identities and e["b"] not in identities]
+
+
+def _emit_aircraft_drive(engine, layout, nodes, edges, node, edge, node_by_id) -> None:
+    """An aircraft engine has no clutch, gearbox or transfer case: the
+    crank drives a propeller through a fixed reduction gear, and the
+    propeller's own constant-speed governor sits on that gearcase. The
+    production driveline chain (a car's) is replaced, mounts and all;
+    the dyno stays coupled to powertrain.engine directly, so nothing the
+    solver reads changes."""
+    if getattr(engine, "ignition_profile", "") != "aircraft-dual-magneto":
+        return
+    fit = crank_end_fittings(layout)
+    if fit is None:
+        return
+    gone = {"powertrain.clutch", "powertrain.transmission", "powertrain.transfer_case",
+            "powertrain.direct_drive_bypass", "powertrain.pre_clutch_flywheel_wrench", "powertrain.bellhousing",
+            "mount.transmission_left", "mount.transmission_right", "mount.transfer_case_left", "mount.transfer_case_right"}
+    _purge(nodes, edges, gone)
+    half = engine_geometry.block_half_yz_m(engine)
+    bore = fit["bore_m"]
+    # the prop end is the FRONT (timing-cover) end of the crank on both
+    # real engines here; the reduction gearcase bolts to the front face
+    # and the prop shaft leaves it on the crank axis, raised on the Merlin's
+    # spur reduction, on-axis on the Wasp's planetary
+    face_x = _block_front_face_x(engine, nodes)
+    trans = getattr(engine, "transmission", None)
+    ratio = float(getattr(trans, "final_drive_ratio", 0.0) or 0.0)
+    ratio = ratio if 1.1 <= ratio <= 3.5 else 2.0
+    case_len = bore * 0.9
+    case_c = np.array([face_x - 0.03 - case_len / 2.0, fit["y0"], fit["z0"]])
+    node("powertrain.prop_reduction_gearbox", [float(v) for v in case_c], "engine-block-component",
+         mass_kg=engine.mass_kg * 0.06, reduction_ratio=ratio,
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(half * 0.9), drum_length_m=float(case_len))
+    edge("powertrain.crank_to_prop_reduction", "powertrain.engine", "powertrain.prop_reduction_gearbox",
+         "geared-timing-drive", radius=0.02, ratio=1.0 / ratio)
+    shaft_len = bore * 1.2
+    shaft_c = case_c + np.array([-(case_len / 2.0 + shaft_len / 2.0), 0.0, 0.0])
+    node("powertrain.prop_shaft", [float(v) for v in shaft_c], "rotating-mass", mass_kg=engine.mass_kg * 0.02,
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(bore * 0.22), drum_length_m=float(shaft_len))
+    edge("powertrain.prop_reduction_to_shaft", "powertrain.prop_reduction_gearbox", "powertrain.prop_shaft", "rigid-keyed-hub", radius=0.02)
+    hub_c = shaft_c + np.array([-(shaft_len / 2.0 + bore * 0.25), 0.0, 0.0])
+    node("powertrain.prop_hub", [float(v) for v in hub_c], "rotating-mass", mass_kg=engine.mass_kg * 0.03,
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(bore * 0.9), drum_length_m=float(bore * 0.5))
+    edge("powertrain.prop_shaft_to_hub", "powertrain.prop_shaft", "powertrain.prop_hub", "rigid-keyed-hub", radius=0.02)
+    # the constant-speed governor rides the gearcase, driven off it
+    gov_c = case_c + np.array([0.0, half * 0.9 + 0.04, half * 0.3])
+    node("powertrain.propeller_governor", [float(v) for v in gov_c], "engine-block-component", mass_kg=2.5,
+         drum_axis=[0.0, 1.0, 0.0], drum_radius_m=0.04, drum_length_m=0.09)
+    edge("powertrain.propeller_governor_drive", "powertrain.prop_reduction_gearbox", "powertrain.propeller_governor",
+         "geared-timing-drive", radius=0.006)
+
+
+def _emit_governor(engine, layout, nodes, edges, node, edge, node_by_id) -> None:
+    """A hit-and-miss engine's flyball governor and its latch-out
+    linkage to the exhaust rocker -- the mechanism `governor_mode ==
+    "hit_and_miss"` already simulates every revolution, with no part."""
+    if getattr(engine, "governor_mode", "throttle") != "hit_and_miss":
+        return
+    fit = crank_end_fittings(layout)
+    if fit is None:
+        return
+    bore = fit["bore_m"]
+    face_x = _block_front_face_x(engine, nodes)
+    gov_c = np.array([face_x - 0.02 - bore * 0.35, fit["y0"] + bore * 0.7, fit["z0"] + bore * 0.6])
+    node("powertrain.flyball_governor", [float(v) for v in gov_c], "engine-block-component", mass_kg=3.0,
+         governor_kind="flyball", drum_axis=[0.0, 1.0, 0.0], drum_radius_m=float(bore * 0.25), drum_length_m=float(bore * 0.6))
+    edge("powertrain.flyball_governor_drive", "powertrain.engine", "powertrain.flyball_governor", "geared-timing-drive",
+         radius=0.008, ratio=1.0)
+    node("powertrain.governor_latch_linkage", [float(v) for v in (gov_c + np.array([bore * 0.4, bore * 0.3, 0.0]))],
+         "engine-block-component", mass_kg=0.4, body_half_extent_m=[bore * 0.4, 0.008, 0.008])
+    edge("powertrain.governor_to_latch", "powertrain.flyball_governor", "powertrain.governor_latch_linkage", "rigid-bolted-joint", radius=0.005)
+
+
+def _emit_injection_pump(engine, layout, nodes, edges, node, edge, node_by_id) -> None:
+    """A compression-ignition engine's injection pump -- inline or
+    distributor type, cam-driven off the block's flank, feeding the
+    rail the direct injectors already hang from. Its own governor is
+    part of the pump body (the `diesel-injection-governor` profile)."""
+    if not getattr(engine, "compression_ignition", False):
+        return
+    rail = node_by_id.get("powertrain.fuel_rail")
+    fit = crank_end_fittings(layout)
+    if rail is None or fit is None:
+        return
+    half = engine_geometry.block_half_yz_m(engine)
+    bore = fit["bore_m"]
+    rp = _pos(rail)
+    n_cyl = max(1, engine.architecture.cylinders)
+    pump_len = min(bore * 0.55 * n_cyl, abs(float(rail.get("body_half_extent_m", [bore, 0, 0])[0])) * 1.6)
+    pump_c = np.array([rp[0], fit["y0"] + half * 0.55, fit["z0"] + half * 1.15 + bore * 0.25])
+    node("powertrain.injection_pump", [float(v) for v in pump_c], "engine-block-component", mass_kg=engine.mass_kg * 0.03,
+         pump_kind="inline-injection-pump" if n_cyl >= 4 else "distributor-injection-pump",
+         body_half_extent_m=[float(pump_len / 2.0), float(bore * 0.3), float(bore * 0.25)])
+    edge("powertrain.injection_pump_drive", "powertrain.engine", "powertrain.injection_pump", "geared-timing-drive",
+         radius=0.01, ratio=0.5)
+    edge("powertrain.injection_pump_to_rail", "powertrain.injection_pump", "powertrain.fuel_rail", "fuel-supply-line",
+         radius=0.004, circuit_identity="fuel", medium_rate_state="fuel-flow-and-pressure", high_pressure=True)
+    if "fuel.pump" in node_by_id:
+        # the lift pump feeds the injection pump's gallery, not the rail
+        for e in edges:
+            if e["identity"] == "fuel.pump_to_rail":
+                e["b"] = "powertrain.injection_pump"
+
+
+def _emit_dry_sump_extras(engine, layout, nodes, edges, node, edge, node_by_id) -> None:
+    """A real dry sump is more than a tank and a scavenge pump: the
+    multi-stage pump is belt-driven off the crank, and the oil goes
+    through a cooler on its way back to the tank."""
+    from dressing import derive_dressing
+    if derive_dressing(engine).lube != "dry-sump":
+        return
+    tank = node_by_id.get("powertrain.oil_reserve_tank")
+    scav = node_by_id.get("powertrain.scavenge_pump")
+    if tank is None:
+        return
+    half = engine_geometry.block_half_yz_m(engine)
+    tp = _pos(tank)
+    cooler_c = tp + np.array([0.0, half * 0.9, 0.0])
+    node("powertrain.oil_cooler", [float(v) for v in cooler_c], "engine-block-component", mass_kg=2.5,
+         exchanger_kind="oil-to-air-cooler", body_half_extent_m=[half * 0.5, half * 0.35, half * 0.12])
+    edge("powertrain.scavenge_to_oil_cooler", scav["identity"] if scav is not None else "powertrain.oil_pump",
+         "powertrain.oil_cooler", "oil-line", radius=0.008, circuit_identity="oil",
+         medium_rate_state="oil-flow-and-temperature-and-pressure")
+    edge("powertrain.oil_cooler_to_tank", "powertrain.oil_cooler", "powertrain.oil_reserve_tank", "oil-line", radius=0.008,
+         circuit_identity="oil", medium_rate_state="oil-flow-and-temperature-and-pressure")
+    if scav is not None and "powertrain.harmonic_balancer" in node_by_id:
+        sp = _pos(scav)
+        face_x = _block_front_face_x(engine, nodes)
+        pulley_c = np.array([face_x - 0.054, sp[1], sp[2]])
+        node("powertrain.scavenge_pump.pulley", [float(v) for v in pulley_c], "rotating-mass", mass_kg=0.5,
+             drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(half * 0.24), drum_length_m=0.022)
+        edge("powertrain.scavenge_pump.pulley.hub", scav["identity"], "powertrain.scavenge_pump.pulley", "rigid-keyed-hub", radius=0.006)
+        edge("powertrain.dry_sump_belt", "powertrain.harmonic_balancer", "powertrain.scavenge_pump.pulley", "cosmetic-belt-wrap", radius=0.005)
+
+
+def _emit_air_cooling(engine, layout, nodes, edges, node, edge, node_by_id) -> None:
+    """An air-cooled engine's cooling hardware -- the whole cooling
+    system, which used to be absent because the production cooling
+    stack is gated on a water pump. A boxer/inline gets the fan, its
+    housing and the tin shrouds ducting air over the fins; a radial
+    gets per-cylinder baffles and cowl flaps at the rear."""
+    acc = engine.accessories
+    if acc.water_pump or engine.kind != "combustion" or not engine.architecture.cylinders:
+        return
+    half = engine_geometry.block_half_yz_m(engine)
+    fit = crank_end_fittings(layout)
+    if fit is None:
+        return
+    bore = fit["bore_m"]
+    if engine.architecture.radial:
+        # a radial folds its heads into one block node (drivetrain_graph),
+        # so the per-cylinder positions come from the real cylinder sites;
+        # baffles between the cylinders, cowl flaps in a ring behind them
+        sites = engine_geometry.cylinder_sites(engine)
+        for s_ in sites:
+            hp = np.array(s_.position, dtype=np.float64)
+            radial_dir = _unit(np.array([0.0, hp[1] - fit["y0"], hp[2] - fit["z0"]]))
+            node(f"powertrain.cylinder_{s_.number}.baffle", [float(v) for v in (hp + radial_dir * bore * 0.15 + CRANK_AXIS * bore * 0.35)],
+                 "engine-block-component", mass_kg=0.3, body_half_extent_m=[bore * 0.05, bore * 0.45, bore * 0.45])
+        ring_r = float(np.mean([np.hypot(s_.position[1] - fit["y0"], s_.position[2] - fit["z0"]) for s_ in sites])) if sites else half * 2.0
+        n_flaps = max(4, len(sites))
+        for i in range(n_flaps):
+            a = 2.0 * np.pi * i / n_flaps
+            fc = np.array([fit["flywheel_centre"][0] - bore * 0.2, fit["y0"] + ring_r * 1.05 * np.cos(a), fit["z0"] + ring_r * 1.05 * np.sin(a)])
+            node(f"powertrain.cowl_flap_{i + 1}", [float(v) for v in fc], "engine-block-component", mass_kg=0.4,
+                 body_half_extent_m=[bore * 0.3, bore * 0.04 + abs(np.sin(a)) * bore * 0.2, bore * 0.04 + abs(np.cos(a)) * bore * 0.2])
+        return
+    if not acc.mechanical_fan:
+        return
+    # boxer / inline air-cooled: the fan on the crank/alternator pulley in
+    # its housing, tins over each bank ducting the blast across the fins
+    face_x = _block_front_face_x(engine, nodes)
+    fan_c = np.array([face_x - 0.09, fit["y0"] + half * 1.1, fit["z0"]])
+    node("powertrain.cooling_fan_housing", [float(v) for v in fan_c], "engine-block-component", mass_kg=2.0,
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(half * 1.3), drum_length_m=0.06)
+    fan = node_by_id.get("powertrain.cooling_fan")
+    if fan is None:
+        node("powertrain.cooling_fan", [float(v) for v in fan_c], "rotating-mass", mass_kg=1.2,
+             fan_disk_radius_m=float(half * 1.15))
+        edge("powertrain.cooling_fan_belt", "powertrain.harmonic_balancer" if "powertrain.harmonic_balancer" in node_by_id else "powertrain.engine",
+             "powertrain.cooling_fan", "cosmetic-belt-wrap", radius=0.005)
+    else:
+        fan["reference_position"] = [float(v) for v in fan_c]
+    edge("powertrain.fan_housing_to_block", "powertrain.cooling_fan_housing", "powertrain.engine", "rigid-bolted-joint", radius=0.006)
+    from head_mesh import banks
+    for bi, gs in enumerate(banks(layout)):
+        xs = [float(g.base[0]) for g in gs]
+        c = np.mean([np.array(g.base) + np.array(g.axis) * g.length_m for g in gs], axis=0)
+        axis = _unit(gs[0].axis)
+        tin_c = c - axis * (bore * 0.15)
+        node(f"powertrain.cooling_tin_bank{bi + 1}", [float(v) for v in tin_c], "engine-block-component", mass_kg=1.5,
+             body_half_extent_m=[float((max(xs) - min(xs)) / 2.0 + bore * 0.6), 0.006, float(bore * 0.9)])
+        edge(f"powertrain.cooling_tin_bank{bi + 1}_duct", "powertrain.cooling_fan_housing", f"powertrain.cooling_tin_bank{bi + 1}",
+             "low-pressure-air-line", radius=float(half * 0.35), circuit_identity="cooling-air",
+             medium_rate_state="cooling-air-flow-and-temperature")
+
+
 def emit_universal_parts(engine, layout, nodes, edges, node, edge) -> None:
     """Called once per graph after dressing and headers, so every anchor
     node it hangs a part off already sits at its final real position."""
@@ -536,3 +740,13 @@ def emit_universal_parts(engine, layout, nodes, edges, node, edge) -> None:
     node_by_id = {n["identity"]: n for n in nodes}
     _emit_mechanical_injection(engine, nodes, edges, node, edge, node_by_id)
     _emit_turbo_hardware(engine, nodes, edges, node, edge, node_by_id)
+    # aircraft / industrial / air-cooled families -- the aircraft drive
+    # last of the driveline work (it removes the car's clutch/gearbox chain
+    # and the bellhousing built above, so it must see them)
+    node_by_id = {n["identity"]: n for n in nodes}
+    _emit_aircraft_drive(engine, layout, nodes, edges, node, edge, node_by_id)
+    node_by_id = {n["identity"]: n for n in nodes}
+    _emit_governor(engine, layout, nodes, edges, node, edge, node_by_id)
+    _emit_injection_pump(engine, layout, nodes, edges, node, edge, node_by_id)
+    _emit_dry_sump_extras(engine, layout, nodes, edges, node, edge, node_by_id)
+    _emit_air_cooling(engine, layout, nodes, edges, node, edge, node_by_id)

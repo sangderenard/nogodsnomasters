@@ -371,6 +371,11 @@ def cylinder_port_layout(engine) -> list[tuple[CylinderGeometry, list[PortSpec]]
                       r * EXHAUST_VALVE_FRAC_OF_BORE / math.sqrt(n_ex), "exhaust")
             if kind == SPARK_PISTON:
                 P("spark_plug", "spark-plug-boss", head + v * (r * 0.15), axis, PLUG_BOSS_RADIUS_M, "ignition")
+                if getattr(engine, "ignition_profile", "") == "aircraft-dual-magneto":
+                    # two plugs per cylinder, each on its own magneto -- the
+                    # real redundancy an aircraft installation is certified
+                    # on; the second boss sits across the bore from the first
+                    P("spark_plug_2", "spark-plug-boss", head - v * (r * 0.15), axis, PLUG_BOSS_RADIUS_M, "ignition")
                 if admission in ("liquid-injector", "gas-injector"):
                     # a port injector sits in the intake tract just upstream of the valve
                     P("port_injector", "gas-injector-boss" if admission == "gas-injector" else "port-injector-boss",

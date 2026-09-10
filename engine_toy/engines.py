@@ -1151,6 +1151,12 @@ class Engine:
     # but the electric starter means the crank nose carries a real
     # attachment the starting torque enters through.
     starting_systems: tuple[str, ...] = ("electric-starter",)
+    # Real declared lubrication system: "wet-sump" | "dry-sump" | "splash-bath"
+    # | "drip" | "total-loss". "auto" lets dressing.derive_dressing pick the
+    # typical real build (race fuel -> dry sump, antique single -> splash
+    # bath, else wet sump). Aircraft engines and a GT flat-six are real
+    # dry-sump engines that the race-fuel rule alone never caught.
+    lubrication: str = "auto"
     # the DC system this engine's electrics run at: 12 V cars, 24 V
     # trucks / industrial / aircraft / ship control-and-starting batteries
     electrical_system_voltage_v: float = 12.0
@@ -2413,11 +2419,23 @@ def _build_catalogue() -> list[Engine]:
         "25cc-two-stroke-trimmer": "flywheel-magneto",
         "fairbanks-morse-z-oilfield-hit-and-miss": "flywheel-magneto",
     }
+    # Real dry-sump engines the race-fuel rule alone never caught: both
+    # aircraft engines (an oil tank, cooler and scavenge stages are the
+    # standard aircraft installation -- the sump must work inverted) and
+    # a real GT flat-six (a low, wide engine with nowhere for a deep pan).
+    _LUBRICATION = {
+        "packard-merlin-v1650": "dry-sump",
+        "pw-r1340-wasp": "dry-sump",
+        "gt-flat-six-4000": "dry-sump",
+        "25cc-two-stroke-trimmer": "total-loss",
+    }
     for e in engines:
         if e.compression_ignition:
             e.ignition_profile = "diesel-injection-governor"
         elif e.identity in _IGNITION_PROFILE:
             e.ignition_profile = _IGNITION_PROFILE[e.identity]
+        if e.identity in _LUBRICATION and e.lubrication == "auto":
+            e.lubrication = _LUBRICATION[e.identity]
     # a real ship's engine rejects its jacket heat to the sea through a
     # central-cooling plate exchanger, not a fan-blown radiator, and is
     # started on compressed air from its own starting-air receivers (two

@@ -65,7 +65,8 @@ def derive_dressing(engine) -> DressingSpec:
         return DressingSpec("drip", "none", "none", "none", "none", "flame" if kind == "atmospheric" else "none", "none")
     if kind in ("electric", "servo-electric", "turbine"):
         return DressingSpec("wet-sump" if kind == "turbine" else "none", "none", "none", "none", "none", "none", "none")
-    lube = "splash-bath" if antique_single else ("dry-sump" if race_fuel else "wet-sump")
+    declared = getattr(engine, "lubrication", "auto")
+    lube = declared if declared != "auto" else ("splash-bath" if antique_single else ("dry-sump" if race_fuel else "wet-sump"))
     oil_filter = "screen" if antique_single else "spin-on"
     fm = engine.intake_system.filter_material
     air_filter = "stacks" if fm == "velocity_stack" else ("oil-bath" if (antique_single or "hit-and-miss" in layout_name) else fm)
@@ -646,12 +647,31 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
             edge(f"{p['identity']}.lead", cid, p["identity"], "ignition-lead", radius=0.004, circuit_identity="ignition")
         src = "coil packs"
     elif spec.ignition == "magneto" and plugs:
-        mpos = np.array([x0 - bore * 1.4, y0 + bore * 0.5, 0.0])
+        dual = getattr(engine, "ignition_profile", "") == "aircraft-dual-magneto"
+        # an aircraft engine's magnetos live on the rear accessory case
+        # (the anti-prop end, where the whole accessory drive is); a
+        # race/stationary magneto rides the crank nose at the front
+        mag_x = (x1 + bore * 1.4) if dual else (x0 - bore * 1.4)
+        mpos = np.array([mag_x, y0 + bore * 0.5, 0.0 if not dual else -bore * 0.45])
         node("powertrain.magneto", [float(v) for v in mpos], "magneto", mass_kg=2.0,
              drum_axis=[1.0, 0.0, 0.0], drum_radius_m=bore * 0.28, drum_length_m=bore * 0.6)
         edge("powertrain.magneto_drive", "powertrain.engine", "powertrain.magneto", "geared-timing-drive", ratio=0.5)
-        src = "powertrain.magneto"
+        srcs = ["powertrain.magneto"]
+        if dual:
+            # TWO independent magnetos, each firing its own plug in every
+            # cylinder -- the real redundancy an aircraft certification
+            # demands: lose one system, keep flying on the other
+            m2 = mpos + np.array([0.0, 0.0, bore * 0.9])
+            node("powertrain.magneto_2", [float(v) for v in m2], "magneto", mass_kg=2.0,
+                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=bore * 0.28, drum_length_m=bore * 0.6)
+            edge("powertrain.magneto_2_drive", "powertrain.engine", "powertrain.magneto_2", "geared-timing-drive", ratio=0.5)
+            srcs.append("powertrain.magneto_2")
         for p in plugs:
+            # plug 1 (spark_plug) on magneto 1, plug 2 (spark_plug_2, the
+            # second boss cylinder_ports adds on dual-magneto engines) on
+            # magneto 2; a single-magneto engine wires every plug to it
+            second = p["identity"].endswith("spark_plug_2")
+            src = srcs[1] if (dual and second) else srcs[0]
             edge(f"{p['identity']}.lead", src, p["identity"], "ignition-lead", radius=0.0035, circuit_identity="ignition")
     elif spec.ignition == "glow" and glows:
         bpos = np.array([(x0 + x1) / 2.0, y0 + bore * 2.6, -bore * 0.9])

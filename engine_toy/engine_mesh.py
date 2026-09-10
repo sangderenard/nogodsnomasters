@@ -101,6 +101,12 @@ MATERIAL_RULES = [
     (("compressor_housing", "blow_off_valve", "charge_cooler", "charge_pipe"), Material("charge_side", "compressor / charge cooler / BOV", _rgb("#c9ced6"), 0.95, 0.35, 0.24, 0.55, 40.0, 0.8)),
     (("turbine_housing", "wastegate", "downpipe", "up_pipe"), Material("hot_side", "turbine housing / wastegate / downpipe", _rgb("#8c5a3c"), 0.9, 0.55, 0.25, 0.3, 20.0)),
     (("barrel_valve",), Material("barrel_valve", "barrel valve", _rgb("#3ccf6a"), 1.0, 0.4, 0.25, 0.4, 30.0)),
+    # aircraft / industrial / air-cooled families (engine_parts.py)
+    (("prop_reduction_gearbox", "prop_shaft", "prop_hub"), Material("prop_drive", "propeller reduction / shaft / hub", _rgb("#5a6068"), 1.0, 0.35, 0.22, 0.5, 36.0, 0.75)),
+    (("propeller_governor", "flyball_governor", "governor_latch"), Material("governor", "governors + linkage", _rgb("#8a7a2a"), 1.0, 0.4, 0.25, 0.45, 30.0, 0.5)),
+    (("injection_pump",), Material("injection_pump", "diesel injection pump", _rgb("#2f6b3a"), 1.0, 0.5, 0.25, 0.35, 24.0)),
+    (("oil_cooler",), Material("oil_cooler", "oil cooler", _rgb("#8a6a30"), 0.85, 0.55, 0.25, 0.3, 20.0)),
+    (("cooling_fan_housing", "cooling_tin_", "_baffle", "cowl_flap_"), Material("cooling_tin", "fan housing / tins / baffles / cowl flaps", _rgb("#4b545e"), 0.55, 0.6, 0.25, 0.3, 18.0)),
 ]
 DEFAULT_MATERIAL = Material("other", "other graph parts", _rgb("#b0b0b8"), 0.35, 0.7, 0.25, 0.2, 14.0)
 MATERIALS: list[Material] = [m for _, m in MATERIAL_RULES] + [DEFAULT_MATERIAL]
@@ -145,7 +151,11 @@ def wanted_in_view(name: str) -> bool:
                                        # forced induction
                                        "blower_", "supercharger_rotor", "compressor_housing", "turbine_housing",
                                        "wastegate", "blow_off_valve", "charge_cooler", "downpipe", "barrel_valve",
-                                       "fuel_pump"))
+                                       "fuel_pump",
+                                       # aircraft / industrial / air-cooled
+                                       "prop_reduction_gearbox", "prop_shaft", "prop_hub", "propeller_governor",
+                                       "flyball_governor", "governor_latch", "injection_pump", "oil_cooler",
+                                       "cooling_fan_housing", "cooling_tin_", "_baffle", "cowl_flap_", "magneto_2"))
     if name.startswith("edge_"):
         return any(k in name for k in ("cylinder", "exhaust", "runner", "lead", "rail_feed", "oil", "pan", "trough", "scavenge",
                                        "air_filter", "stack", "coil", "throttle", "splash",
@@ -154,7 +164,9 @@ def wanted_in_view(name: str) -> bool:
                                        # which are joints, not pipes, and stay unlisted
                                        "heater_", "expansion_bottle", "egr_tube", "timing_chain",
                                        "blower_belt", "charge_pipe", "up_pipe", "turbine_to_downpipe",
-                                       "blower_case_to_plenum_charge", "hat_nozzle", "barrel_valve"))
+                                       "blower_case_to_plenum_charge", "hat_nozzle", "barrel_valve",
+                                       "cooling_tin_bank", "dry_sump_belt", "cooling_fan_belt", "oil_cooler",
+                                       "injection_pump_to_rail"))
     return True
 
 

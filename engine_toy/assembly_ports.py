@@ -109,12 +109,16 @@ def part_ports(layout, wet_sump: bool = True) -> list[PartPort]:
         deck = f"crankcase.deck{b_index + 1}"   # the block's deck face under THIS bank
         # deck-face holes: feed gallery at the rear, returns at both ends, coolant passages between cylinders
         feed = deck_c.copy(); feed[0] = max(xs) + pitch * 0.30; feed = feed + side * (bore * 0.45)
-        for part, dirn in ((head, -axis), (deck, axis)):
-            ports.append(PartPort(f"{part}.oil_feed_face", "crankcase" if part == deck else part, "oil-feed", feed.copy(), dirn, 0.004, True))
-        for k, xr in enumerate((min(xs) - pitch * 0.30, max(xs) + pitch * 0.30)):
-            ret = deck_c.copy(); ret[0] = xr; ret = ret - side * (bore * 0.45)
+        if wet_sump:
+            # pressure-fed head oiling: a feed gallery up through the deck
+            # and returns at both ends -- a total-loss two-stroke has no
+            # oil galleries between case and head at all
             for part, dirn in ((head, -axis), (deck, axis)):
-                ports.append(PartPort(f"{part}.oil_return_face_{k + 1}", "crankcase" if part == deck else part, "oil-return", ret.copy(), dirn, 0.007, True))
+                ports.append(PartPort(f"{part}.oil_feed_face", "crankcase" if part == deck else part, "oil-feed", feed.copy(), dirn, 0.004, True))
+            for k, xr in enumerate((min(xs) - pitch * 0.30, max(xs) + pitch * 0.30)):
+                ret = deck_c.copy(); ret[0] = xr; ret = ret - side * (bore * 0.45)
+                for part, dirn in ((head, -axis), (deck, axis)):
+                    ports.append(PartPort(f"{part}.oil_return_face_{k + 1}", "crankcase" if part == deck else part, "oil-return", ret.copy(), dirn, 0.007, True))
         if jacketed:
             for k in range(len(xs) + 1):
                 xc = (xs[0] - pitch / 2.0) + k * pitch
