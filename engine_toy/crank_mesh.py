@@ -79,6 +79,46 @@ def _pin_position(g, crank_angle_deg: float) -> np.ndarray:
     return c + axis * (g.crank_radius_m * math.cos(th)) + side * (g.crank_radius_m * math.sin(th))
 
 
+def crank_end_fittings(layout) -> dict | None:
+    """The real positions/radii of the crank-end hardware this module
+    already DRAWS (the pulley/damper on the nose, the flange and
+    flywheel on the tail, a second flywheel on a twin-flywheel single)
+    -- the SAME math build_crankshaft_parts uses, exposed so the graph
+    can declare a real node for each at the exact place the mesh
+    already puts it, instead of a second position that could drift."""
+    stations = crank_stations(layout)
+    if not stations:
+        return None
+    bore = max(g.bore_m for _, gs in stations for g in gs)
+    pitch = _pitch(stations, bore)
+    r_main = bore * 0.11
+    web_t = bore * 0.075
+    radial = len(stations) == 1 and len(stations[0][1]) > 2
+    pin_len = (bore * 0.5 if radial else (bore * 0.42 if len(stations[0][1]) > 1 else bore * 0.26))
+    y0 = float(stations[0][1][0].crank_centre[1]); z0 = float(stations[0][1][0].crank_centre[2])
+    xs = [x for x, _ in stations]
+    main_xs = [xs[0] - pitch / 2.0] + [(a + b) / 2.0 for a, b in zip(xs, xs[1:])] + [xs[-1] + pitch / 2.0]
+    main_len = max(pitch - pin_len - 2.0 * web_t, bore * 0.12)
+    nose_x = main_xs[0] - main_len / 2.0
+    tail_x = main_xs[-1] + main_len / 2.0
+    twin = any(getattr(g, "twin_flywheels", False) for _, gs in stations for g in gs)
+    out = {
+        "bore_m": bore, "r_main_m": r_main, "y0": y0, "z0": z0, "twin_flywheels": twin,
+        "nose_end": [nose_x - bore * 0.55, y0, z0],
+        "flywheel_centre": [tail_x + bore * 0.30, y0, z0], "flywheel_radius_m": bore * 1.15,
+        "flywheel_half_len_m": bore * 0.12,
+        "flange_centre": [tail_x + bore * 0.09, y0, z0], "flange_radius_m": r_main * 1.3,
+    }
+    if twin:
+        out["front_flywheel_centre"] = [nose_x - bore * 0.50, y0, z0]
+        out["front_flywheel_radius_m"] = bore * 1.15
+    else:
+        out["pulley_centre"] = [nose_x - bore * 0.485, y0, z0]
+        out["pulley_radius_m"] = bore * 0.45
+        out["pulley_half_len_m"] = bore * 0.065
+    return out
+
+
 def build_crankshaft_parts(layout, crank_angle_deg: float = 0.0) -> list:
     from vehicle_mesh import SolidPart
     parts: list = []

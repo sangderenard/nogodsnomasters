@@ -72,12 +72,13 @@ MATERIAL_RULES = [
     # chain (air_filter -> throttle_body(s) -> plenum chamber(s) ->
     # runners -> ports) hard to tell apart by eye even though the real
     # graph topology connecting them was always correct.
-    (("node_powertrain_air_filter",), Material("air_filter", "air filter / cleaner", _rgb("#c9b380"), 0.7, 0.6, 0.25, 0.3, 20.0)),
+    (("node_powertrain_air_filter",), Material("air_filter", "air filter / cleaner", _rgb("#c8102e"), 0.85, 0.7, 0.28, 0.25, 18.0)),   # the red cotton-gauze cleaner look
     (("throttle_plate", "throttle_linkage"), Material("throttle_plate", "throttle plate + linkage", _rgb("#e8e8ec"), 1.0, 0.3, 0.2, 0.6, 45.0, 0.6)),
     (("node_powertrain_throttle_body", "throttle_body"), Material("throttle_body", "throttle body / barrel(s)", _rgb("#d4a017"), 0.85, 0.5, 0.25, 0.35, 26.0)),
     (("runner", "node_powertrain_intake_plenum", "stack"), Material("intake", "intake runners / plenum", _rgb("#8fb0d8"), 0.5, 0.5, 0.25, 0.3, 24.0)),
     (("fuel_rail", "rail_feed", "fuel_filter", "edge_fuel"), Material("fuel", "fuel rail + filter", _rgb("#3ccf6a"), 0.75, 0.5, 0.25, 0.3, 24.0)),
-    (("lead", "distributor", "ignition_coil", "coil_pack", "leading_coil", "trailing_coil", "magneto", "glow_plug_bus"), Material("ignition", "ignition wiring", _rgb("#202020"), 0.9, 0.7, 0.3, 0.15, 12.0)),
+    (("lead", "distributor", "ignition_coil", "coil_pack", "leading_coil", "trailing_coil"), Material("ignition", "distributor / coils / plug leads", _rgb("#d21f26"), 0.95, 0.45, 0.28, 0.35, 26.0)),   # the red aftermarket-ignition look
+    (("magneto", "glow_plug_bus"), Material("magneto", "magneto / glow-plug bus", _rgb("#202020"), 0.9, 0.7, 0.3, 0.15, 12.0)),
     (("oil_filter", "oil_reserve", "scavenge", "oil_bath", "oil_pump", "edge_powertrain_oil", "edge_powertrain_pan", "edge_powertrain_trough", "splash"), Material("lube", "lubrication", _rgb("#8a6a30"), 0.75, 0.6, 0.25, 0.25, 16.0)),
     (("port_",), Material("casting_port", "casting ports (fill, galleries, coolant, breather)", _rgb("#404040"), 0.95, 0.7, 0.3, 0.15, 12.0)),
     (("head_casting", "cam_box"), Material("head", "head castings", _rgb("#98a4b4"), 0.24, 0.65, 0.25, 0.25, 16.0)),
@@ -85,6 +86,14 @@ MATERIAL_RULES = [
     (("_bore", "_water_jacket", "_fin_", "_head", "_crank_cover", "_hopper", "_rotor_housing", "_side_plate", "_valve_chest"), Material("cylinder", "cylinders / jackets / fins", _rgb("#57626e"), 0.22, 0.65, 0.25, 0.25, 16.0)),
     (("crankcase", "sump", "front_cover", "rear_main", "bedplate", "main_pedestal", "frame_plate", "guide_bar", "rear_accessory"), Material("case", "crankcase / sump / frame", _rgb("#34363a"), 0.2, 0.7, 0.25, 0.2, 14.0)),
     (("node_mount_",), Material("mount", "engine mounts / isolators", _rgb("#8a3324"), 0.3, 0.6, 0.3, 0.3, 18.0)),
+    # universal bolt-ons (engine_parts.py)
+    (("_pulley", "belt_tensioner", "_sprocket", "timing_chain_run"), Material("pulley", "pulleys / tensioner / sprockets", _rgb("#3a3d44"), 1.0, 0.4, 0.22, 0.5, 34.0, 0.7)),
+    (("harmonic_balancer",), Material("damper", "harmonic damper", _rgb("#2c2f36"), 1.0, 0.45, 0.2, 0.45, 32.0, 0.5)),
+    (("starter_motor", "recoil_starter", "crank_nose_fitting"), Material("starter", "starter hardware", _rgb("#4a4f58"), 1.0, 0.5, 0.25, 0.35, 24.0, 0.4)),
+    (("expansion_bottle", "heater_core"), Material("coolant_gear", "coolant bottle / heater core", _rgb("#e8e6d8"), 0.85, 0.5, 0.3, 0.2, 16.0)),
+    (("egr_valve",), Material("egr", "EGR valve", _rgb("#8a5a3a"), 1.0, 0.55, 0.25, 0.3, 20.0)),
+    (("pcv_valve",), Material("pcv", "PCV valve", _rgb("#202020"), 1.0, 0.6, 0.3, 0.2, 14.0)),
+    (("timing_cover", "bellhousing"), Material("housing", "timing cover / bellhousing", _rgb("#3f4349"), 0.3, 0.6, 0.25, 0.25, 16.0)),
 ]
 DEFAULT_MATERIAL = Material("other", "other graph parts", _rgb("#b0b0b8"), 0.35, 0.7, 0.25, 0.2, 14.0)
 MATERIALS: list[Material] = [m for _, m in MATERIAL_RULES] + [DEFAULT_MATERIAL]
@@ -111,14 +120,28 @@ def is_moving(name: str) -> bool:
 def wanted_in_view(name: str) -> bool:
     """Graph nodes/edges the engine view keeps: the dressing and the
     routed lines, not every harness wire and mount."""
+    if "muffler" in name or "tailpipe" in name:
+        # chassis plumbing (engine_parts.py marks these chassis_side):
+        # real, in the graph for the exhaust circuit and the acoustic
+        # model, but hung from the body, not the engine -- a metre of
+        # tailpipe is not part of the engine's own view
+        return False
     if name.startswith("node_"):
         return any(k in name for k in ("intake_plenum", "throttle_body", "air_filter", "fuel_rail", "distributor", "ignition_coil",
                                        "coil_pack", "leading_coil", "trailing_coil", "magneto", "oil_filter", "oil_reserve",
                                        "scavenge", "oil_bath", "glow_plug_bus", "exhaust_collector", "fuel_filter", "oil_pump",
-                                       "mount_"))
+                                       "mount_",
+                                       # universal bolt-ons (engine_parts.py)
+                                       "harmonic_balancer", "flywheel", "starter_motor", "recoil_starter", "crank_nose_fitting",
+                                       "_pulley", "belt_tensioner", "timing_cover", "timing_drive", "expansion_bottle",
+                                       "heater_core", "egr_valve", "pcv_valve", "bellhousing"))
     if name.startswith("edge_"):
         return any(k in name for k in ("cylinder", "exhaust", "runner", "lead", "rail_feed", "oil", "pan", "trough", "scavenge",
-                                       "air_filter", "stack", "coil", "throttle", "splash"))
+                                       "air_filter", "stack", "coil", "throttle", "splash",
+                                       # real visible lines from engine_parts.py: hoses, the EGR
+                                       # tube, the timing run -- NOT the hub/bolted-joint edges,
+                                       # which are joints, not pipes, and stay unlisted
+                                       "heater_", "expansion_bottle", "egr_tube", "timing_chain"))
     return True
 
 

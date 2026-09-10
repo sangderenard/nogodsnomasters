@@ -592,6 +592,74 @@ all, so it still has no turbo nodes. Giving it its real 3–4 turbos means
 declaring a real scavenge boost that changes its physics — a hardware
 value to set deliberately, not fudged in with zero boost.
 
+## Parts catalogue, stage 2: the universal crank-engine bolt-ons (`engine_parts.py`)
+
+Every part here is emitted from data the engine ALREADY declares --
+never from a per-engine list -- and hangs off an existing node at a
+real mounting point. Combustion engines only in this stage; the
+non-piston kinds get their own real parts in later stages.
+
+- **Exhaust downstream.** `ExhaustSystem.segments` was already the real
+  ordered cat/muffler/tailpipe chain the acoustic model reads; it is
+  now geometry too, extended from each real collector: a short drop
+  along the collector's own `outlet_direction` (now stored on the node
+  by `emit_header_graph`), then every segment rearward along the crank
+  axis, cans as boxes and pipe as drums, plus a plugged O2 bung. The
+  production collector -> exhaust_manifold junction edge is untouched
+  (the exhaust circuit, the turbo heat path and the audio key on it);
+  the chain's edges carry no flow capacity, so summed circuit capacity
+  is unchanged.
+- **Crank-end hardware.** `crank_mesh` already DREW the pulley/damper,
+  flange and flywheel; it now exposes `crank_end_fittings(layout)` so
+  the graph declares `harmonic_balancer`, `flywheel` and
+  `flywheel.ring_gear` (or `flywheel_front` on a twin-flywheel single)
+  at exactly the drawn positions. Those nodes carry `drawn_by`, which
+  `vehicle_mesh` honours by not drawing a second body over the real one.
+- **Starter hardware** chosen by the real `STARTING_SYSTEMS`
+  `engages`/`drive` strings production already writes onto
+  `starter_drive`: ring-gear engines get a series-DC motor + solenoid
+  (or a pneumatic vane motor, no solenoid) meshed to the ring gear;
+  recoil-pull gets a rope drum on the nose; hand-crank / starter-cart /
+  inertia starter get their real nose fitting; flywheel-bar and
+  air-start need nothing beyond the flywheel/heads already there.
+- **Belt drive**: a pulley per accessory on the ring plus a
+  tensioner/idler; **timing drive**: cover flush on the block's real
+  front face (`_block_front_face_x`, read off the block segments' own
+  half-extents -- a fixed offset from crank_x_min landed inside a long
+  casting and floated ahead of a short one) with crank/cam sprockets
+  and the run between them.
+- **Coolant plumbing** (liquid-cooled only): expansion bottle off the
+  radiator, heater core with supply/return hoses. **Emissions**: PCV
+  valve on the existing PCV port; EGR valve + tube when `EGRSystem.
+  has_egr`. **Bellhousing** spanning crank rear -> clutch -> gearbox.
+- New material families: pulley, damper, starter, coolant gear, EGR,
+  PCV, housing. Hub/bolted-joint edges are joints, not pipes, and stay
+  out of the view; hoses, the EGR tube and the timing run draw.
+
+Verified over all 26 engines (graph + dangling-edge check, mesh build)
+and by eye at full detail from both ends of the Jeep six.
+
+Three corrections from looking at those frames, all real hardware:
+- **Distributor end is a declared rule, not a constant.** It sat at the
+  rear crank station for every engine; a single-bank engine drives it
+  off the FRONT of the cam (the Jeep 258, Ford 300, most inline fours),
+  a V engine's cam-in-block drive is at the REAR of the valley. Now
+  front for one bank, rear for two or more (`dressing.py`).
+- **The starter lies outside the case.** Its body was placed 1.25
+  flywheel radii from the flywheel centre, i.e. inside the crankcase
+  envelope; it now bolts to the bellhousing flank, outboard, low, with
+  the pinion reaching in to the ring gear.
+- **Muffler and tailpipe are chassis plumbing.** They stay in the graph
+  (the exhaust circuit and the acoustic model read them) but carry
+  `chassis_side=True`: excluded from the engine view (a metre of
+  tailpipe was dominating the camera fit) and classified
+  `SUPPLIED_ELSEWHERE` by `EnginePackage` for the same real reason the
+  fuel tank is -- via a node attribute, not another identity-prefix
+  rule. The close-coupled cat stays engine-side.
+- Colours: the cotton-gauze cleaner is red; distributor, coils and plug
+  leads are the red aftermarket-ignition look; magneto and glow-plug
+  bus keep their dark material.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/

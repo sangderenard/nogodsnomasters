@@ -607,7 +607,16 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
     driver = by_id.get("electrical.ignition_driver")
     src = None
     if spec.ignition == "distributor" and plugs:
-        dpos = np.array([x1 + bore * 1.2, y0 + bore * 1.6, -bore * 0.3])
+        # which END the distributor lives at is real hardware, not a
+        # constant: a single-bank engine drives it off the FRONT of the
+        # cam (behind the timing cover -- the Jeep 258, Ford 300, most
+        # inline fours); a V engine's cam-in-block drive is at the REAR
+        # of the valley (every American pushrod V8). One fixed rear
+        # position had the six's distributor at the flywheel end.
+        from head_mesh import banks as _banks
+        rear_end = len(_banks(layout)) >= 2
+        end_x = (x1 + bore * 1.2) if rear_end else (x0 - bore * 1.2)
+        dpos = np.array([end_x, y0 + bore * 1.6, -bore * 0.3])
         node("powertrain.distributor", [float(v) for v in dpos], "distributor", mass_kg=1.2,
              drum_axis=[0.0, 1.0, 0.0], drum_radius_m=bore * 0.32, drum_length_m=bore * 0.6)
         node("powertrain.ignition_coil", [float(v) for v in (dpos + np.array([0.0, 0.0, -bore * 0.8]))], "ignition-coil",

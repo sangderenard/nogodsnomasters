@@ -328,7 +328,12 @@ def emit_header_graph(plan: HeaderPlan, node, edge, downstream_node: str, exhaus
     for group in plan.groups:
         coll_id = f"powertrain.exhaust_collector_{group.index + 1}"
         node(coll_id, [float(v) for v in group.collector_position], "exhaust-collector",
-             collector_style=group.style, cylinders=list(group.cylinders), mass_kg=1.5)
+             collector_style=group.style, cylinders=list(group.cylinders), mass_kg=1.5,
+             # the real direction the collector discharges -- what the
+             # downstream cat/muffler/tailpipe chain (engine_parts.py)
+             # extends along; it was only ever on the plan, never the node
+             outlet_direction=[float(v) for v in group.outlet_direction],
+             collector_radius_m=float(group.radius_m))
         for pr in group.primaries:
             if pr.cylinder == 0:
                 # a log manifold's shared rail, or a radial's ring

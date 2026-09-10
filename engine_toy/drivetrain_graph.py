@@ -1388,6 +1388,15 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # dispatched by DrivetrainSolver.step() and carries no physics; the
     # real torque coupling for AC/pneumatics is the friction-clutch-shaft
     # edge _add_belt_driven_compressor already built above.
+    # the universal bolt-on parts every real crank engine carries (engine_
+    # parts.py): exhaust downstream of the collectors, damper/flywheel/
+    # ring gear + the starter hardware that meshes with it, belt pulleys
+    # and tensioner, timing cover and drive, coolant bottle/heater core,
+    # PCV/EGR, bellhousing -- emitted here, after headers and dressing,
+    # so every anchor node already sits at its final real position
+    from engine_parts import emit_universal_parts
+    emit_universal_parts(engine, layout, nodes, edges, node, edge)
+
     accessory_node_identity = {
         "alternator": "electrical.alternator", "water_pump": "powertrain.water_pump",
         "fan": "powertrain.cooling_fan", "ac_compressor": "ac_compressor",

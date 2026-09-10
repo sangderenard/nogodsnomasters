@@ -160,6 +160,12 @@ class EnginePackage:
         node_by_id = {n["identity"]: n for n in nodes}
 
         def _sourcing(identity: str) -> PartSourcing:
+            if node_by_id.get(identity, {}).get("chassis_side"):
+                # declared on the node itself by whatever built it (engine_
+                # parts.py's muffler/tailpipe): hung from the body, not the
+                # engine -- supplied elsewhere for the same real reason a
+                # fuel tank is, without needing an identity-prefix rule
+                return PartSourcing.SUPPLIED_ELSEWHERE
             base = part_sourcing(identity)
             if include_transmission and base is PartSourcing.SUPPLIED_ELSEWHERE and _is_transmission_identity(identity):
                 # the player deliberately baked the transmission into

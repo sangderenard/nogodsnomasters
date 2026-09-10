@@ -303,6 +303,12 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
             # a real port is already drawn as a stub by the cylinder
             # layout above
             continue
+        if node.get("drawn_by"):
+            # a real part whose geometry a procedural mesh already
+            # produces (crank_mesh's pulley/flywheel): the node exists
+            # for identity, mass and picking -- drawing a box here too
+            # would put a second body on top of the real one
+            continue
         if layout_data and (node["identity"].startswith("powertrain.engine_block_body")
                             or node["identity"] == "powertrain.oil_pan"):
             # the generic block/pan boxes stand in only when there is no
