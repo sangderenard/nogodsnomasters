@@ -404,6 +404,53 @@ triggers the subframe fallback (a supplied cage's own stability stays
 the vehicle/game's responsibility, honestly reported unmatched rather
 than silently overridden).
 
+## Implemented: the crate as one steppable, animated object (`engine_crate.py`)
+
+The vehicle-graph/engine contract, cleaned up: the vehicle leases the
+engine a PRISM; the engine answers with its own real connections to
+the frame (mount points -- real graph nodes that sit inside that same
+prism or exactly on its boundary by construction, since the prism is
+measured from the same `BUILT_IN` node set the mounts are drawn from);
+the engine's own animated frames live inside that same prism (built
+off the identical graph the prism was measured from, so mesh and
+mount geometry can never diverge); and ONE step function advances real
+state and hands back the real forces crossing the prism's own
+boundary. `EngineCrate` is exactly that, built from three pieces that
+already existed rather than a new parallel system -- `EnginePackage`
+(prism + mounting), `EngineAnimation` (engine_mesh.py's baked moving-
+part frames), and `EngineCycleSim` (the live crank-domain sim).
+`EngineCrate.step(dt)`:
+
+1. Advances the real sim by `dt` (a no-op while stalled -- starting is
+   the sim's own real starter-engagement action).
+2. Indexes the already-baked animation frame for the resulting crank
+   angle (`EngineAnimation.frame_index` -- never re-derives geometry
+   at run time, same "bake once, index during playback" contract the
+   pygame frontend already relies on).
+3. Returns the real forces crossing the prism's own boundary at each
+   mount point this tick, via the new `engine_mounts.mount_loads`: a
+   real static wrench (the assembly's own real weight through its own
+   real center of gravity, plus the crank's own real reaction torque
+   about the crank axis -- Newton's third law, using `EngineCycleSim`'s
+   own live `current_torque_nm`) resolved through each mount's real
+   position and stiffness the same way `evaluate_tra` assembles its
+   own rigid-body system, so the two share one real derivation instead
+   of two that could disagree. For a compliant technique the
+   distribution is stiffness-weighted (a stiffer mount takes
+   proportionally more load, the standard method for an elastically-
+   mounted rigid body); a rigid technique splits evenly across points,
+   a disclosed simplification for what a fully rigid multi-point
+   support is otherwise a genuinely indeterminate problem.
+
+Verified two ways before wiring anything up: a symmetric 4-point
+subframe under pure gravity splits the real weight EXACTLY evenly
+(245.25 N each on a 100 kg body); two points under a pure roll torque
+produce an exactly equal and opposite force couple matching the
+applied moment by hand calculation. Then verified end to end across
+all 26 catalogue engines (build + step + read mount_loads back): the
+summed mount forces match the assembly's own real weight to the
+reported precision every time, zero failures.
+
 ## Practical next step (not yet started)
 
 The classification rule for everything besides the fuel tank/pump/

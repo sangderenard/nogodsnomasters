@@ -317,6 +317,59 @@ def evaluate_tra(engine, rigid_body: RigidBodyProperties,
                      resonance_margin_hz=float(abs(real_freqs[idx] - excitation_hz)))
 
 
+GRAVITY_M_S2 = 9.80665
+
+
+def mount_loads(rigid_body: RigidBodyProperties, mounts: list["MountAssignment"],
+                crank_reaction_torque_nm: float = 0.0) -> dict[str, tuple[float, float, float]]:
+    """The real force each mount exerts ON THE FRAME, crossing the
+    prism's own boundary -- a real static wrench (the assembly's own
+    weight through its own real center of gravity, plus the crank's
+    own real reaction torque about the crank axis -- Newton's third
+    law: whatever torque the crank delivers, the block reacts an equal
+    and opposite one) resolved through each mount's own real position
+    and stiffness, verified against hand-worked cases (a symmetric
+    4-point subframe under pure gravity splits the real weight exactly
+    evenly; two points under a pure roll torque produce an exactly
+    equal and opposite force couple) before ever being wired up here.
+
+    For a compliant technique the real distribution is stiffness-
+    weighted (a stiffer mount takes proportionally more load, the
+    standard real method for an elastically-mounted rigid body): solve
+    the same rigid-body stiffness system evaluate_tra assembles for
+    the static deflection under the wrench, then read each mount's own
+    local force back off that deflection. A rigid technique (solid/
+    bar-cage) has no real stiffness ratio to distribute by -- splitting
+    the weight evenly across points is a real, disclosed
+    simplification for what a fully rigid multi-point support is
+    otherwise a genuinely indeterminate problem (same reasoning
+    evaluate_tra itself skips for a rigid technique)."""
+    if not mounts or rigid_body.total_mass_kg <= 0.0:
+        return {}
+    cg = np.array(rigid_body.center_of_gravity)
+    W = np.array([0.0, -rigid_body.total_mass_kg * GRAVITY_M_S2, 0.0,
+                 -crank_reaction_torque_nm, 0.0, 0.0])
+    positions = [m.position for m in mounts]
+    stiffnesses = [m.hardware.stiffness_n_per_m for m in mounts]
+
+    if any(k is None for k in stiffnesses):
+        share = W[:3] / len(mounts)
+        return {m.identity: tuple(share.tolist()) for m in mounts}
+
+    K = np.zeros((6, 6))
+    As: list[np.ndarray] = []
+    for pos, k in zip(positions, stiffnesses):
+        r = np.array(pos) - cg
+        A = np.zeros((3, 6))
+        A[:, :3] = np.eye(3)
+        A[:, 3:] = -_skew(r)
+        As.append(A)
+        K += k * (A.T @ A)
+    x = np.linalg.solve(K + 1e-9 * np.eye(6), W)
+    return {m.identity: tuple((k * (A @ x)).tolist())
+           for m, A, k in zip(mounts, As, stiffnesses)}
+
+
 # ---------------------------------------------------------------------
 # Universal subframe fallback -- for whatever real block-mount geometry
 # genuinely can't achieve on its own (too short/wide, an asymmetric
