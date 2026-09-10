@@ -90,45 +90,50 @@ Investigated directly rather than assumed:
   above deliberately avoids touching the dt system or the state-machine
   substrate at all.
 
-## Confirmed: the real connection point, and it's already engine-shaped
+## Corrected: the engine is not connected through a torque port at all — it's already a real part in the graph
 
-Checked directly in `abstract_ui_vehicles.py` rather than assumed.
-`external_hub_torque_{wheel}` (line 635 default, used at line 2762) is
-real but wheel-level — meant for per-wheel interventions (an in-hub
-motor, traction-control-style corrections), not a powertrain.
+First pass at this got it wrong by pattern-matching on the word
+"torque" instead of checking what actually carries the engine's output.
+`external_differential_wrench_torque_{axle}`/`external_hub_torque_
+{wheel}` are real, but they're *additive* side inputs (a winch, a PTO,
+traction-control intervention) — not how the engine itself connects.
 
-The actual engine-shaped port is one axle level up:
-`external_differential_wrench_torque_{axle}` (front/rear), paired with
-`external_differential_inertia_{axle}` and
-`differential_wrench_shaft_omega_{axle}` (lines 637-642 defaults,
-real physics at lines 2782-2804). Per tick, the differential shaft's
-own integration is:
+The real answer, traced directly (`abstract_ui_vehicles.py` ~line
+7271): `_vehicle_powertrain_graph` builds this real edge list —
 
+```python
+torque_edges = [
+    ("engine_to_clutch", "powertrain.engine", "powertrain.clutch", "engine_torque"),
+    ("clutch_to_transmission", "powertrain.clutch", "powertrain.transmission", "clutch_torque"),
+    ("transmission_to_transfer_case", "powertrain.transmission", "powertrain.transfer_case", "transmission_output_torque"),
+]
+if include_wheel_output:
+    torque_edges += [
+        ("transfer_case_to_shaft", "powertrain.transfer_case", "powertrain.center_shaft", "driveline_torque"),
+        ("shaft_to_front_diff", ...), ("shaft_to_rear_diff", ...),
+    ]
 ```
-shaft_input_torque = drive_torque * axle_drive_fraction + center_torque
-                      + external_differential_wrench_torque_{axle}
-shaft_inertia = differential_brake_rotor_inertia + external_differential_inertia_{axle}
-free_shaft_omega = shaft_omega + dt * (shaft_input_torque - shaft_output_torque) / shaft_inertia
-```
 
-So the real contract, already live in production, is exactly three
-named scalars per axle:
-- **in**: `external_differential_wrench_torque_{axle}` — the engine's
-  real torque output this tick, Nm.
-- **in**: `external_differential_inertia_{axle}` — the engine's own
-  rotating inertia reflected at this shaft, kg·m².
-- **out** (read back next tick, the same one-tick-lag convention
-  `engine_cycle_sim.py` already uses everywhere): `differential_wrench_
-  shaft_omega_{axle}` — the shaft's real current speed, what the
-  engine's own torque curve needs as input.
+The first three edges — engine through clutch, transmission, and out to
+the transfer case — are built **unconditionally**. Only the edges past
+the transfer case (out to wheels/differential) are gated behind
+`include_wheel_output`, which the toy leaves off. So the toy's own
+`build_drivetrain_graph` already contains the real `powertrain.engine →
+powertrain.clutch → powertrain.transmission → powertrain.transfer_case`
+chain, with the same real named torque channels (`engine_torque`,
+`clutch_torque`, `transmission_output_torque`) a full vehicle build
+uses — because it's the literal same function building it, not a
+separate compatible copy.
 
-This is structurally the *same shape* as the toy's own dyno-rig
-junction (`EngineCycleSim._brake_junction`/`_load_omega`, an engine
-reading a load shaft's speed and supplying torque back against it) —
-just the toy's dyno drum swapped for the real vehicle's differential
-shaft. A baked engine package doesn't need a new contract invented for
-it; it needs to supply a torque(shaft_omega, internal_state) relation
-shaped to feed exactly these three names.
+**There is no connection contract to invent.** The toy's powertrain
+graph is a structural *prefix* of a full vehicle's, stopping at
+`powertrain.transfer_case`. An engine designed and validated in the
+toy becomes real in the game by calling the same
+`_vehicle_powertrain_graph` with `include_wheel_output=True` inside an
+actual vehicle build, continuing the identical chain the toy already
+built the first three links of. "Assembly" is running the rest of a
+function the toy already runs the start of, not translating between
+two representations.
 
 ## The best-case target for the baked characterization
 
