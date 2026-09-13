@@ -1,7 +1,0 @@
-pygame 2.6.1 (SDL 2.28.4, Python 3.11.7)
-Hello from the pygame community. https://www.pygame.org/contribute.html
-  turning mass         16080 kg
-  polar inertia       119985 kg.m2
-  centre of mass       1.240 m off the axis  (196 kN.m of standing offset)
-  drive                  530 kN.m  -> 4.4172 rad/s2
-  60 deg sweep           0.69 s  peaking at 87.1 deg/s
