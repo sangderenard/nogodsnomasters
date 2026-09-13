@@ -1,0 +1,317 @@
+{
+ "colours": {
+  "breech": "#c61b1b",
+  "carriage": "#4f80f7",
+  "cradle": "#9ef722",
+  "fine-rig-base": "#c63fb6",
+  "fine-rig-mount": "#22f7d3",
+  "fine-rig-platform": "#f7aa4f",
+  "gun-gimbal": "#461bc6",
+  "gun-support-structure": "#56f74f",
+  "gun-tube": "#f72269",
+  "hoist": "#3f94c6",
+  "recoil-gear": "#e5f722",
+  "secondary-mg": "#d44ff7",
+  "slew-ring": "#1bc671",
+  "traverse-ring-drive": "#f7714f",
+  "trunnion-thrust-seat": "#2234f7",
+  "well-and-foundation": "#72c63f"
+ },
+ "members": {
+  "well-and-foundation": {
+   "nodes": [
+    "well.foot.nn",
+    "well.rim.nn",
+    "well.foot.np",
+    "well.rim.np",
+    "well.foot.pn",
+    "well.rim.pn",
+    "well.foot.pp",
+    "well.rim.pp"
+   ],
+   "edges": [
+    "well.floor_rail.nn_np",
+    "well.rim_rail.nn_np",
+    "well.floor_rail.np_pp",
+    "well.rim_rail.np_pp",
+    "well.floor_rail.pp_pn",
+    "well.rim_rail.pp_pn",
+    "well.floor_rail.pn_nn",
+    "well.rim_rail.pn_nn",
+    "well.column.nn",
+    "well.column.np",
+    "well.column.pn",
+    "well.column.pp",
+    "well.floor_diagonal.a",
+    "well.floor_diagonal.b",
+    "well.rim_diagonal.a",
+    "well.rim_diagonal.b",
+    "well.wall_brace.nn_np",
+    "well.wall_brace.np_pp",
+    "well.wall_brace.pp_pn",
+    "well.wall_brace.pn_nn"
+   ]
+  },
+  "carriage": {
+   "nodes": [
+    "carriage.corner.nn",
+    "carriage.corner.np",
+    "carriage.corner.pn",
+    "carriage.corner.pp",
+    "carriage.hub"
+   ],
+   "edges": [
+    "carriage.rail.nn_np",
+    "carriage.rail.np_pp",
+    "carriage.rail.pp_pn",
+    "carriage.rail.pn_nn",
+    "carriage.spoke.nn",
+    "carriage.spoke.np",
+    "carriage.spoke.pn",
+    "carriage.spoke.pp"
+   ]
+  },
+  "hoist": {
+   "nodes": [
+    "hoist.base"
+   ],
+   "edges": [
+    "hoist.ram",
+    "hoist.guide.nn",
+    "hoist.guide.np",
+    "hoist.guide.pn"
+   ]
+  },
+  "slew-ring": {
+   "nodes": [
+    "turret.race.nn",
+    "turret.race.np",
+    "turret.race.pn",
+    "turret.race.pp",
+    "turret.yaw"
+   ],
+   "edges": [
+    "turret.slew_bearing.nn",
+    "turret.slew_bearing.np",
+    "turret.slew_bearing.pn",
+    "turret.slew_bearing.pp",
+    "turret.race_rail.nn_np",
+    "turret.race_rail.np_pp",
+    "turret.race_rail.pp_pn",
+    "turret.race_rail.pn_nn",
+    "turret.race_diagonal.a",
+    "turret.race_diagonal.b",
+    "turret.yaw_spoke.nn",
+    "turret.yaw_spoke.np",
+    "turret.yaw_spoke.pn",
+    "turret.yaw_spoke.pp",
+    "turret.mount"
+   ]
+  },
+  "traverse-ring-drive": {
+   "nodes": [
+    "turret.traverse.upper_ring",
+    "turret.traverse.upper_stud.0",
+    "turret.traverse.upper_stud.1",
+    "turret.traverse.upper_stud.2",
+    "turret.traverse.pinion.elec-a",
+    "turret.traverse.carrier.elec-a",
+    "turret.traverse.pinion.elec-b",
+    "turret.traverse.carrier.elec-b",
+    "turret.traverse.pinion.hyd-a",
+    "turret.traverse.carrier.hyd-a"
+   ],
+   "edges": [
+    "turret.traverse.upper_stud_web.0",
+    "turret.traverse.upper_ground.0",
+    "turret.traverse.upper_stud_web.1",
+    "turret.traverse.upper_ground.1",
+    "turret.traverse.upper_stud_web.2",
+    "turret.traverse.upper_ground.2",
+    "turret.traverse.upper_spider.0",
+    "turret.traverse.upper_spider.1",
+    "turret.traverse.upper_spider.2",
+    "turret.traverse.mesh_lower.elec-a",
+    "turret.traverse.mesh_upper.elec-a",
+    "turret.traverse.carrier_bearing.elec-a",
+    "turret.traverse.thrust_retainer.elec-a",
+    "turret.traverse.carrier_brace.elec-a.0",
+    "turret.traverse.carrier_brace.elec-a.1",
+    "turret.traverse.mesh_lower.elec-b",
+    "turret.traverse.mesh_upper.elec-b",
+    "turret.traverse.carrier_bearing.elec-b",
+    "turret.traverse.thrust_retainer.elec-b",
+    "turret.traverse.carrier_brace.elec-b.0",
+    "turret.traverse.carrier_brace.elec-b.1",
+    "turret.traverse.mesh_lower.hyd-a",
+    "turret.traverse.mesh_upper.hyd-a",
+    "turret.traverse.carrier_bearing.hyd-a",
+    "turret.traverse.thrust_retainer.hyd-a",
+    "turret.traverse.carrier_brace.hyd-a.0",
+    "turret.traverse.carrier_brace.hyd-a.1"
+   ]
+  },
+  "gun-gimbal": {
+   "nodes": [
+    "turret.pitch"
+   ],
+   "edges": []
+  },
+  "gun-tube": {
+   "nodes": [
+    "turret.weapon",
+    "turret.collar"
+   ],
+   "edges": [
+    "turret.barrel_to_collar",
+    "turret.collar_to_breech",
+    "turret.breech_to_barrel"
+   ]
+  },
+  "breech": {
+   "nodes": [
+    "turret.breech",
+    "turret.blast_panel"
+   ],
+   "edges": [
+    "turret.blast_panel_seat.0",
+    "turret.blast_panel_seat.1",
+    "turret.blast_panel_seat.2"
+   ]
+  },
+  "cradle": {
+   "nodes": [
+    "turret.cradle",
+    "turret.elevation_lug",
+    "turret.elevation_anchor"
+   ],
+   "edges": [
+    "turret.cradle_to_pitch",
+    "turret.lug_to_cradle",
+    "turret.lug_brace",
+    "turret.anchor_to_yaw",
+    "turret.anchor_brace",
+    "turret.elevation_ram",
+    "turret.equilibrator",
+    "turret.gimbal.pitch"
+   ]
+  },
+  "fine-rig-base": {
+   "nodes": [
+    "fine.base.0L",
+    "fine.base.0R",
+    "fine.base.1L",
+    "fine.base.1R",
+    "fine.base.2L",
+    "fine.base.2R"
+   ],
+   "edges": []
+  },
+  "fine-rig-platform": {
+   "nodes": [
+    "fine.plat.0",
+    "fine.plat.1",
+    "fine.plat.2",
+    "fine.hub"
+   ],
+   "edges": [
+    "fine.base_to_platform.0L",
+    "fine.base_to_platform.0R",
+    "fine.base_to_platform.1L",
+    "fine.base_to_platform.1R",
+    "fine.base_to_platform.2L",
+    "fine.base_to_platform.2R",
+    "fine.basket_brace.0",
+    "fine.basket_brace.1",
+    "fine.basket_brace.2",
+    "fine.rail.0",
+    "fine.spoke.0",
+    "fine.leg.0L",
+    "fine.leg.0R",
+    "fine.base_pair.0",
+    "fine.base_hex.0",
+    "fine.rail.1",
+    "fine.spoke.1",
+    "fine.leg.1L",
+    "fine.leg.1R",
+    "fine.base_pair.1",
+    "fine.base_hex.1",
+    "fine.rail.2",
+    "fine.spoke.2",
+    "fine.leg.2L",
+    "fine.leg.2R",
+    "fine.base_pair.2",
+    "fine.base_hex.2"
+   ]
+  },
+  "fine-rig-mount": {
+   "nodes": [
+    "turret.turret.breech.mount.0",
+    "turret.fine.plat.0.mount",
+    "turret.turret.breech.mount.1",
+    "turret.fine.plat.1.mount",
+    "turret.turret.breech.mount.2",
+    "turret.fine.plat.2.mount"
+   ],
+   "edges": [
+    "turret.seal.turret.breech.mount.0__fine.plat.0.mount",
+    "turret.seal.turret.breech.mount.1__fine.plat.1.mount",
+    "turret.seal.turret.breech.mount.2__fine.plat.2.mount",
+    "turret.breech_mount_web.0",
+    "turret.breech_boss_ring.0",
+    "fine.plat_mount_web.0",
+    "fine.plat_boss_ring.0",
+    "turret.breech_mount_web.1",
+    "turret.breech_boss_ring.1",
+    "fine.plat_mount_web.1",
+    "fine.plat_boss_ring.1",
+    "turret.breech_mount_web.2",
+    "turret.breech_boss_ring.2",
+    "fine.plat_mount_web.2",
+    "fine.plat_boss_ring.2"
+   ]
+  },
+  "secondary-mg": {
+   "nodes": [
+    "mg.pedestal",
+    "mg.yaw",
+    "mg.pitch",
+    "mg.weapon"
+   ],
+   "edges": [
+    "mg.pedestal_to_carriage",
+    "mg.pedestal_brace",
+    "mg.yaw_to_pedestal",
+    "mg.pitch_to_yaw",
+    "mg.yaw_brace",
+    "mg.weapon_mount",
+    "mg.stiffener"
+   ]
+  },
+  "gun-support-structure": {
+   "nodes": [],
+   "edges": [
+    "turret.pedestal",
+    "turret.trunnion_brace.nn",
+    "turret.trunnion_brace.pp"
+   ]
+  },
+  "recoil-gear": {
+   "nodes": [],
+   "edges": [
+    "turret.collar_guide",
+    "turret.recoil_slide",
+    "turret.recoil"
+   ]
+  },
+  "trunnion-thrust-seat": {
+   "nodes": [],
+   "edges": [
+    "turret.thrust_seat",
+    "turret.seat_preload.0",
+    "turret.seat_preload.1",
+    "turret.seat_preload.2"
+   ]
+  }
+ }
+}

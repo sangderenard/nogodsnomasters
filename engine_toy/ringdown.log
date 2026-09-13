@@ -1,0 +1,20 @@
+pygame 2.6.1 (SDL 2.28.4, Python 3.11.7)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+recoil from: triangular stand-in (ballistics kernel unavailable)
+180 steps over 0.597 s, damping 1.5% of critical
+peak deflection 132.27 mm
+modal energy 0.766 -> 0.15 (19.6% still ringing at the end)
+members over yield: 0 of 1628
+      36.2%    166.5 MPa  working         turret.evacuator_housed.4
+      34.8%    160.1 MPa  working         outrigger.pad_pin.fn.0
+      34.6%    159.3 MPa  working         outrigger.pad_pin.nn.0
+      34.3%    157.7 MPa  working         outrigger.pad_pin.mp.0
+      33.7%    154.9 MPa  working         outrigger.pad_pin.mn.0
+      33.7%    154.9 MPa  working         turret.spine_band.4.1
+      33.3%    153.3 MPa  working         turret.spine_band.4.0
+      33.1%    152.4 MPa  working         outrigger.pad_pin.np.0
+      33.1%    152.0 MPa  working         outrigger.pad_pin.pn.0
+      32.5%    149.5 MPa  working         outrigger.pad_pin.pp.0
+recoil force from: triangular stand-in (ballistics kernel unavailable)
+180 instants, peak 47.8 kN, peak deflection 132.3 mm
+wrote platform_ringdown.png

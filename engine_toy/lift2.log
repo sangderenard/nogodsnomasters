@@ -1,0 +1,17 @@
+pygame 2.6.1 (SDL 2.28.4, Python 3.11.7)
+Hello from the pygame community. https://www.pygame.org/contribute.html
+lifting fine, elevation, carriage by 0.00 m
+28 members cross the gap:
+     1  cradle                 gimbal-pitch-bearing               turret.gimbal.pitch
+     1  cradle                 linear-hydraulic-actuator          turret.elevation_ram
+     2  cradle                 rigid-distance                     turret.cradle_to_pitch (+1 more)
+     1  cradle                 spring-damper                      turret.equilibrator
+     6  fine-rig-platform      linear-hydraulic-actuator          fine.leg.0L (+5 more)
+     6  traverse-ring-drive    captive-pinion-mesh                turret.traverse.mesh_lower.elec-a (+5 more)
+     6  traverse-ring-drive    rigid-distance                     turret.traverse.carrier_brace.elec-a.0 (+5 more)
+     3  trunnion-thrust-seat   belleville-preload-stack           turret.seat_preload.0 (+2 more)
+     1  trunnion-thrust-seat   pinned-trunnion-mount              turret.trunnion.pin
+     1  trunnion-thrust-seat   spherical-thrust-seat              turret.thrust_seat
+wrote lift_q.png
+wrote lift_side.png
+wrote lift_rear.png

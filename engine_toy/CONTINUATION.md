@@ -1,9 +1,13 @@
 # Continuation report
 
-Written at the end of a long session on the gimbal cannon station. Two
-purposes: list what was asked for and is still undone, and state the
+Written across two sessions on the gimbal cannon station. Two purposes:
+list what was asked for and is still undone, and state the
 architectural requirement that should govern how the rest of it gets
 built.
+
+**Refreshed 2026-09-13.** Section 9 is the second session and is the
+part to read first -- several things in sections 1-8 are now done, and
+two claims made there turned out to be wrong.
 
 ---
 
@@ -303,9 +307,181 @@ For the next session's benefit, so it does not get rebuilt:
 - **`mesh_primitives.ring_mesh`** existed all along and nothing was wired
   to it; `vehicle_mesh` now has a `shape == "annulus"` branch.
 
+
 ---
 
-## Suggested order
+## 9. Second session, 2026-09-13
+
+### 9.1 What got built
+
+**The machine below the turret now exists.** It had been standing in
+space; the drum's static ring was `fixed_to="world"`.
+
+- `stand.py` -- a work area open under the turret with an engine bay
+  hung off each short end, on the side axis. 8.00 m across, 3.40 m fore
+  and aft.
+- **Eight legs, not four.** Four raked 34 deg outward at the corners of
+  the whole footprint, four upright under the work area's own corners.
+  The inner four matter most and are the least obvious: without them
+  the work-area corners sit 2.3 m inboard of the nearest support and
+  the entire turret lands in the middle of a beam propped only at its
+  ends.
+- **Deploy rams.** Two cylinders per braced corner doing different
+  jobs: the leg extends and stands the machine up, the ram swings it
+  from stowed to bracing angle. They run together, not in sequence, so
+  the pad travels down and out along a curve instead of dragging
+  sideways across ground it is already touching.
+- What the rake buys, measured: pad pressure **339 -> 175 kPa** (the
+  250 kPa firm-soil limit in `outriggers.py` had `leg.sinks` true at
+  four legs), and tipping margin on a 120 mm shot **1.96x -> 7.23x**,
+  because the pads land at +-2.78 m fore and aft against +-1.70 m at
+  the frame. More legs do nothing for tipping; only the footprint does.
+
+**The sled is now two rectangles under two arches**, which is what was
+actually asked for and not what was first built. Two arches, feet on
+the deck. Four arch pins. A dangling platform hanging straight down
+from them, outboard on the pin. A gun platform standing UP off interior
+pins 260 mm inboard, laid 68 deg forward so it rests on top of the
+dangling one. The inboard/outboard offset is the only reason the two
+stages fold through each other instead of colliding.
+
+**The gun rides in a cradle**, carried at the front by the trunnion on
+the high-adjustment column and at the back by the aft cross beam, and
+recoils through its own 844 mm travel before either platform folds.
+Three stages in series: slide 844 mm, gun platform 684 mm, dangling
+636 mm. The gun is balanced onto the trunnion axis by a solved trim
+weight -- 29.8 kg at 2.50 m aft puts the cg **0.17 mm** off the axis.
+
+**Both prime movers are mounted**: `ldt465-multifuel-deuce` (600 kg)
+and `agt1500-abrams-turbine` (1134 kg), one to a bay, four mounts each.
+`joints.py` refused `engine-mount-isolator` until it was declared --
+"do not let it default, because the default is a weld" -- and it is now
+COMPLIANT in all six with a bushing.
+
+**One printer, two laws.** `structure_native.bank_source` was the beam
+law hard-wired into a bank loop; it is now `print_bank(equations, ...)`
+and the oleo-strut law from `symbolic_parts` reaches the compiler
+through the same door. Parity: the beam bank is bit-exact between LLVM
+and the interpreter; the joint bank is exact against
+`GasOverOilStrut` over a 12,000-step velocity history.
+
+**`dt_benchmark.py`** runs joints, members and motion as engines on
+`src.common.dt_system` -- one `MetaLoopRunner`, each engine reporting
+what step it can stand through `Metrics.dt_limit` instead of capping
+itself. It runs. It is slow and that does not matter yet.
+
+### 9.2 Mistakes worth not repeating
+
+- **A joint is a force element.** The first joint bank carried a mass
+  and advanced a velocity -- an integrator hidden inside a
+  constitutive law. Told a velocity, answer with a force; the mass
+  belongs to whatever owns the bodies.
+- **A slider releases its own member's axis.** `free_axis="bore"` is a
+  label no solver reads. Built as short vertical struts the recoil
+  slide freed the vertical and stayed rigid along the bore: **4292 %
+  of yield**. On the bore line, 23 %.
+- **Rotary inertia is not optional.** `frame_solver.modes` floored every
+  rotational diagonal at one microgram, manufacturing 119 modes below
+  0.05 Hz that sat under every elastic one and absorbed modal force
+  without producing strain. Assembled from declared extents and
+  sections, they are gone; lowest mode 17.3 Hz.
+- **An index-bounded patch must assert what it removes.** One of mine
+  deleted `native_bank`, `PythonBank`, `bank_for` and `bank_for_target`
+  on its way between two markers. Rebuilt from the baked artifacts and
+  proved by parity.
+- **Several "findings" were artifacts of how I invoked the compiler.**
+  See 9.3. Do not trust a blocker reported from a badly-formed
+  invocation.
+
+### 9.3 The compiler: what was actually wrong
+
+`engine_cycle_sim.py`, `drivetrain_graph.py` and `engines.py` contain
+**zero AbstractTensor and zero sympy**. The engine sim has no symbolic
+lane; it is 4618 lines of scalar Python, `_step_once` being 1147 of
+them in one method.
+
+Attempts to lower it reported `opaque-state-effect` every time. Four of
+those attempts were malformed and the blockers they produced were
+meaningless:
+
+1. a bare method string -- no class, so `self` resolved to nothing
+2. the same for `_step_once`
+3. the module with no path bootstrap
+4. the module with an ambiguous entrypoint (`step` -- several classes
+   define one)
+
+**And then the real one: no extraction contract.** Every call used
+`extraction_contract=None`, which silently ran with the
+machine-decompilation gate off. `fortran_c_shell.py` said so in a
+comment -- "None from both preserves the historical (gate-disabled)
+behavior". With no contract there is no declared ABI for anything
+crossing the boundary, so every receiver the compiler cannot see comes
+back opaque, and those failures read exactly like defects in the
+program.
+
+**That escape hatch is now closed.** `lower_ast_source_to_ssa` raises
+if no contract is supplied and none is on the active work contract.
+`engine_toy/compile_contract.py` supplies engine_toy's.
+
+**21 of 51 files calling `lower_ast_source_to_ssa` never mention a
+contract** -- including `interior_ballistics.py`, `native_audio.py` and
+`structure_native.py`. They were all running gate-off and will now fail
+loudly. That is the point, but it is a real blast radius and none of
+them are fixed yet.
+
+Two claims I made and had to withdraw:
+
+- The plan to "teach the classifier to see through an attribute path"
+  was a fix to a non-bug. The rule already exists in
+  `glsl_deployment_strategy`: a resolved callee owns its effects. It
+  needs the callee to be resolvable, which needs the class, which needs
+  a well-formed invocation.
+- I read the contract's `execution:` block as driving behaviour. It
+  does not. **Six of its ten fields are read by nothing outside
+  `extraction_contract.py`** -- `host_runtime`, `dependency_search`,
+  `dispatch_unit`, `unlowered_behavior`, `python_callbacks`,
+  `numeric_semantics`. The block is validated and fingerprinted, not
+  acted on. The field that does work is `require_full_native`, which
+  gates the final prune, late-literal reconciliation, dead-CFG pruning
+  and the authored-ABI audit.
+
+Also note: `dependency_search: reachable` -- **the compiler pursues the
+program's own dependencies.** Narrowing a target to dodge an unresolved
+receiver is working around it, not with it.
+
+### 9.4 Open, in the order it matters
+
+1. **Finish the engine-sim lowering.** Running at time of writing:
+   `EngineCycleSim.step`, whole module, contract with
+   `require_full_native`. Every previous reading was invalid.
+2. **Fix the 21 gate-off callers**, starting with engine_toy's three.
+3. **A record ABI for `EngineCycleSim`** if it is to go fully native.
+   `BalloonTireManagedState` is the model -- every field a typed span.
+   `EngineCycleSim` is a graph of Python objects instead, so this is
+   work on the class, not on the contract.
+4. **The prime movers are mounted but not registered** as dt-system
+   engines; there is nothing to register until 1 and 3 land.
+5. The whole of sections 1-7 below still stands, except where 9.1 has
+   overtaken it.
+
+### 9.5 Numbers, current
+
+```
+station         316 nodes, 737 edges, 17.4 t on eight legs
+120 mm shot     30127 N.s net (34 % gas), 8.69 m/s free recoil
+absorber        transmits 416 kN of a raw 15063 kN
+structure       84.7 mm deflection, 0 members failed
+worst member    mount.rear_screw.aft.a at 0.890 fracture demand
+                -- the rear cradle support, 252 MPa of shear
+sweep clearance 24 interferences: the dangling platform drives
+                through the aft arch legs. UNRESOLVED.
+engine sim      multifuel 42.4 ms/step, turbine 2.4 ms/step
+```
+
+
+---
+
+## Suggested order (first session)
 
 1. **Make the windows the default.** Nothing else can be verified until
    the user can watch it.
