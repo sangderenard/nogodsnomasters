@@ -106,17 +106,26 @@ class CrankcaseState:
         return self.fuel_in_oil_kg / max(self.oil_kg + self.fuel_in_oil_kg, 1e-9)
 
     def step(self, dt: float, rpm: float, strengths: np.ndarray, richness: float, oil_temp_k: float,
-             fires_per_s: float) -> None:
+             fires_per_s: float, deposit_kg_s=None) -> None:
         """One tick. `strengths` is each cylinder's combustion strength
         this tick (0..1, the piston loop's own per-cylinder figure);
-        `fires_per_s` the engine's firing rate."""
+        `fires_per_s` the engine's firing rate. `deposit_kg_s`: the
+        per-cylinder film deposit the splash emitters actually delivered
+        (hole_emitters.HoleEmitterField.splash_deposit_kg_s -- the
+        dipper's own flung flow, its retained fraction, per bore);
+        None keeps the uniform crank-speed law below."""
         omega = rpm * 2.0 * np.pi / 60.0
         level = self.oil_level_frac
         # film: d/dt film = deposit - (scrape + burn) * film -> exact
         # exponential relaxation toward deposit/(scrape+burn), so any
         # step size (a 2 ms sim tick or an hour of accelerated wear)
         # lands on the same physics
-        deposit = SPLASH_DEPOSIT_KG_PER_S_PER_RAD_S * omega * min(1.0, level * 1.25)
+        if deposit_kg_s is not None:
+            deposit = np.asarray(deposit_kg_s, dtype=float)[:self.n_cyl]
+            if len(deposit) < self.n_cyl:
+                deposit = np.concatenate([deposit, np.zeros(self.n_cyl - len(deposit))])
+        else:
+            deposit = SPLASH_DEPOSIT_KG_PER_S_PER_RAD_S * omega * min(1.0, level * 1.25)
         k_scrape = FILM_SCRAPE_PER_RAD * omega
         k_burn = FILM_BURN_PER_S_AT_FULL_LOAD * np.clip(strengths, 0.0, 1.5) * (1.0 + 4.0 * self.ring_leak)
         k = k_scrape + k_burn

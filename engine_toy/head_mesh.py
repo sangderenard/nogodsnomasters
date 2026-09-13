@@ -35,7 +35,7 @@ import math
 
 import numpy as np
 
-from mesh_primitives import tube_mesh, cuboid_mesh, capped_tube_mesh
+from mesh_primitives import tube_mesh, cuboid_mesh, capped_tube_mesh, prism_mesh
 
 CRANK_AXIS = np.array([1.0, 0.0, 0.0])
 
@@ -84,7 +84,7 @@ def banks(layout) -> list[list]:
     return list(groups.values())
 
 
-def head_oil_ports(layout, wet_sump: bool = True) -> list[dict]:
+def head_oil_ports(layout, wet_sump: bool = True, lube: str | None = None) -> list[dict]:
     """Kept for the mesh: the ports themselves live in assembly_ports
     (heads: a FILL on top plus deck-face feed/return/coolant holes;
     crankcase and pan: their own). Drawn as stubs by build_head_parts.
@@ -92,20 +92,41 @@ def head_oil_ports(layout, wet_sump: bool = True) -> list[dict]:
     draws stubs for ports the graph no longer has."""
     from assembly_ports import part_ports
     out = []
-    for p in part_ports(layout, wet_sump=wet_sump):
+    for p in part_ports(layout, wet_sump=wet_sump, lube=lube):
         out.append({"identity": f"powertrain.{p.identity}", "position": [float(v) for v in p.position],
                     "direction": [float(v) for v in p.direction], "radius_m": p.radius_m, "port_kind": p.kind,
                     "fluid_role": p.fluid, "mating": p.mating, "part": p.part})
     return out
 
 
+def _chamber_profile(kind: str, bore: float) -> list:
+    """The roof cross-section (u = across the bore, v = up into the
+    head), counter-clockwise, sized off the bore -- one real shape per
+    declared chamber kind."""
+    r = bore * 0.46
+    if kind == "hemi":
+        n = 12
+        return [(r * math.cos(math.pi * i / n), r * 0.75 * math.sin(math.pi * i / n)) for i in range(n + 1)][::-1]
+    if kind == "pent-roof":
+        return [(-r, 0.0), (r, 0.0), (0.0, bore * 0.22)][::-1]
+    if kind == "wedge":
+        return [(-r, 0.0), (r, 0.0), (r, bore * 0.05), (-r * 0.35, bore * 0.24)][::-1]
+    if kind == "bathtub":
+        return [(-r * 0.8, 0.0), (r * 0.8, 0.0), (r * 0.7, bore * 0.16), (-r * 0.7, bore * 0.16)][::-1]
+    if kind == "open":
+        n = 8
+        return [(r * math.cos(math.pi * i / n), r * 0.4 * math.sin(math.pi * i / n)) for i in range(n + 1)][::-1]
+    return []   # heron / flathead: a flat deck, the bowl is in the piston
+
+
 def build_head_parts(layout, covers_off: bool = False, engine=None, crank_angle_deg: float = 0.0,
-                     spring_style: str = "helix") -> list:
+                     spring_style: str = "helix", chamber=None) -> list:
     from vehicle_mesh import SolidPart
     parts: list = []
     bank_list = banks(layout)
-    wet_sump = engine is None or not engine.architecture.two_stroke
-    for port in head_oil_ports(layout, wet_sump=wet_sump):
+    from assembly_ports import lube_kind_for
+    lube = lube_kind_for(engine) if engine is not None else "wet-sump"
+    for port in head_oil_ports(layout, lube=lube):
         d = np.array(port["direction"]); pos = np.array(port["position"])
         depth = 0.006 if port["mating"] else 0.018
         vtx, nrm = _tube(pos - d * 0.004, pos + d * depth, port["radius_m"], sides=10)
@@ -130,6 +151,22 @@ def build_head_parts(layout, covers_off: bool = False, engine=None, crank_angle_
         grp = f"block_cyl_{gs[len(gs) // 2].number}"
         vtx, nrm = oriented_box(deck + axis * (head_t / 2.0), [(x_b - x_a) / 2.0, head_t / 2.0, bore * 0.72], axis)
         parts.append(SolidPart(vertices=vtx, normals=nrm, thermal_group=grp, name=f"head_casting_bank{b_index + 1}"))
+        # the chamber roof itself, per cylinder, cut into the underside of
+        # the head: the declared CombustionChamber kind's real profile
+        # (a hemi dome, a pent-roof ridge, a wedge's slant, a bathtub's
+        # shallow trough, nothing for a flat Heron/flathead deck) --
+        # visible through the see-through casting with the covers off
+        chamber_now = chamber if chamber is not None else (getattr(engine, "chamber", None) if engine is not None else None)
+        if chamber_now is not None:
+            side = _unit(np.cross(CRANK_AXIS, axis))
+            profile = _chamber_profile(chamber_now.kind, bore)
+            if profile:
+                for g in gs:
+                    centre = np.array(g.base) + axis * (g.length_m + wall * 1.5)
+                    centre[0] = float(g.base[0])
+                    vtx, nrm = prism_mesh(profile, centre, CRANK_AXIS, bore * 0.30, side, axis)
+                    parts.append(SolidPart(vertices=vtx, normals=nrm, thermal_group=f"block_cyl_{g.number}",
+                                           name=f"chamber_roof_cyl{g.number}"))
         vt = valvetrain_layout(gs[0])
         top = deck + axis * head_t
         if vt in ("sohc", "dohc"):

@@ -60,6 +60,32 @@ def _node_position_lookup(nodes: list[dict[str, Any]]) -> dict[str, np.ndarray]:
     return {n["identity"]: np.array(n["reference_position"], dtype=np.float64) for n in nodes}
 
 
+def _chamber_from_graph(graph: dict[str, Any]):
+    """The declared CombustionChamber the graph carries (drivetrain_graph
+    serialises it), or None -- so the head roof can be cut from the
+    graph alone, the way everything else here is drawn."""
+    data = graph.get("combustion_chamber")
+    if not data:
+        return None
+    from engines import CombustionChamber
+    try:
+        return CombustionChamber(**data)
+    except TypeError:
+        return None
+
+
+def _chassis_side_ids(nodes: list[dict[str, Any]]) -> set[str]:
+    """Node identities hung from the body, not the engine (fuel tank,
+    muffler/tailpipe, heater core, expansion bottle, ...). Node boxes
+    for these are already skipped below; an edge with EITHER endpoint
+    in this set is real chassis plumbing/wiring too (a coolant line
+    into the expansion bottle, a fuel line into the tank) and gets the
+    same cut -- otherwise the tube itself still reaches out to the
+    chassis-side node's real position even with the box gone, which is
+    exactly what was blowing out the engine-only view's camera fit."""
+    return {n["identity"] for n in nodes if n.get("chassis_side")}
+
+
 # Real components housed INSIDE the block/bell-housing -- a clutch disc,
 # the camshaft, the oil pump, the flywheel wrench port -- as opposed to
 # something genuinely bolted externally (an alternator, a water pump, a
@@ -123,6 +149,11 @@ def build_drivetrain_mesh(graph: dict[str, Any]) -> list[tuple[np.ndarray, np.nd
             continue
         if np.allclose(a, b):
             continue
+        if edge.get("constraint") == "oil-splash-path":
+            # not a pipe: the crank's dipper (hole_emitters splash
+            # emitters draw the flung oil itself); the edge stays as the
+            # circuit's declaration only
+            continue
         radius = float(edge.get("radius", DEFAULT_TUBE_RADIUS_M))
         sides = 6 if edge.get("routing") == "relaxed-multi-segment-harness" else 10
         vertices, normals = tube_mesh(a, b, radius, sides=sides)
@@ -177,9 +208,14 @@ def _thermal_group_for(circuit_identity: str | None, identity: str) -> str | Non
         return "coolant"
     if "oil" in lowered:
         return "oil"
-    if "exhaust" in lowered:
+    # the turbo's real hot side (turbine housing, wastegate, downpipe,
+    # the swept up-pipe waypoints) rides at exhaust temperature just
+    # like the header it's bolted to; the cold side (compressor,
+    # charge pipe, BOV, cooler) is intake-charge air
+    if "exhaust" in lowered or "turbine_housing" in lowered or "wastegate" in lowered or "downpipe" in lowered \
+            or "up_pipe" in lowered or "exhaust_duct" in lowered:
         return "exhaust"
-    if "intake" in lowered:
+    if "intake" in lowered or "compressor_housing" in lowered or "charge_" in lowered or "blow_off" in lowered:
         return "intake"
     return None
 
@@ -196,6 +232,13 @@ class SolidPart:
     normals: np.ndarray
     thermal_group: str | None
     name: str
+    # What this part is made of, as the graph DECLARED it. The material
+    # table is otherwise matched from the part's name, which works for
+    # engine hardware whose names the table was written around and does
+    # not work at all for a machine (machines.py) whose parts are called
+    # things like turret.shell -- every one of those fell through to the
+    # translucent default, so a turret rendered as a set of grey ghosts.
+    declared_material: str | None = None
 
 
 # Real max butterfly-plate opening -- the SAME real constant engine_
@@ -276,9 +319,12 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
     membership (WireframePart's own tagging) so a live renderer can
     shade/color it without re-deriving that from scratch."""
     positions = _node_position_lookup(graph["nodes"])
+    chassis_side_ids = _chassis_side_ids(graph["nodes"])
     parts: list[SolidPart] = []
 
     for edge in graph["edges"]:
+        if edge["a"] in chassis_side_ids or edge["b"] in chassis_side_ids:
+            continue
         a = positions.get(edge["a"])
         b = positions.get(edge["b"])
         if a is None or b is None or np.allclose(a, b):
@@ -288,7 +334,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         vertices, normals = tube_mesh(a, b, radius, sides=sides)
         group = _thermal_group_for(edge.get("circuit_identity"), edge["identity"])
         name = edge["identity"].replace("/", "_").replace(".", "_")
-        parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group, name=f"edge_{name}"))
+        parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
+                               name=f"edge_{name}", declared_material=edge.get("material")))
 
     # the real cylinders themselves (cylinder_ports.py: bore wall, head
     # or open top, piston, valve chest / rack, and a stub for every real
@@ -296,7 +343,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
     layout_data = graph.get("cylinder_layout")
     if layout_data:
         from cylinder_ports import deserialize_layout, build_parts_from_layout
-        parts.extend(build_parts_from_layout(deserialize_layout(layout_data), crank_angle_deg=crank_angle_deg, covers_off=covers_off))
+        parts.extend(build_parts_from_layout(deserialize_layout(layout_data), crank_angle_deg=crank_angle_deg, covers_off=covers_off,
+                                             chamber=_chamber_from_graph(graph)))
 
     for node in graph["nodes"]:
         if node["kind"] == "engine-block-port":
@@ -322,13 +370,72 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         center = np.array(node["reference_position"], dtype=np.float64)
         fan_radius = node.get("fan_disk_radius_m")
         drum_axis = node.get("drum_axis")
+        # A DECLARED SHAPE wins over everything below. The rules that
+        # follow were written for engine parts and infer a shape from
+        # which attributes happen to be present, which cannot express
+        # "this is a ring" at all and quietly drew every machine part as
+        # a box. A part that knows what shape it is should just say so.
+        shape = node.get("shape")
+        if shape == "ring":
+            from mesh_primitives import ring_mesh
+            ax = np.array(node.get("ring_axis", (0.0, 1.0, 0.0)), dtype=np.float64)
+            vertices, normals = ring_mesh(
+                center, ax, float(node.get("ring_outer_radius_m", 0.5)),
+                float(node.get("ring_inner_radius_m", 0.3)),
+                float(node.get("ring_thickness_m", 0.06)))
+            group = _thermal_group_for(None, node["identity"])
+            name = node["identity"].replace("/", "_").replace(".", "_")
+            parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
+                                   name=f"node_{name}", declared_material=node.get("material")))
+            continue
+        if shape == "annulus":
+            # A DISC WITH A BORE, which mesh_primitives has had all
+            # along -- `ring_mesh` is even documented as "the shape a
+            # slew bearing actually is", complete with the note that
+            # drawing one as a box gives it no hole for a round to pass
+            # through. Nothing was wired to it, so every annulus in this
+            # project drew as a box or as a ring of little boxes.
+            from mesh_primitives import ring_mesh
+            ax = np.array(node.get("annulus_axis", (0.0, 1.0, 0.0)),
+                          dtype=np.float64)
+            vertices, normals = ring_mesh(
+                center, ax,
+                float(node.get("outer_radius_m", 0.5)),
+                float(node.get("inner_radius_m", 0.2)),
+                float(node.get("thickness_m", 0.04)),
+                segments=int(node.get("draw_segments", 48)))
+            group = _thermal_group_for(None, node["identity"])
+            name = node["identity"].replace("/", "_").replace(".", "_")
+            parts.append(SolidPart(vertices=vertices, normals=normals,
+                                   thermal_group=group, name=f"node_{name}",
+                                   declared_material=node.get("material")))
+            continue
+        if shape == "drum" and drum_axis is not None:
+            from mesh_primitives import capped_tube_mesh
+            ax = np.array(drum_axis, dtype=np.float64)
+            ax = ax / max(np.linalg.norm(ax), 1e-9)
+            half = float(node.get("drum_length_m", 0.10)) / 2.0
+            vertices, normals = capped_tube_mesh(center - ax * half, center + ax * half,
+                                                 float(node.get("drum_radius_m", 0.05)), sides=16)
+            group = _thermal_group_for(None, node["identity"])
+            name = node["identity"].replace("/", "_").replace(".", "_")
+            parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
+                                   name=f"node_{name}", declared_material=node.get("material")))
+            continue
         if drum_axis is not None and node.get("body_half_extent_m") is None:
             # a real drum-shaped part (air cleaner, spin-on filter,
             # distributor, coil, dry-sump tank) along its own axis
-            from mesh_primitives import capped_tube_mesh
+            from mesh_primitives import capped_tube_mesh, beveled_drum_mesh
             ax = np.array(drum_axis, dtype=np.float64); ax = ax / max(np.linalg.norm(ax), 1e-9)
             half = float(node.get("drum_length_m", 0.05)) / 2.0
-            vertices, normals = capped_tube_mesh(center - ax * half, center + ax * half, float(node.get("drum_radius_m", 0.03)), sides=18)
+            bevel = node.get("drum_bevel_m")
+            if bevel:
+                # a can with bevelled corners (cat / muffler shell): conical
+                # transitions from the pipe radius up to the body
+                vertices, normals = beveled_drum_mesh(center - ax * half, center + ax * half, float(node.get("drum_radius_m", 0.03)),
+                                                      float(bevel), float(node.get("drum_end_radius_m", 0.02)), sides=18)
+            else:
+                vertices, normals = capped_tube_mesh(center - ax * half, center + ax * half, float(node.get("drum_radius_m", 0.03)), sides=18)
         elif fan_radius is not None:
             # A real circular fan blade sweep -- a short, wide tube
             # along the crank's own rotation axis (X), tube_mesh's own
@@ -344,7 +451,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
             vertices, normals = cuboid_mesh(center, half_extent)
         group = _thermal_group_for(None, node["identity"])
         name = node["identity"].replace("/", "_").replace(".", "_")
-        parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group, name=f"node_{name}"))
+        parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
+                               name=f"node_{name}", declared_material=node.get("material")))
 
     parts.extend(build_intake_bung_parts(graph))
     return parts

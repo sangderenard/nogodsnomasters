@@ -31,6 +31,7 @@ import pygame
 from drivetrain_graph import build_drivetrain_graph
 from vehicle_mesh import build_drivetrain_solid_parts
 from engines import CATALOGUE
+import engine_mounts
 
 _TURING_ROOT = Path(__file__).resolve().parents[1] / "turing"
 if str(_TURING_ROOT) not in sys.path:
@@ -46,6 +47,8 @@ ENGINE_COLOR = np.array([210, 150, 70], dtype=np.float64)
 CHASSIS_COLOR = (90, 140, 220)
 FIREWALL_COLOR = (230, 80, 80)
 BAY_COLOR = (90, 210, 130)
+MOUNT_COLOR = (240, 220, 60)
+CV_STUB_COLOR = (220, 120, 230)
 LIGHT_DIR = np.array([0.4, 0.6, 0.7])
 LIGHT_DIR = LIGHT_DIR / np.linalg.norm(LIGHT_DIR)
 AMBIENT_FLOOR = 0.30
@@ -85,6 +88,12 @@ _ENGINE_ENVELOPE_EXCLUDE_PREFIXES = (
     "dyno_absorber", "fuel.tank", "fuel.pump",
     "powertrain.transmission", "powertrain.transfer_case", "powertrain.direct_drive_bypass",
     "mount.transmission", "mount.transfer_case",
+    # a transverse install's transaxle/final-drive/differential/halfshafts
+    # are the same real cut as the transmission/transfer-case above --
+    # NOT part of the engine's own physical envelope against the firewall
+    "powertrain.transaxle", "powertrain.final_drive", "powertrain.differential",
+    "powertrain.halfshaft_left", "powertrain.halfshaft_right",
+    "mount.transaxle", "mount.torque_rod",
 )
 
 
@@ -213,6 +222,58 @@ class BayViewer:
         normals = _rotate_points(normals, math.radians(roll), math.radians(pitch_deg), math.radians(yaw_deg))
         self.engine_normals = normals.reshape(-1, 3, 3)
 
+        # The real automated mount policy (engine_mounts.assign_mounting)
+        # -- not a bespoke set drawn for this viewer. Same real technique/
+        # CG-in-hull/TRA machinery EnginePackage.build already runs;
+        # include_transmission=True because the mesh above is drawn WITH
+        # its transmission/transaxle for packaging context, so the mount
+        # set has to match what's actually on screen. Positions are in
+        # the engine's own local frame exactly like the mesh vertices
+        # above, so the identical rotate-then-translate puts them where
+        # they really are relative to the fitted vehicle.
+        install_context = "automotive"
+        mounting = engine_mounts.assign_mounting(
+            engine, install_context=install_context, include_transmission=True,
+            transmission_mass_kg=engine.transmission_mass_kg if hasattr(engine, "transmission_mass_kg") else 0.0)
+        self.mounting = mounting
+        mount_pos = np.array([m.position for m in mounting.mounts], dtype=np.float64) if mounting.mounts else np.zeros((0, 3))
+        mount_pos = _rotate_points(mount_pos, math.radians(roll), math.radians(pitch_deg), math.radians(yaw_deg))
+        self.mount_points = mount_pos + np.array(self.scene["engine_position"])
+        self.mount_labels = [f"{m.role}:{m.hardware.technique.value if hasattr(m.hardware.technique, 'value') else m.hardware.technique}"
+                             for m in mounting.mounts]
+
+        # Real CV-joint attachment points: wherever the graph actually
+        # declares a halfshaft (transverse installs only -- see
+        # drivetrain_graph.py's transaxle block), read straight from the
+        # full (untransformed-here) drivetrain graph, same as frame/
+        # firewall corners above -- never invented, just picked up when
+        # the graph has them.
+        # A transverse install's real halfshaft nodes ARE the CV-joint
+        # stubs. A longitudinal install has no halfshafts in this graph
+        # at all -- it still needs exactly one real torque-output-to-
+        # chassis point, though: whichever real driveline node is the
+        # most downstream (transfer_case, else direct_drive_bypass, else
+        # bare transmission -- the same three identities drivetrain_
+        # graph.py already emits for every non-transaxle engine), same
+        # real "where does torque leave this crate" question, just
+        # answered by a driveshaft flange instead of a pair of CV joints.
+        # Never invented geometry -- always a real existing graph node.
+        full_graph = build_drivetrain_graph(engine)
+        cv_ids = ("powertrain.halfshaft_left", "powertrain.halfshaft_right")
+        cv_local = [_node_pos(full_graph, cid) for cid in cv_ids]
+        cv_local = [p for p in cv_local if p is not None]
+        if not cv_local:
+            for fallback_id in ("powertrain.transfer_case", "powertrain.direct_drive_bypass", "powertrain.transmission"):
+                p = _node_pos(full_graph, fallback_id)
+                if p is not None:
+                    cv_local = [p]
+                    break
+        if cv_local:
+            cv_arr = _rotate_points(np.array(cv_local), math.radians(roll), math.radians(pitch_deg), math.radians(yaw_deg))
+            self.cv_stub_points = cv_arr + np.array(self.scene["engine_position"])
+        else:
+            self.cv_stub_points = np.zeros((0, 3))
+
         # real chassis/firewall reference geometry straight off the
         # actual production graph -- no separate wireframe authored here
         frame_corners = [_node_pos(graph, f"frame.{c}")
@@ -290,6 +351,14 @@ class BayViewer:
             pts = [(int(px), int(py)) for px, py in screen[idx]]
             pygame.draw.polygon(self.screen, color, pts)
 
+    def _draw_points(self, points_3d: np.ndarray, color: tuple[int, int, int], radius: int = 6) -> None:
+        if points_3d.shape[0] == 0:
+            return
+        screen, _ = self._project(points_3d)
+        for p in screen:
+            pygame.draw.circle(self.screen, color, (int(p[0]), int(p[1])), radius)
+            pygame.draw.circle(self.screen, (0, 0, 0), (int(p[0]), int(p[1])), radius, 1)
+
     def _draw_hud(self) -> None:
         eng = self.engine
         bay = self.scene["bay_info"]
@@ -307,6 +376,9 @@ class BayViewer:
             "arrows  orbit/tilt     +/-  zoom     R  reset view    ESC/Q  quit",
             "orange = real engine mesh (this toy)   blue = real chassis frame corners"
             "   red = firewall (new)   green = solved bay envelope box",
+            "yellow = engine_mounts.assign_mounting's own real mount points"
+            "   magenta = real torque-output-to-chassis stub"
+            " (halfshaft/CV joints if transverse, else driveshaft flange)",
         ]
         for i, text in enumerate(lines):
             surf = self.font.render(text, True, (235, 235, 235)) if i < 4 else self.small_font.render(
@@ -358,6 +430,8 @@ class BayViewer:
             self._draw_loop(self.frame_loop, CHASSIS_COLOR, width=2)
             self._draw_loop(self.firewall_quad, FIREWALL_COLOR, width=3)
             self._draw_engine_mesh()
+            self._draw_points(self.mount_points, MOUNT_COLOR, radius=7)
+            self._draw_points(self.cv_stub_points, CV_STUB_COLOR, radius=6)
             self._draw_hud()
             pygame.display.flip()
         pygame.quit()

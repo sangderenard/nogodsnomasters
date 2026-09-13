@@ -415,7 +415,12 @@ _ROLE_BY_PREFIX = (
     ("mount.engine_", "engine"),
     ("mount.transmission_", "transmission"),
     ("mount.transfer_case_", "transfer_case"),
+    # a transverse install's transaxle carries two of the real three-point
+    # pendulum layout's mounts: the upper case mount and the lower torque rod
+    ("mount.transaxle", "transaxle"),
+    ("mount.torque_rod", "torque_rod_mount"),
 )
+DRIVELINE_ROLES = ("transmission", "transfer_case", "transaxle", "torque_rod_mount")
 
 
 def _role_for(identity: str) -> str | None:
@@ -491,7 +496,7 @@ def assign_mounting(engine, install_context: str = "automotive", include_transmi
         role = _role_for(identity)
         if role is None:
             continue
-        if role in ("transmission", "transfer_case") and not include_transmission:
+        if role in DRIVELINE_ROLES and not include_transmission:
             continue
         risk = front_risk if role == "engine" else trans_risk
         hw = _hardware_for(technique, risk)
@@ -509,7 +514,7 @@ def assign_mounting(engine, install_context: str = "automotive", include_transmi
     # supplied structure's own stability is the vehicle/game's real
     # responsibility, not this toy's to second-guess (same reasoning
     # as correlate_mounts never inventing cage geometry of its own).
-    support_positions = [m.position for m in out if m.role in ("engine", "transmission", "transfer_case")]
+    support_positions = [m.position for m in out if m.role == "engine" or m.role in DRIVELINE_ROLES]
     stability = check_stability(support_positions, rigid_body.center_of_gravity)
     subframe_used = False
 

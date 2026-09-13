@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+import dataclasses
 import math
 import sys
 from pathlib import Path
@@ -101,6 +102,25 @@ def parametric_volume_pressure_exchange(p_a: float, v_a: float, p_b: float, v_b:
     plenum's value; two similar-sized volumes genuinely average."""
     total_v = max(v_a + v_b, 1e-12)
     return (p_a * v_a + p_b * v_b) / total_v
+
+
+def choked_orifice_mass_flow_kg_s(area_m2: float, upstream_pressure_pa: float,
+                                  upstream_temp_k: float = 293.15, discharge_coeff: float = 0.65) -> float:
+    """Real compressible choked-flow mass rate through a sharp-edged
+    orifice (air, gamma=1.4): m = Cd*A*P0*sqrt(gamma/(R*T0))*(2/(gamma+1))
+    **((gamma+1)/(2*(gamma-1))) -- the standard textbook relation for a
+    reservoir emptying into a much lower downstream pressure (true here:
+    a several-bar receiver dumping into a near-atmospheric intake
+    manifold is always choked). The same real relation governs a
+    wastegate or a relief valve; this is just that formula, not a
+    separate approximation invented for this one consumer."""
+    if area_m2 <= 0.0 or upstream_pressure_pa <= 101_325.0:
+        return 0.0
+    gamma = 1.4
+    r_specific = 287.0
+    flow_fn_const = 0.6847  # (2/(gamma+1))**((gamma+1)/(2*(gamma-1))) evaluated for air
+    return (discharge_coeff * area_m2 * upstream_pressure_pa
+            * math.sqrt(gamma / (r_specific * max(upstream_temp_k, 1.0))) * flow_fn_const)
 
 
 def step_depletable_reservoir(fill_level_frac: float, bottle_capacity_kg: float, dt: float,
@@ -277,7 +297,12 @@ def _add_belt_driven_compressor(node, edge, identity: str, position: tuple[float
     in case the caller's own payload math needs it (a compressor's real
     delivered power is capped by this same rating)."""
     max_torque_nm = rated_w / REFERENCE_COMPRESSOR_OMEGA_RAD_S
-    node(identity, position, "rotating-mass", mass_kg=mass_kg, inertia_kg_m2=inertia_kg_m2)
+    # the rating is declared ON the node, so anything downstream that
+    # needs to know how big this compressor actually is reads it here
+    # instead of inventing its own figure (refrigeration.py did exactly
+    # that and disagreed with this by a factor of six)
+    node(identity, position, "rotating-mass", mass_kg=mass_kg, inertia_kg_m2=inertia_kg_m2,
+         rated_w=rated_w, reference_omega_rad_s=REFERENCE_COMPRESSOR_OMEGA_RAD_S)
     edge(f"{crank_identity.split('.')[-1]}_to_{identity}_clutch", crank_identity, identity, "friction-clutch-shaft",
          stiffness_nm_per_rad_s=max_torque_nm * 8.0, max_torque_nm=max_torque_nm)
     return max_torque_nm
@@ -507,17 +532,51 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # own share of the exhaust heat path.
     fi_ = engine.forced_induction
     base_turbo = next((n for n in nodes if n["identity"] == "powertrain.turbocharger"), None)
+    if fi_.kind == "turbo" and base_turbo is None:
+        # production gates its turbo on a wet sump (has_oil_pan) because
+        # the bearings drain to the pan. A crosshead two-stroke (the
+        # Waertsilae) has no wet sump -- its lube system is a separate
+        # tank -- but its turbochargers are as real as any: the SAME node/
+        # edge set production emits, with the bearing drain to the real
+        # reserve tank the dressing built (dry-sump) or back to the pump
+        # return when there is none.
+        node_by_id_t = {n["identity"]: n for n in nodes}
+        man = node_by_id_t.get("powertrain.exhaust_manifold")
+        anchor = [float(v) for v in man["reference_position"]] if man is not None else [0.0, 0.1, 0.1]
+        tp = (anchor[0] + 0.05, anchor[1] + 0.12, anchor[2] + 0.05)
+        node("powertrain.turbocharger", tp, "rotating-mass",
+             mass_kg=max(1.1, engine.mass_kg * 0.004), inertia_kg_m2=max(0.00004, engine.mass_kg * 1e-7))
+        node("powertrain.turbocharger.oil_feed", (tp[0], tp[1] + 0.01, tp[2] - 0.01),
+             "engine-block-port", port_kind="turbo-bearing-oil-feed")
+        node("powertrain.turbocharger.oil_drain", (tp[0], tp[1] - 0.02, tp[2] + 0.01),
+             "engine-block-port", port_kind="turbo-bearing-oil-drain")
+        if "powertrain.oil_pump" in node_by_id_t:
+            edge("powertrain.turbo_oil_feed", "powertrain.oil_pump", "powertrain.turbocharger.oil_feed", "oil-line",
+                 radius=.003, circuit_identity="oil", medium_rate_state="oil-flow-and-temperature-and-pressure")
+            drain_to = "powertrain.oil_reserve_tank" if "powertrain.oil_reserve_tank" in node_by_id_t else "powertrain.oil_pump"
+            edge("powertrain.turbo_oil_drain", "powertrain.turbocharger.oil_drain", drain_to, "oil-line",
+                 radius=.005, circuit_identity="oil", medium_rate_state="oil-flow-and-temperature-and-pressure", gravity_drain=True)
+        if man is not None:
+            edge("thermal.exhaust_to_turbine", "powertrain.exhaust_manifold", "powertrain.turbocharger", "heat-exchange-path",
+                 radius=.004, heat_share_frac=0.30, medium_rate_state="rejected-heat-flow-w")
+        base_turbo = next((n for n in nodes if n["identity"] == "powertrain.turbocharger"), None)
     if fi_.kind == "turbo" and base_turbo is not None and fi_.turbo_count > 1:
         turbo_nodes = [n for n in nodes if n["identity"].startswith("powertrain.turbocharger")]
         turbo_edges = [e for e in edges if e["a"].startswith("powertrain.turbocharger")
                        or e["b"].startswith("powertrain.turbocharger")]
+        serial = fi_.turbo_layout == "serial"
         for k in range(2, fi_.turbo_count + 1):
             suffix = f"_{k}"
             z_sign = -1.0 if k % 2 == 0 else 1.0
             for n in turbo_nodes:
                 clone = {kk: (list(v) if isinstance(v, list) else v) for kk, v in n.items()}
                 clone["identity"] = n["identity"].replace("powertrain.turbocharger", f"powertrain.turbocharger{suffix}", 1)
-                clone["reference_position"][2] = abs(clone["reference_position"][2]) * z_sign
+                if not serial:
+                    # parallel: one unit per bank, mirrored left/right
+                    clone["reference_position"][2] = abs(clone["reference_position"][2]) * z_sign
+                # serial: every unit starts on the SAME side (no mirror)
+                # -- engine_parts.py's swoop chain repositions each one
+                # progressively along the compound stage order instead
                 nodes.append(clone)
             for e in turbo_edges:
                 ce = dict(e)
@@ -600,6 +659,62 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
                 mid = f"mount.engine_{suffix}_{side}"
                 node(mid, [x, y, z], "powertrain-mount", fixed_to="chassis")
                 edge(f"mount.engine.engine_{suffix}_{side}", "powertrain.engine", mid, template["constraint"], **attrs)
+
+    # A TRANSVERSE install has no separate gearbox behind the bellhousing
+    # and no transfer case: it has a TRANSAXLE -- gearbox, final drive and
+    # differential in one case bolted to the clutch housing -- with the
+    # halfshafts leaving it PARALLEL to the crank (the crank runs across
+    # the car). The production chain is a longitudinal car's; here it is
+    # replaced, mounts and all, and the transaxle gets the two mounts a
+    # real three-point pendulum layout puts on it: an upper mount on the
+    # case and the lower torque rod under it. Everything is still in the
+    # engine's own local frame (drivetrain_graph's crank axis = x) -- the
+    # vehicle turns the whole crate 90 degrees on installation.
+    if getattr(engine, "installation", "longitudinal") == "transverse":
+        gone = {"powertrain.transmission", "powertrain.transfer_case", "powertrain.direct_drive_bypass",
+                "mount.transmission_left", "mount.transmission_right", "mount.transfer_case_left", "mount.transfer_case_right"}
+        nodes[:] = [n for n in nodes if n["identity"] not in gone]
+        edges[:] = [e for e in edges if e["a"] not in gone and e["b"] not in gone]
+        clutch_n = next((n for n in nodes if n["identity"] == "powertrain.clutch"), None)
+        if clutch_n is not None:
+            half_yz = engine_geometry.block_half_yz_m(engine)
+            cx, cy, cz = (float(v) for v in clutch_n["reference_position"])
+            case_len = half_yz * 2.6
+            case_r = half_yz * 0.95
+            case_c = [cx + 0.06 + case_len / 2.0, cy - half_yz * 0.15, cz]
+            node("powertrain.transaxle", case_c, "rotating-mass", mass_kg=engine.mass_kg * 0.32,
+                 inertia_kg_m2=engine.inertia_kg_m2 * 0.5, transaxle_kind="manual-transaxle",
+                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=case_r, drum_length_m=case_len)
+            for e in edges:
+                if e["identity"] == "drivetrain.clutch_to_transmission":
+                    e["b"] = "powertrain.transaxle"
+                    e["identity"] = "drivetrain.clutch_to_transaxle"
+            # final drive + differential low in the case, halfshafts out
+            # both ends along the crank axis
+            fd_c = [case_c[0] + case_len * 0.25, cy - half_yz * 0.75, cz + half_yz * 0.35]
+            node("powertrain.final_drive", fd_c, "rotating-mass", mass_kg=engine.mass_kg * 0.05,
+                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half_yz * 0.55, drum_length_m=half_yz * 0.35)
+            edge("drivetrain.transaxle_to_final_drive", "powertrain.transaxle", "powertrain.final_drive", "torque-shaft", radius=0.015)
+            node("powertrain.differential", [fd_c[0], fd_c[1], fd_c[2]], "rotating-mass", mass_kg=engine.mass_kg * 0.04,
+                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half_yz * 0.42, drum_length_m=half_yz * 0.7)
+            edge("drivetrain.final_drive_to_differential", "powertrain.final_drive", "powertrain.differential", "torque-shaft", radius=0.015)
+            shaft_len = half_yz * 2.2
+            for name, sign in (("left", -1.0), ("right", 1.0)):
+                sc = [fd_c[0] + sign * (half_yz * 0.35 + shaft_len / 2.0), fd_c[1], fd_c[2]]
+                node(f"powertrain.halfshaft_{name}", sc, "rotating-mass", mass_kg=4.0,
+                     drum_axis=[1.0, 0.0, 0.0], drum_radius_m=0.016, drum_length_m=shaft_len)
+                edge(f"drivetrain.differential_to_halfshaft_{name}", "powertrain.differential", f"powertrain.halfshaft_{name}",
+                     "torque-shaft", radius=0.012)
+            # the transaxle's own mounts: the upper mount on the case top,
+            # the torque rod anchor under it -- with mount.engine_* these
+            # make the real three-point pendulum layout
+            tmpl = next((e for e in edges if e.get("constraint") == "six-axis-compliant-mount"), None)
+            attrs = ({k: v for k, v in tmpl.items() if k not in ("identity", "a", "b", "constraint")} if tmpl
+                     else {"radius": 0.012, "palette": "drivetrain-black", "transfer": "force-and-moment-to-chassis"})
+            node("mount.transaxle", [case_c[0], case_c[1] + case_r + 0.02, cz], "powertrain-mount", fixed_to="chassis")
+            edge("mount.transaxle.upper", "powertrain.transaxle", "mount.transaxle", "six-axis-compliant-mount", **attrs)
+            node("mount.torque_rod", [case_c[0] - case_len * 0.2, case_c[1] - case_r - 0.03, cz], "powertrain-mount", fixed_to="chassis")
+            edge("mount.transaxle.torque_rod", "powertrain.transaxle", "mount.torque_rod", "six-axis-compliant-mount", **attrs)
 
     # drivetrain.engine_to_clutch and drivetrain.direct_drive_bypass are
     # both production-authored torque-path edges from "powertrain.engine"
@@ -810,9 +925,35 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     from assembly_ports import part_ports, mate_ports, emit_ports_graph
     # a total-loss two-stroke has no wet sump: no pan/drain/dipstick/
     # gallery/fill ports to declare, only the crankcase breather
-    casting_ports = part_ports(layout, wet_sump=not engine.architecture.two_stroke)
+    from assembly_ports import lube_kind_for
+    lube_kind = lube_kind_for(engine)
+    casting_ports = part_ports(layout, lube=lube_kind)
     mating_result = mate_ports(casting_ports)
     emit_ports_graph(casting_ports, mating_result, node, edge)
+    if lube_kind == "dry-sump" and not any(n["identity"] == "powertrain.oil_pump" for n in nodes):
+        # a dry-sump engine production gave no pump (a crosshead two-
+        # stroke: production keys its whole oil circuit on a wet sump):
+        # the SAME pump node/edge set production emits, a real engine-
+        # driven attached lube pump, its suction from the case's own
+        # scavenge drain until dressing re-points it at the tank it adds
+        eng_node = next((n for n in nodes if n["identity"] == "powertrain.engine"), None)
+        ep = [float(v) for v in eng_node["reference_position"]] if eng_node is not None else [0.0, 0.0, 0.0]
+        peak_torque_nm = float(engine.peak_torque_nm)
+        node("powertrain.oil_pump", (ep[0] + .04, ep[1] - .06, 0.0), "rotating-mass", mass_kg=max(1.4, engine.mass_kg * 0.003),
+             material="cast-iron-casting", fluid="engine-oil", fluid_volume_l=max(0.05, engine.displacement_l * 0.004))
+        edge("thermal.engine_to_oil", "powertrain.engine", "powertrain.oil_pump", "heat-exchange-path", radius=.003,
+             heat_share_frac=0.12, medium_rate_state="rejected-heat-flow-w")
+        edge("drivetrain.engine_to_oil_pump_gear", "powertrain.engine", "powertrain.oil_pump", "geared-timing-drive", radius=.005,
+             ratio_coordinate="oil_pump_gear_ratio", ratio=1.0, backlash_coordinate="oil_pump_gear_backlash_rad",
+             stiffness_nm_per_rad=peak_torque_nm * 400.0, damping_nm_per_rad_s=peak_torque_nm * 1.0,
+             max_torque_nm=peak_torque_nm * 0.08, backlash_rad=0.001)
+        drain_port = "powertrain.crankcase.scavenge_drain"
+        if any(n["identity"] == drain_port for n in nodes):
+            edge("powertrain.oil_pan_to_pump", drain_port, "powertrain.oil_pump", "oil-line", radius=.009, circuit_identity="oil",
+                 medium_rate_state="oil-flow-and-temperature-and-pressure", material="steel-pipe", fluid="engine-oil")
+        edge("powertrain.oil_pump_to_gallery", "powertrain.oil_pump", "powertrain.engine", "oil-line", radius=.007, circuit_identity="oil",
+             medium_rate_state="oil-flow-and-temperature-and-pressure", regulated_by="oil-pressure-relief-valve",
+             relief_pressure_pa=420_000.0, material="cast-iron-casting", fluid="engine-oil")
     # the dressing (dressing.py): lubrication, filters, rail, ignition
     # wiring, and the intake side -- plenum log with routed runners,
     # throttle body / carburetor / individual throttle bodies
@@ -1387,6 +1528,55 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         edge("pneumatic_regulator_to_tank", "pneumatic_regulator", "pneumatic_reserve_tank",
              "compressed-air-line", radius=0.006, circuit_identity="pneumatic-reserve",
              material="steel-pipe")
+        if pn.brake_system_fitted:
+            # The real downstream air system: wet tank -> pressure-
+            # protection valve -> primary/secondary brake reservoirs ->
+            # treadle valve -> brake chambers, and an isolation valve on
+            # the protected side for any auxiliary take-off (the idle-
+            # assist dump taps THAT, never the wet tank directly). All of
+            # it joins the same one real compressed-air circuit (same
+            # lumped fill), so charging, the starter's draw, and the dump
+            # all genuinely share one stored mass -- the protection
+            # pressure is what keeps the brakes' share out of reach of the
+            # dump, exactly as the real valve does. Reservoirs/treadle/
+            # chambers are frame- and axle-mounted: chassis_side.
+            tank_x = pneu_pos[0] - 0.35 - length_m / 2.0
+            prot_pos = (tank_x - length_m / 2.0 - 0.10, -0.30, -0.40 - radius_m)
+            node("pneumatic_protection_valve", prot_pos, "pressure-protection-valve",
+                 protection_pressure_pa=pn.protection_valve_pressure_pa, mass_kg=0.5, mass_in_total=True,
+                 body_half_extent_m=[0.035, 0.035, 0.035])
+            edge("pneumatic_tank_to_protection_valve", "pneumatic_reserve_tank", "pneumatic_protection_valve",
+                 "compressed-air-line", radius=0.006, circuit_identity="pneumatic-reserve", material="steel-pipe")
+            res_vol_m3 = pn.brake_reservoir_capacity_l / 2000.0
+            res_r = (res_vol_m3 / (3.0 * math.pi)) ** (1.0 / 3.0)
+            res_len = 6.0 * res_r
+            res_cap_kg = res_vol_m3 * AIR_DENSITY_AT_1_ATM_KG_M3 * pn.tank_pressure_pa / 101_325.0
+            res_wall = max(0.002, pn.tank_pressure_pa * res_r / (2.0 * 150e6))
+            res_shell_kg = 2.0 * math.pi * res_r * res_len * res_wall * 7850.0
+            for name, dz in (("primary", -0.25), ("secondary", 0.25)):
+                rid = f"pneumatic_brake_reservoir_{name}"
+                node(rid, (prot_pos[0] - 0.30 - res_len / 2.0, -0.32, dz - res_r), "high-pressure-canister",
+                     tank_kind="brake-reservoir", working_pressure_pa=pn.tank_pressure_pa,
+                     capacity_kg=max(res_cap_kg, 0.01), mass_kg=res_shell_kg + 1.5, chassis_side=True,
+                     material="pressed-steel", body_half_extent_m=[res_len / 2.0, res_r, res_r])
+                edge(f"pneumatic_protection_to_{name}_reservoir", "pneumatic_protection_valve", rid,
+                     "compressed-air-line", radius=0.008, circuit_identity="pneumatic-reserve", material="steel-pipe")
+            node("pneumatic_treadle_valve", (prot_pos[0] - 0.9, 0.10, 0.35), "brake-treadle-valve",
+                 mass_kg=1.2, chassis_side=True, body_half_extent_m=[0.05, 0.06, 0.04])
+            edge("pneumatic_primary_to_treadle", "pneumatic_brake_reservoir_primary", "pneumatic_treadle_valve",
+                 "compressed-air-line", radius=0.008, circuit_identity="pneumatic-reserve", material="nylon-airline")
+            edge("pneumatic_secondary_to_treadle", "pneumatic_brake_reservoir_secondary", "pneumatic_treadle_valve",
+                 "compressed-air-line", radius=0.008, circuit_identity="pneumatic-reserve", material="nylon-airline")
+            node("pneumatic_brake_chambers", (prot_pos[0] - 1.2, -0.35, 0.0), "brake-chamber-bank",
+                 mass_kg=12.0, chassis_side=True, body_half_extent_m=[0.08, 0.08, 0.30])
+            edge("pneumatic_treadle_to_chambers", "pneumatic_treadle_valve", "pneumatic_brake_chambers",
+                 "compressed-air-line", radius=0.008, circuit_identity="pneumatic-reserve", material="nylon-airline")
+            # the auxiliary isolation valve, on the protected side --
+            # engine-mounted (it feeds the manifold port), not chassis
+            node("pneumatic_isolation_valve", (prot_pos[0], -0.22, prot_pos[2] + 0.12), "isolation-valve",
+                 mass_kg=0.4, mass_in_total=True, body_half_extent_m=[0.03, 0.03, 0.03])
+            edge("pneumatic_protection_to_isolation", "pneumatic_protection_valve", "pneumatic_isolation_valve",
+                 "compressed-air-line", radius=0.008, circuit_identity="pneumatic-reserve", material="steel-pipe")
 
     # The real belt loop itself, drawn -- accessory_mount_points already
     # placed every one of these at the SAME x, arranged around a circle;
@@ -1437,6 +1627,14 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # final real position (the blower case is built around that rotor)
     from engine_parts import emit_universal_parts
     emit_universal_parts(engine, layout, nodes, edges, node, edge)
+
+    # the auxiliary plant (plant_parts.py): the compressed-air treatment
+    # train, the refrigerant loop's chillers, the hydraulic tank, the
+    # manifolds, the controls and the accessory battery bank -- emitted
+    # after the universal parts so the compressor, condenser and reserve
+    # set it plumbs into are all already at their final positions
+    from plant_parts import emit_auxiliary_plant
+    emit_auxiliary_plant(engine, nodes, edges, node, edge)
 
     # The dyno absorber: test equipment, not a vehicle part -- no real
     # vehicle graph would ever have one, so it stays genuinely this toy's
@@ -1549,8 +1747,139 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
                 if abs(n["reference_position"][0]) < clear_x:
                     n["reference_position"][0] = -clear_x if n["reference_position"][0] <= 0 else clear_x
 
+    # ---- GEAR CASES AND AUTOMATICS, LAST ----
+    # This runs at the END of the build on purpose. It used to run in
+    # the middle, before the transverse conversion had replaced the
+    # longitudinal driveline, and the result was a machine with parts
+    # hung off nodes that no longer existed: the Camry ended up with a
+    # breather for a transfer case that had since been deleted, an
+    # automatic's converter and valve body attached to a transmission
+    # node that had been replaced by a transaxle, and no gear case on
+    # the transaxle itself because the transaxle had not been created
+    # yet when the declarations were made. Fittings must be hung on the
+    # machine that is actually being built, which means after it is.
+    # EVERY SEALED CASE OF GEARS gets its real oil charge, whatever job
+    # it is doing: a manual gearbox, a transaxle, a transfer case, a
+    # differential and a turboprop reduction box are one primitive with
+    # a kind (gear_cases.py). An automatic transmission is NOT one of
+    # them -- it is a hydraulic machine and lives in
+    # automatic_transmission.py.
+    #
+    # The parts are DECLARED, not recognised from their names. This one
+    # exact table is where a node adopted from the production subunit is
+    # told what it is; every node built in this file declares its own
+    # role at the point it is created. Nothing downstream ever has to
+    # guess from a string.
+    GEAR_CASE_BY_NODE = {
+        "powertrain.transmission": "manual-transmission",
+        "powertrain.transaxle": "transaxle",
+        "powertrain.transfer_case": "transfer-case",
+        "powertrain.differential": "differential",
+        "powertrain.final_drive": "differential",
+        "powertrain.prop_reduction_gearbox": "reduction-gearbox",
+        "powertrain.power_turbine_reduction": "reduction-gearbox",
+        "powertrain.planetary_gearhead": "reduction-gearbox",
+        "powertrain.reduction_gearset": "reduction-gearbox",
+    }
+    tr_ = getattr(engine, "transmission", None)
+    automatic = str(getattr(tr_, "kind", "manual") or "manual") == "automatic"
+    _ids_now = {n["identity"] for n in nodes}
+    # WHICH NODE IS THE GEARBOX depends on how this machine is laid out:
+    # a longitudinal build has a transmission behind the engine, a
+    # transverse one has a transaxle beside it. The automatic has to
+    # attach to whichever one actually exists, or its converter and
+    # valve body end up bolted to nothing.
+    gearbox_id = ("powertrain.transmission" if "powertrain.transmission" in _ids_now
+                  else "powertrain.transaxle" if "powertrain.transaxle" in _ids_now else None)
+    # An automatic TRANSAXLE carries its final drive in the same case,
+    # running in the same ATF -- so those nodes are not separate
+    # gear-oil cases either. (The A140E in the Camry is exactly this.)
+    _shared_with_gearbox = ({"powertrain.final_drive", "powertrain.differential"}
+                            if automatic and gearbox_id == "powertrain.transaxle" else set())
+    for n in nodes:
+        ident = n["identity"]
+        role = GEAR_CASE_BY_NODE.get(ident)
+        if role is None:
+            continue
+        if automatic and (ident == gearbox_id or ident in _shared_with_gearbox):
+            # an automatic is a hydraulic machine, not a case of gear
+            # oil, and the gear-case family correctly does not claim it
+            n["automatic_transmission"] = True
+            continue
+        n["gear_case"] = role
+
+    # AN AUTOMATIC IS A HYDRAULIC MACHINE, so it gets the hardware that
+    # makes it one: a crank-driven pump, a torque converter between the
+    # engine and the box, the valve body that applies the packs, and a
+    # cooler it genuinely cannot do without (automatic_transmission.py
+    # explains why each of those is not optional).
+    if automatic and gearbox_id is not None:
+        at_node = next((n for n in nodes if n["identity"] == gearbox_id), None)
+        if at_node is not None:
+            apos = list(at_node.get("reference_position") or (0.0, 0.0, 0.0))
+            at_node["fluid"] = "transmission-fluid"
+            at_node["fluid_volume_l"] = float(getattr(tr_, "fluid_l", 9.5))
+            for ident, dx, dy, kind, mass, role in (
+                    ("powertrain.torque_converter", -0.12, 0.0, "torque-converter", 18.0, "converter"),
+                    ("powertrain.atf_pump", -0.04, -0.08, "gear-pump", 3.5, "pump"),
+                    ("powertrain.valve_body", 0.02, -0.14, "valve-body", 6.0, "valve-body"),
+                    # named for the fluid, not for "transmission": on a
+                    # transverse build the gearbox node is the TRANSAXLE,
+                    # and a part called powertrain.transmission_cooler
+                    # reads as a fitting on a node that does not exist
+                    ("powertrain.atf_cooler", 0.10, 0.22, "fluid-cooler", 3.2, "cooler")):
+                node(ident, (apos[0] + dx, apos[1] + dy, apos[2]), kind, mass_kg=mass,
+                     mass_in_total=True, fluid="transmission-fluid", automatic_part=role,
+                     fluid_volume_l=(2.4 if role == "converter" else 0.8),
+                     body_half_extent_m=([0.15, 0.15, 0.15] if role == "converter"
+                                         else [0.16, 0.09, 0.03] if role == "cooler"
+                                         else [0.08, 0.05, 0.10]))
+                edge(f"powertrain.transmission_to_{role}", gearbox_id, ident,
+                     "fluid-line", radius=0.008, circuit_identity="transmission",
+                     material="steel-pipe")
+
+    try:
+        from gear_cases import discover as _discover_gear_cases
+        _cases = _discover_gear_cases({"nodes": nodes}, engine)
+    except Exception:
+        _cases = []
+    _node_by_id_gc = {n["identity"]: n for n in nodes}
+    for case in _cases:
+        gnode = _node_by_id_gc.get(case.identity)
+        if gnode is None or case.capacity_l <= 0.0:
+            continue
+        # Declaring `fluid` + `fluid_volume_l` + a circuit identity is
+        # the whole of it. From here the oil leaks, sprays, pours,
+        # burns, colours its own streaks and appears on the tank gauges
+        # through the generic paths, none of which has to know what a
+        # differential is.
+        gnode["fluid"] = case.fluid
+        gnode["fluid_volume_l"] = float(case.capacity_l)
+        gpos = list(gnode.get("reference_position") or (0.0, 0.0, 0.0))
+        if case.cooler:
+            cooler_id = f"{case.identity}_cooler"
+            node(cooler_id, (gpos[0] + 0.10, gpos[1] + 0.22, gpos[2]), "fluid-cooler",
+                 mass_kg=3.2, mass_in_total=True, fluid=case.fluid, part_role="gear-case-cooler",
+                 fluid_volume_l=max(0.6, case.capacity_l * 0.12),
+                 body_half_extent_m=[0.16, 0.09, 0.03])
+            for leg in ("feed", "return"):
+                edge(f"{case.identity}_cooler_{leg}", case.identity, cooler_id,
+                     "fluid-line", radius=0.006, circuit_identity="gear-oil", material="steel-pipe")
+        # a breather: a sealed case that cannot breathe pushes its own
+        # seals out as it warms, which is a real and very common failure
+        breather_id = f"{case.identity}_breather"
+        node(breather_id, (gpos[0], gpos[1] + 0.16, gpos[2]), "case-breather",
+             mass_kg=0.08, part_role="gear-case-breather",
+             body_half_extent_m=[0.015, 0.03, 0.015])
+        edge(f"{case.identity}_to_breather", case.identity, breather_id,
+             "vent-line", radius=0.003, circuit_identity="gear-oil", material="nylon-airline")
+
+
     return {"schema": "engine-toy-drivetrain-graph-v1", "identity": f"{engine.identity}/drivetrain",
             "cylinder_layout": cylinder_layout,
+            # the head's declared interior (engines.CombustionChamber) so a
+            # renderer working from the graph alone can cut the real roof
+            "combustion_chamber": (dataclasses.asdict(engine.chamber) if getattr(engine, "chamber", None) is not None else None),
             "dressing": {k: (v if isinstance(v, str) else v.__dict__) for k, v in dressing_report.items()},
             "nodes": nodes, "edges": edges,
             "propeller_rated_torque_nm": propeller_rated_torque_nm,
@@ -1567,6 +1896,14 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
 ENGINE_VIEW_EXCLUDE_PREFIXES = (
     "dyno_absorber", "powertrain.transmission", "powertrain.transfer_case",
     "mount.transmission", "mount.transfer_case",
+    # a transverse install's real gearbox-equivalent chain -- same real
+    # reason as the transmission/transfer_case above: the transaxle and
+    # its halfshafts reach out toward the wheels, well outside the
+    # engine's own silhouette, and blow out the auto-fit camera the
+    # same way an un-excluded transmission would
+    "powertrain.transaxle", "powertrain.final_drive", "powertrain.differential",
+    "powertrain.halfshaft_left", "powertrain.halfshaft_right",
+    "mount.transaxle", "mount.torque_rod",
 )
 
 
@@ -1657,6 +1994,16 @@ class FluidCircuit:
     fill_level_frac: float = field(default=1.0, init=False)
     valve_open: bool = field(default=False, init=False)
     delivered_flow_kg_s: float = field(default=0.0, init=False)
+    # high-pressure-liquid-supply, pneumatic reserve only: the idle-
+    # assist dump's own real rate, kept SEPARATE from delivered_flow_
+    # kg_s above -- that field already means "compressor charge rate
+    # into this same tank" for a pneumatic circuit, and overloading it
+    # for the dump's consumption too would make the last one to run
+    # each tick silently clobber the other's real reading
+    idle_assist_delivered_kg_s: float = field(default=0.0, init=False)
+    # pneumatic reserve only: the pressure-protection valve's own real
+    # setting (0 = none fitted) -- the dump is only fed above it
+    protection_pressure_pa: float = 0.0
     # high-pressure-liquid-supply only: what the bottle's contents
     # actually are (see step_reservoir_composition) -- 1.0 = the pure
     # nominal fluid, which is what every pre-filled tank/bottle starts
@@ -1912,6 +2259,8 @@ def _discover_fluid_circuits(graph: dict[str, Any]) -> list[FluidCircuit]:
                                    if node_by_id.get(nid, {}).get("kind") == "electric-compressor"), "crank-belt"),
             regulated_flow_kg_s=next((float(node_by_id[nid]["rated_flow_kg_s"]) for nid in node_ids
                                       if node_by_id.get(nid, {}).get("kind") == "flow-regulator"), 0.0),
+            protection_pressure_pa=next((float(node_by_id[nid].get("protection_pressure_pa", 0.0)) for nid in node_ids
+                                         if node_by_id.get(nid, {}).get("kind") == "pressure-protection-valve"), 0.0),
             regulator_onset_map_frac=next((float(node_by_id[nid]["onset_map_frac"]) for nid in node_ids
                                            if node_by_id.get(nid, {}).get("kind") == "flow-regulator"), 0.0),
             regulator_full_map_frac=next((float(node_by_id[nid]["full_map_frac"]) for nid in node_ids
@@ -2086,9 +2435,12 @@ class DrivetrainSolver:
               fuel_production_composition_frac: float = 1.0,
               fuel_valve_open: bool = True,
               exhaust_brake_frac: float = 0.0,
+              exhaust_system_restriction_frac: float = 0.0,
               fuel_cooler_target_k: float | None = None, ac_active: bool = False,
               disabled_edges: frozenset[str] = frozenset(),
               starting_air_kg_s: float = 0.0,
+              pneumatic_idle_assist_active: bool = False,
+              pneumatic_idle_assist_port_area_m2: float = 0.0,
               regulator_map_frac: float = 1.0) -> dict[str, float]:
         # the AC clutch coil is either energized or it isn't -- a real
         # magnetic clutch has no "half disabled" state, unlike the
@@ -2382,8 +2734,11 @@ class DrivetrainSolver:
                 c.supply_pressure_pa = intake_supply_pressure_pa
         self._step_fluid_circuits(dt, waste_heat_kw, intake_demand_kg_s, exhaust_demand_kg_s, fuel_demand_kg_s,
                                    exhaust_brake_frac, fuel_cooler_target_k,
-                                   outputs.get("pneumatic_compressor_delivered_w", 0.0),
+                                   pneumatic_compressor_delivered_w=outputs.get("pneumatic_compressor_delivered_w", 0.0),
+                                   exhaust_system_restriction_frac=exhaust_system_restriction_frac,
                                    starting_air_kg_s=starting_air_kg_s,
+                                   pneumatic_idle_assist_active=pneumatic_idle_assist_active,
+                                   pneumatic_idle_assist_port_area_m2=pneumatic_idle_assist_port_area_m2,
                                    regulator_map_frac=regulator_map_frac,
                                    fuel_production_kg_s=fuel_production_kg_s,
                                    fuel_production_composition_frac=fuel_production_composition_frac)
@@ -2396,6 +2751,8 @@ class DrivetrainSolver:
             if pneumatic_circuit else 0.0)
         outputs["pneumatic_compressor_running_w"] = pneumatic_circuit.compressor_running_w if pneumatic_circuit else 0.0
         outputs["pneumatic_compressor_drive"] = pneumatic_circuit.compressor_drive if pneumatic_circuit else "none"
+        outputs["pneumatic_idle_assist_delivered_kg_s"] = (
+            pneumatic_circuit.idle_assist_delivered_kg_s if pneumatic_circuit else 0.0)
         outputs["fluid_circuits"] = {
             (c.pump_node or next(iter(c.nodes))): {
                 "kind_class": c.kind_class, "temp_k": c.temp_k, "pressure_pa": c.pressure_pa,
@@ -2467,6 +2824,11 @@ class DrivetrainSolver:
              and not any("oil" in nid for nid in c.nodes)),
             None)
         outputs["coolant_temp_k"] = coolant_circuit.temp_k if coolant_circuit else 293.15
+        # every real fan's own delivered volume flow (its flow coefficient
+        # times its live shaft speed) -- what the engine bay's ventilation
+        # actually gets through the grille (air_volumes.py)
+        outputs["cooling_fan_flow_m3_s"] = sum(
+            float(spec.get("flow_coeff", 0.0)) * abs(self.omega.get(nid, 0.0)) for nid, spec in self._fan_specs.items())
         outputs["coolant_flow_lpm"] = coolant_circuit.flow_lpm if coolant_circuit else 0.0
         outputs["oil_temp_k"] = oil_circuit.temp_k if oil_circuit else 293.15
         outputs["oil_flow_lpm"] = oil_circuit.flow_lpm if oil_circuit else 0.0
@@ -2536,8 +2898,11 @@ class DrivetrainSolver:
                               exhaust_demand_kg_s: float = 0.0, fuel_demand_kg_s: float = 0.0,
                               exhaust_brake_frac: float = 0.0,
                               fuel_cooler_target_k: float | None = None,
+                              exhaust_system_restriction_frac: float = 0.0,
                               pneumatic_compressor_delivered_w: float = 0.0,
                               starting_air_kg_s: float = 0.0,
+                              pneumatic_idle_assist_active: bool = False,
+                              pneumatic_idle_assist_port_area_m2: float = 0.0,
                               regulator_map_frac: float = 1.0,
                               fuel_production_kg_s: float = 0.0,
                               fuel_production_composition_frac: float = 1.0) -> None:
@@ -2653,7 +3018,13 @@ class DrivetrainSolver:
                     # capacity, and this exact same choked-flow formula
                     # below turns that into real backpressure, exactly as
                     # it already does for a merely undersized exhaust.
-                    effective_flow_capacity_kg_s = c.flow_capacity_kg_s * max(0.05, 1.0 - exhaust_brake_frac)
+                    # ...and the declared exhaust SYSTEM downstream of the
+                    # port (engines.ExhaustSystem.static_backpressure_frac:
+                    # collector, cat, muffler, tailpipe -- every real can and
+                    # bend in series) narrows the same real capacity; pull
+                    # the cat and this fraction drops by its own restriction
+                    effective_flow_capacity_kg_s = (c.flow_capacity_kg_s * max(0.05, 1.0 - exhaust_brake_frac)
+                                                    * max(0.3, 1.0 - exhaust_system_restriction_frac))
                     target_pressure_pa = 101_325.0
                     if effective_flow_capacity_kg_s > 0.0 and exhaust_demand_kg_s > effective_flow_capacity_kg_s:
                         excess_frac = exhaust_demand_kg_s / effective_flow_capacity_kg_s - 1.0
@@ -2862,12 +3233,35 @@ class DrivetrainSolver:
                     c.fill_level_frac = min(1.0, c.fill_level_frac + filled_kg / max(c.bottle_capacity_kg, 0.01))
                 else:
                     c.delivered_flow_kg_s = 0.0
-                # the one real consumer so far: starting air admitted to
-                # the cylinders (starter.py's air-start), a real mass
-                # drawn off the receiver every admission
+                # one real consumer: starting air admitted to the
+                # cylinders (starter.py's air-start), a real mass drawn
+                # off the receiver every admission
                 if starting_air_kg_s > 0.0:
                     c.fill_level_frac = max(0.0, c.fill_level_frac
                                             - starting_air_kg_s * dt / max(c.bottle_capacity_kg, 0.01))
+                # a second, independent real consumer: the idle-assist
+                # dump port (engines.PneumaticSystem.idle_assist_fitted),
+                # a fixed-area orifice off this SAME tank -- real choked
+                # compressible flow at whatever pressure the tank
+                # actually holds right now (the same linear fill-to-
+                # pressure relation pneumatic_reserve_pressure_pa already
+                # reports above), gated entirely by the caller's own
+                # trip-rpm/toggle decision, never decided in here
+                c.idle_assist_delivered_kg_s = 0.0
+                p_tank_pa = 101_325.0 + c.fill_level_frac * (
+                    max(c.working_pressure_pa, 2.0 * 101_325.0) - 101_325.0)
+                # the pressure-protection valve, when fitted: the dump is
+                # fed from the PROTECTED side and simply isn't fed at all
+                # once the shared supply falls to the protection pressure
+                # -- the brakes keep everything below it, exactly the real
+                # valve's one job
+                protected = p_tank_pa > c.protection_pressure_pa
+                if pneumatic_idle_assist_active and pneumatic_idle_assist_port_area_m2 > 0.0 and c.fill_level_frac > 0.0 and protected:
+                    flow_kg_s = choked_orifice_mass_flow_kg_s(
+                        pneumatic_idle_assist_port_area_m2, p_tank_pa, ambient_k)
+                    c.idle_assist_delivered_kg_s = flow_kg_s
+                    c.fill_level_frac = max(0.0, c.fill_level_frac
+                                            - flow_kg_s * dt / max(c.bottle_capacity_kg, 0.01))
             elif c.kind_class == "high-pressure-liquid-supply":
                 # a real depletable bottle (nitrous): the solenoid
                 # (valve_open, commanded by the caller -- engine_cycle_

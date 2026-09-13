@@ -30,6 +30,23 @@ import time
 import numpy as np
 
 from engine_sound import EngineSoundSynth, SAMPLE_RATE, BLOCK_SIZE
+from damage_sound import DamageSoundSynth
+
+# Control-value smoothing time constants (seconds). The physics tick
+# writes a new snapshot at its own rate (60 Hz nominal, with real jitter
+# when a tick runs long); the synth thread renders 11.6 ms blocks. Read
+# raw, every block took whatever the LAST tick happened to leave --
+# rpm stepping in 60 Hz stairs, and a late tick followed by a jump: the
+# audible "digital catch-up". These slew each continuous control toward
+# the latest snapshot every block, so what the synth hears is a smooth
+# trajectory through the sim's samples, and a stale snapshot simply
+# HOLDS (state continuance): a paused or slow sim keeps the engine
+# sounding exactly as it last was, never a drop-out or a lurch.
+RPM_SLEW_TAU_S = 0.045        # a crank's own inertia is the real smoother; this just spans tick jitter
+THROTTLE_SLEW_TAU_S = 0.060
+LOAD_SLEW_TAU_S = 0.080
+BOOST_SLEW_TAU_S = 0.090
+FIRE_HZ_SLEW_TAU_S = 0.045
 
 
 class LiveAudioState:
@@ -56,6 +73,19 @@ class LiveAudioState:
         self.backfire_strength = 1.0
         self.real_fire_hz = 0.0
         self.intake_flow_demand_frac = 0.0
+        self.knock_ring_hz = ()      # the chamber's own bore modes this tick (engine_sound.knock_ring_modes_hz)
+        self.exhaust_temp_k = 293.15
+        self.preignition_active = False
+        self.preignition_intensity = 0.0
+        self.compression_brake_active = False
+        # the event-side facts (engine_sound.py's own crank clock schedules
+        # its kernels off these): per-slot firing records, held-open
+        # exhaust, ignition count, manifold pressure, the parts graph
+        self.extras = {"slot_records": (), "slot_angles_deg": (), "exhaust_valve_held_open": False,
+                       "fire_event_count": 0, "manifold_pressure_frac": 1.0, "graph": None}
+        self.damage_events: list[dict] = []     # queued for the damage synth, drained by snapshot()
+        self.emitters: tuple = ()
+        self.stamp = time.monotonic()
 
     def set_from_sim(self, sim) -> None:
         engine = sim.engine
@@ -86,6 +116,33 @@ class LiveAudioState:
             # induction roar now scales off instead of a throttle/rpm
             # proxy
             self.intake_flow_demand_frac = st.intake_flow_demand_frac
+            # the knock ring: the combustion chamber's OWN acoustic modes
+            # (bore diameter, hot-gas sound speed), not a fixed chord
+            from engine_sound import knock_ring_modes_hz
+            self.knock_ring_hz = knock_ring_modes_hz(engine, getattr(st, "exhaust_temp_k", 900.0), load_frac)
+            self.exhaust_temp_k = float(getattr(st, "exhaust_temp_k", 293.15))
+            self.preignition_active = bool(getattr(st, "preignition_flag", False))
+            self.preignition_intensity = float(getattr(st, "preignition_intensity", 0.0))
+            self.compression_brake_active = bool(getattr(st, "compression_brake_active", False))
+            self.extras = {
+                "slot_records": tuple(tuple(r) for r in getattr(st, "slot_records", ())),
+                "slot_angles_deg": tuple(getattr(st, "slot_angles_deg", ())),
+                "exhaust_valve_held_open": bool(getattr(st, "exhaust_valve_held_open", False)),
+                "fire_event_count": int(getattr(st, "fire_event_count", 0)),
+                "manifold_pressure_frac": float(getattr(st, "manifold_pressure_frac", 1.0)),
+                "graph": getattr(getattr(sim, "_drivetrain", None), "graph", None),
+                "exhaust_open_frac": float(getattr(st, "exhaust_open_frac", 0.0)),
+            }
+            if getattr(sim, "damage_events", None):
+                self.damage_events.extend(sim.drain_damage_events())
+            field = getattr(sim, "hole_emitters", None)
+            self.emitters = field.summary() if field is not None and field.emitters else ()
+            self.stamp = time.monotonic()
+
+    def take_damage(self) -> tuple[list[dict], tuple]:
+        with self._lock:
+            ev, self.damage_events = self.damage_events, []
+            return ev, self.emitters
 
     def snapshot(self):
         with self._lock:
@@ -95,6 +152,8 @@ class LiveAudioState:
                 self.boost_frac, self.turbo_spool_frac, self.wastegate_flutter,
                 self.surge_active, self.backfire_active, self.backfire_kind,
                 self.backfire_strength, self.real_fire_hz, self.intake_flow_demand_frac,
+                self.knock_ring_hz, self.exhaust_temp_k, self.preignition_active, self.preignition_intensity,
+                self.compression_brake_active, self.extras,
             )
 
 
@@ -105,9 +164,10 @@ class AudioStreamer:
     does synthesis work."""
 
     def __init__(self, state: LiveAudioState, sample_rate: int = SAMPLE_RATE,
-                 lookahead_s: float = 0.25) -> None:
+                 lookahead_s: float = 0.35) -> None:
         self.state = state
         self.synth = EngineSoundSynth(sample_rate)
+        self.damage_synth = DamageSoundSynth(sample_rate)
         self.sample_rate = sample_rate
         self._lookahead_frames = int(lookahead_s * sample_rate)
         self._lock = threading.Lock()
@@ -116,6 +176,34 @@ class AudioStreamer:
         self._read_pos = 0
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        # the smoothed controls the synth actually hears (see the module
+        # constants above); None until the first snapshot seeds them
+        self._smooth: dict | None = None
+        self._last_stamp = None
+
+    def _smoothed(self, snap: tuple, block_s: float) -> tuple:
+        (engine, rpm, throttle, load_frac, knock_active, knock_intensity, misfire_active,
+         boost_frac, turbo_spool_frac, wastegate_flutter, surge_active, backfire_active,
+         backfire_kind, backfire_strength, real_fire_hz, intake_flow_demand_frac, knock_ring_hz,
+         exhaust_temp_k, preignition_active, preignition_intensity, compression_brake_active, extras) = snap
+        targets = {"rpm": (rpm, RPM_SLEW_TAU_S), "throttle": (throttle, THROTTLE_SLEW_TAU_S),
+                   "load_frac": (load_frac, LOAD_SLEW_TAU_S), "boost_frac": (boost_frac, BOOST_SLEW_TAU_S),
+                   "turbo_spool_frac": (turbo_spool_frac, BOOST_SLEW_TAU_S),
+                   "real_fire_hz": (real_fire_hz, FIRE_HZ_SLEW_TAU_S),
+                   "intake_flow_demand_frac": (intake_flow_demand_frac, LOAD_SLEW_TAU_S)}
+        if self._smooth is None or self._smooth.get("engine") is not engine:
+            # a new engine (or first block): seed at the real values, no glide from an unrelated engine
+            self._smooth = {k: v for k, (v, _tau) in targets.items()}
+            self._smooth["engine"] = engine
+        else:
+            for k, (v, tau) in targets.items():
+                a = 1.0 - np.exp(-block_s / max(tau, 1e-4))
+                self._smooth[k] += (v - self._smooth[k]) * a
+        s = self._smooth
+        return (engine, s["rpm"], s["throttle"], s["load_frac"], knock_active, knock_intensity, misfire_active,
+                s["boost_frac"], s["turbo_spool_frac"], wastegate_flutter, surge_active, backfire_active,
+                backfire_kind, backfire_strength, s["real_fire_hz"], s["intake_flow_demand_frac"], knock_ring_hz,
+                exhaust_temp_k, preignition_active, preignition_intensity, compression_brake_active, extras)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -142,7 +230,9 @@ class AudioStreamer:
             (engine, rpm, throttle, load_frac, knock_active, knock_intensity,
              misfire_active, boost_frac, turbo_spool_frac, wastegate_flutter,
              surge_active, backfire_active, backfire_kind, backfire_strength,
-             real_fire_hz, intake_flow_demand_frac) = self.state.snapshot()
+             real_fire_hz, intake_flow_demand_frac, knock_ring_hz,
+             exhaust_temp_k, preignition_active, preignition_intensity, compression_brake_active, extras) = self._smoothed(
+                self.state.snapshot(), BLOCK_SIZE / self.sample_rate)
             header, bay = self.synth.render_stereo(
                 engine, rpm, throttle, load_frac, BLOCK_SIZE,
                 knock_active=knock_active, knock_intensity=knock_intensity,
@@ -153,7 +243,25 @@ class AudioStreamer:
                 backfire_strength=backfire_strength,
                 real_fire_hz=real_fire_hz,
                 intake_flow_demand_frac=intake_flow_demand_frac,
+                knock_ring_hz=knock_ring_hz, exhaust_temp_k=exhaust_temp_k,
+                preignition_active=preignition_active, preignition_intensity=preignition_intensity,
+                compression_brake_active=compression_brake_active,
+                **extras,
             )
+            # the damage system's own sounds, in the bay (and a little in
+            # the header -- a hit on the block carries into the pipe)
+            events, emitters = self.state.take_damage()
+            for ev in events:
+                if ev.get("kind") == "blast":
+                    self.damage_synth.blast(ev["energy_j"], ev.get("volume_m3", 0.01))
+                else:
+                    self.damage_synth.impact(ev["mode"], ev["material"], ev["wall_m"], ev["energy_spent_j"],
+                                             ev.get("pressure_pa", 101_325.0), ev.get("speed_after_m_s", 0.0),
+                                             ev.get("calibre_m", 0.0076))
+            dmg = self.damage_synth.render(BLOCK_SIZE, emitters)
+            if np.any(dmg):
+                bay = np.tanh(bay + dmg * 1.0).astype(np.float32)
+                header = np.tanh(header + dmg * 0.25).astype(np.float32)
             with self._lock:
                 if self._read_pos > 0:
                     self._left = self._left[self._read_pos:]

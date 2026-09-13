@@ -25,6 +25,34 @@ import numpy as np
 Vec3 = tuple[float, float, float]
 
 
+# The exhaust blowdown's real shape: the valve's own lift curve (the same
+# half-sine over VALVE_OPEN_FRAC_OF_CYCLE the valvetrain is animated
+# with -- valvetrain_parts.py) opens a curtain area, and the cylinder
+# pressure behind it collapses over BLOWDOWN_DECAY_DEG; the jet noise
+# follows their product. Used by the bake AND the live synth.
+VALVE_OPEN_FRAC_OF_CYCLE = 0.32
+BLOWDOWN_DECAY_DEG = 55.0
+
+
+def blowdown_envelope(theta_deg, cycle_degrees: float = 720.0,
+                      open_frac: float = VALVE_OPEN_FRAC_OF_CYCLE, decay_deg: float = BLOWDOWN_DECAY_DEG):
+    """0..1 turbulent-flow envelope vs crank degrees after the exhaust
+    valve starts to open (array or scalar). Zero before EVO and after
+    the valve seats again."""
+    th = np.asarray(theta_deg, dtype=np.float64)
+    open_deg = open_frac * cycle_degrees
+    lift = np.where((th >= 0.0) & (th < open_deg), np.sin(np.pi * np.clip(th, 0.0, open_deg) / open_deg), 0.0)
+    pressure = np.exp(-np.maximum(th, 0.0) / decay_deg)
+    env = lift * pressure
+    peak = float(np.max(blowdown_envelope_peak(open_deg, decay_deg)))
+    return env / max(peak, 1e-9)
+
+
+def blowdown_envelope_peak(open_deg: float, decay_deg: float) -> np.ndarray:
+    th = np.linspace(0.0, open_deg, 64)
+    return np.sin(np.pi * th / open_deg) * np.exp(-th / decay_deg)
+
+
 @dataclass
 class Source:
     name: str
@@ -37,6 +65,23 @@ class Source:
     frequency_hz: float = 0.0     # for "sine" kind
     phase_rad: float = 0.0
     event_times_s: tuple[float, ...] = ()    # for "impulse" kind, within one cycle
+    # an impulse event's two real non-tonal parts -- the PLOSIVE (the
+    # one-sided pressure step of the exhaust valve cracking open on a
+    # still-hot, still-pressurised cylinder, or of a detonation front
+    # hitting the wall: a single sharp click, plosive_tau_s ~1-2 ms) and
+    # the TURBULENT blowdown that follows it (the charge jetting past
+    # the valve seat: seeded broadband noise dying over the blowdown,
+    # noise_tau_s, tens of ms). 0 = neither (a plain damped ring).
+    plosive_tau_s: float = 0.0
+    plosive_amp: float = 0.0
+    noise_tau_s: float = 0.0
+    noise_amp: float = 0.0
+    noise_seed: int = 0
+    # when > 0, the noise follows the real valve-lift blowdown envelope
+    # (blowdown_envelope) over this many crank degrees of opening with
+    # its own pressure-decay, instead of a bare exponential
+    valve_open_s: float = 0.0
+    blowdown_decay_s: float = 0.0
 
 
 @dataclass
@@ -139,6 +184,24 @@ class CombustionCrankPart(Part):
                     ring_freq_hz=self.ring_freq_hz * _detune_ratio(voice.detune_cents),
                     ring_tau_s=self.ring_tau_s, event_times_s=((t_event + time_offset) % cycle_time_s,),
                 ))
+            # the exhaust blowdown: the exhaust valve cracks open ~180
+            # crank degrees after ignition on a still-pressurised
+            # cylinder (the layout's own EVO), and THAT plosive plus the
+            # turbulent jet past the seat is the real airborne exhaust
+            # event -- not the combustion ring, which is what the block
+            # carries. The blowdown lasts ~55 crank degrees.
+            evo_deg = 180.0 if self.cycle_degrees >= 700.0 else 100.0
+            blowdown_deg = 55.0 if self.cycle_degrees >= 700.0 else 45.0
+            out.append(Source(
+                name=f"cyl{cyl}-blowdown", kind="impulse", domain="airborne", position=pos,
+                amplitude=0.0, ring_freq_hz=self.ring_freq_hz, ring_tau_s=self.ring_tau_s,
+                event_times_s=((t_event + evo_deg * sec_per_deg) % cycle_time_s,),
+                plosive_tau_s=0.0014, plosive_amp=0.9 * strength,
+                noise_tau_s=blowdown_deg * sec_per_deg, noise_amp=0.55 * strength * (0.4 + 0.6 * throttle),
+                noise_seed=1000 + cyl,
+                valve_open_s=VALVE_OPEN_FRAC_OF_CYCLE * self.cycle_degrees * sec_per_deg,
+                blowdown_decay_s=BLOWDOWN_DECAY_DEG * sec_per_deg,
+            ))
         out.append(Source(
             name="primary-imbalance", kind="sine", domain="structural", position=self.imbalance_position,
             amplitude=self.primary_amp_fn(input_rpm, throttle, load_frac), frequency_hz=crank_freq_hz,
@@ -302,8 +365,30 @@ def bake_points(sources: list[Source], cycle_time_s: float, points: dict[str, Ve
                     causal = delta >= 0.0
                     ring = np.zeros(n_frames)
                     d = delta[causal]
-                    ring[causal] = np.exp(-d / src.ring_tau_s) * np.sin(2 * math.pi * src.ring_freq_hz * d)
-                    acc += src.amplitude * atten * ring
+                    if src.amplitude != 0.0:
+                        ring[causal] = np.exp(-d / src.ring_tau_s) * np.sin(2 * math.pi * src.ring_freq_hz * d)
+                        acc += src.amplitude * atten * ring
+                    if src.plosive_amp != 0.0 and src.plosive_tau_s > 0.0:
+                        # a single one-sided pressure step: a quarter-wave
+                        # click at 1/(4 tau), decaying on tau
+                        click = np.zeros(n_frames)
+                        click[causal] = np.exp(-d / src.plosive_tau_s) * np.cos(2 * math.pi * d / (4.0 * src.plosive_tau_s))
+                        acc += src.plosive_amp * atten * click
+                    if src.noise_amp != 0.0 and src.noise_tau_s > 0.0:
+                        rng = np.random.default_rng(src.noise_seed)
+                        noise = rng.standard_normal(n_frames)
+                        # high-passed (a jet past a seat is hiss, not rumble)
+                        noise = noise - np.convolve(noise, np.ones(8) / 8.0, mode="same")
+                        env = np.zeros(n_frames)
+                        if src.valve_open_s > 0.0:
+                            # the real valve-lift-shaped blowdown
+                            open_deg = 360.0
+                            th = d / max(src.valve_open_s, 1e-9) * open_deg
+                            env[causal] = blowdown_envelope(th, cycle_degrees=open_deg / VALVE_OPEN_FRAC_OF_CYCLE,
+                                                            decay_deg=src.blowdown_decay_s / max(src.valve_open_s, 1e-9) * open_deg)
+                        else:
+                            env[causal] = np.exp(-d / src.noise_tau_s)
+                        acc += src.noise_amp * atten * noise * env
             else:
                 n_cycles = max(1, round(src.frequency_hz * loop_time_s))
                 snapped_freq = n_cycles / loop_time_s if src.frequency_hz > 0 else 0.0

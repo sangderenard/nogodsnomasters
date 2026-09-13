@@ -7,7 +7,7 @@ this toy doesn't have to pull in the full vehicle-physics compiler.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import math
 
 from throttle_body import ThrottleBodyAssembly, progressive_double_four_barrel
@@ -368,6 +368,24 @@ class IntakeSystem:
     inlet_units: int | None = None
     plenum_planes: int | None = None
     plenum_placement: str = "auto"   # "auto" | "valley" | "inboard" | "piped"
+    # Where the filter/air box actually draws its air from -- a real,
+    # separate question from plenum_placement (that's about the CHAMBER
+    # under the throttle; this is about where the FILTER itself lives):
+    #   "engine-bay" (default) -- the filter sits right at the throttle
+    #     body/hat, breathing whatever's already under the hood.
+    #   "remote-box"  -- a real air box somewhere else on the vehicle
+    #     (a fender well, behind a headlight), ducted in by a hose --
+    #     cooler, more consistent air than an engine-bay filter, the
+    #     real reason factory cold-air-intake boxes exist.
+    #   "underside-snorkel" -- a remote box plus a real vertical riser
+    #     duct up to a high external inlet (a hood scoop, a raised
+    #     snorkel) -- wading depth / dust protection, not just cooling.
+    # A declared point (air_box_position_local) is honoured for either
+    # remote style; None lets engine_parts.py derive a sensible default
+    # instead of guessing one here.
+    air_source: str = "engine-bay"
+    air_box_position_local: tuple[float, float, float] | None = None
+    snorkel_inlet_position_local: tuple[float, float, float] | None = None
 
     @property
     def restriction_frac(self) -> float:
@@ -525,6 +543,155 @@ _EXHAUST_LAYOUT: dict[str, tuple[tuple[str, float, float, float], ...]] = {
 }
 
 
+@dataclass(frozen=True)
+class CombustionChamber:
+    """The cylinder head's interior as declared hardware -- the seven
+    independent things a hemi / pent-roof / wedge / bathtub / Heron
+    (flat head, bowl in piston) actually change, and what each drives:
+
+      included_valve_angle_deg   how big a valve the bore can carry
+                                 (hemi 50-90 -> big valves; wedge/bathtub
+                                 0-20): breathing_factor
+      plug_count, plug_offset    flame travel length (central single
+                                 plug = half a bore; a side plug ~a whole
+                                 bore): burn duration, knock (end-gas
+                                 residence), timing sensitivity
+      squish_area_frac,          squish velocity ~ rpm*area/clearance ->
+      squish_clearance_mm        turbulence: burn rate, idle stability,
+                                 knock suppression
+      surface_to_volume_factor   wall heat loss at TDC (hemi lowest):
+                                 thermal efficiency, head/piston heat
+      crevice_volume_frac        top-land/gasket crevice: HC out
+      crown_dome_frac            piston dome (+) or dish (-): flame path
+                                 and crown temperature
+    Compression ratio stays on the architecture (shared with the crown).
+    Every derived factor below is relative to a central-plug hemi = 1.0.
+    """
+    kind: str = "pent-roof"
+    included_valve_angle_deg: float = 30.0
+    plug_count: int = 1
+    plug_offset_frac: float = 0.0
+    squish_area_frac: float = 0.15
+    squish_clearance_mm: float = 1.0
+    surface_to_volume_factor: float = 1.05
+    crevice_volume_frac: float = 0.02
+    crown_dome_frac: float = 0.0
+
+    _PRESETS = {
+        #        kind         angle plugs offset squish clr   s/v   crevice dome
+        "hemi":      (70.0, 1, 0.05, 0.02, 1.2, 1.00, 0.020, 0.15),
+        "pent-roof": (30.0, 1, 0.00, 0.15, 1.0, 1.05, 0.020, 0.00),
+        "wedge":     (15.0, 1, 0.55, 0.40, 1.0, 1.15, 0.025, 0.00),
+        "bathtub":   (0.0, 1, 0.60, 0.45, 1.0, 1.20, 0.030, 0.00),
+        "heron":     (0.0, 1, 0.50, 0.60, 0.8, 1.30, 0.020, -0.30),   # flat head, bowl in the piston (a diesel)
+        "flathead":  (0.0, 1, 0.90, 0.55, 1.2, 1.35, 0.040, 0.00),    # L-head: valves beside the bore, a long flame path
+        "open":      (0.0, 1, 0.05, 0.05, 1.5, 1.10, 0.030, 0.10),    # a two-stroke's simple domed chamber
+    }
+
+    @classmethod
+    def for_kind(cls, kind: str, **overrides) -> "CombustionChamber":
+        angle, plugs, offset, squish, clr, sv, crevice, dome = cls._PRESETS.get(kind, cls._PRESETS["pent-roof"])
+        base = dict(kind=kind, included_valve_angle_deg=angle, plug_count=plugs, plug_offset_frac=offset,
+                    squish_area_frac=squish, squish_clearance_mm=clr, surface_to_volume_factor=sv,
+                    crevice_volume_frac=crevice, crown_dome_frac=dome)
+        base.update(overrides)
+        return cls(**base)
+
+    @property
+    def flame_path_rel(self) -> float:
+        """Farthest end-gas distance relative to a central single plug
+        (half a bore = 1.0); a dome/dish adds a little path."""
+        return (1.0 + self.plug_offset_frac) / math.sqrt(max(1, self.plug_count)) * (1.0 + 0.15 * abs(self.crown_dome_frac))
+
+    @property
+    def squish_turbulence(self) -> float:
+        return self.squish_area_frac / max(self.squish_clearance_mm, 0.3)
+
+    @property
+    def burn_speed_factor(self) -> float:
+        """Turbulent flame speed multiplier: squish adds turbulence, a
+        long path is not slower per se but the burn window scales with
+        path (applied separately)."""
+        return 1.0 + 0.6 * self.squish_turbulence
+
+    @property
+    def knock_factor(self) -> float:
+        """End-gas residence: longer path and less squish -> more knock."""
+        return self.flame_path_rel ** 1.5 / (1.0 + 0.5 * self.squish_turbulence)
+
+    @property
+    def heat_loss_factor(self) -> float:
+        return self.surface_to_volume_factor
+
+    @property
+    def efficiency_factor(self) -> float:
+        """Wall heat loss against a hemi: a bigger S/V at TDC gives
+        away more of the charge's heat before it can push."""
+        return 1.0 / (1.0 + 0.08 * (self.surface_to_volume_factor - 1.0))
+
+    @property
+    def breathing_factor(self) -> float:
+        """Relative valve area the bore can carry: the included angle
+        lets valves grow past what a flat deck allows."""
+        return min(1.0, 0.85 + 0.15 * min(1.0, self.included_valve_angle_deg / 50.0))
+
+    @property
+    def hc_factor(self) -> float:
+        return 1.0 + 12.0 * max(0.0, self.crevice_volume_frac - 0.02)
+
+    @property
+    def ring_mode_factor(self) -> float:
+        """A hemi's near-spherical cavity rings a little lower than the
+        pancake bore-mode estimate; a flat chamber IS the pancake."""
+        return {"hemi": 0.88, "open": 0.92}.get(self.kind, 1.0)
+
+
+@dataclass(frozen=True)
+class CatalyticConverter:
+    """The cat as a REAL part. A ceramic substrate sized off the engine
+    (~0.8x displacement, the usual rule), washcoated with a real
+    precious-metal loading -- which is exactly why a stolen or scrapped
+    cat is worth money: the platinum-group metals in it. Conversion
+    needs the brick above its light-off temperature and, for a three-
+    way brick, a mixture inside the lambda window (emissions.py)."""
+    kind: str                       # "three-way" (spark ignition) | "diesel-oxidation"
+    substrate_volume_l: float
+    pt_g: float
+    pd_g: float
+    rh_g: float
+    light_off_k: float = 520.0
+    peak_conversion: float = 0.96
+    brick_mass_kg: float = 1.6
+
+    # scrap-value spot prices, USD per gram -- a dated real snapshot
+    # (2025), disclosed, not a market feed
+    PT_USD_PER_G = 32.0
+    PD_USD_PER_G = 33.0
+    RH_USD_PER_G = 150.0
+
+    @property
+    def pgm_g(self) -> float:
+        return self.pt_g + self.pd_g + self.rh_g
+
+    @property
+    def scrap_value_usd(self) -> float:
+        return self.pt_g * self.PT_USD_PER_G + self.pd_g * self.PD_USD_PER_G + self.rh_g * self.RH_USD_PER_G
+
+    @classmethod
+    def for_engine(cls, displacement_l: float, compression_ignition: bool, era_year: int = 2000) -> "CatalyticConverter":
+        vol = max(0.3, 0.8 * displacement_l)
+        if compression_ignition:
+            # a diesel oxidation catalyst: platinum-heavy, no rhodium
+            return cls("diesel-oxidation", vol, pt_g=1.4 * vol, pd_g=0.5 * vol, rh_g=0.0,
+                       light_off_k=470.0, peak_conversion=0.9, brick_mass_kg=1.2 + 0.6 * vol)
+        if era_year < 1996:
+            # early three-way bricks were platinum-rich
+            return cls("three-way", vol, pt_g=1.2 * vol, pd_g=0.5 * vol, rh_g=0.15 * vol,
+                       brick_mass_kg=1.2 + 0.6 * vol)
+        return cls("three-way", vol, pt_g=0.5 * vol, pd_g=1.6 * vol, rh_g=0.2 * vol,
+                   brick_mass_kg=1.2 + 0.6 * vol)
+
+
 @dataclass
 class ExhaustSystem:
     """A real ordered exhaust pipe network -- primaries, collector,
@@ -545,6 +712,15 @@ class ExhaustSystem:
       alone like the old single-point synth did."""
     header_type: str = "stock-manifold"
     primary_diameter_mm: float = 38.0
+    # the cat is a real, removable part: False pulls it out of the pipe
+    # (its restriction, its sound damping, its conversion, its scrap
+    # value all go with it) -- only meaningful on a layout that has one
+    catalyst_fitted: bool = True
+
+    @property
+    def layout_has_catalyst(self) -> bool:
+        layout = _EXHAUST_LAYOUT.get(self.header_type, _EXHAUST_LAYOUT["stock-manifold"])
+        return any(kind == "catalytic-converter" for kind, *_ in layout)
 
     @property
     def segments(self) -> tuple[ExhaustSegment, ...]:
@@ -554,7 +730,13 @@ class ExhaustSystem:
                             diameter_mm=self.primary_diameter_mm * diameter_scale,
                             restriction=restriction)
             for kind, length_m, diameter_scale, restriction in layout
+            if self.catalyst_fitted or kind != "catalytic-converter"
         )
+
+    @property
+    def open_ended_in_bay(self) -> bool:
+        """An open header (no tailpipe) dumps under the hood."""
+        return not any(s.kind == "tailpipe" for s in self.segments)
 
     @property
     def total_length_m(self) -> float:
@@ -565,8 +747,12 @@ class ExhaustSystem:
         segs = self.segments
         bottleneck_mm = min((s.diameter_mm for s in segs), default=self.primary_diameter_mm)
         diameter_factor = REFERENCE_PRIMARY_DIAMETER_MM / max(bottleneck_mm, 1.0)
+        # series pressure drops ADD: normalised by a fixed reference
+        # segment count, not the live one -- pulling a segment (the cat)
+        # out has to lower this by that segment's own restriction, not
+        # re-average what's left
         restriction_sum = sum(s.restriction for s in segs)
-        return max(0.0, min(0.45, REFERENCE_BACKPRESSURE * restriction_sum * diameter_factor / max(1, len(segs))))
+        return max(0.0, min(0.45, REFERENCE_BACKPRESSURE * restriction_sum * diameter_factor / 5.0))
 
     def tuned_frequency_hz(self, exhaust_temp_k: float = 293.15) -> float:
         # quarter-wave pipe resonance off the open tailpipe end -- speed
@@ -673,12 +859,53 @@ class ForcedInduction:
     spool_tau_s: float = 0.6             # turbo only: shaft speed lag time constant
     wastegate_frac: float = 0.85         # turbo only: boost_frac (of max) where the wastegate starts bleeding off
     lobe_count: int = 3                  # supercharger only: rotor lobes, sets whine order
-    belt_ratio: float = 2.6              # supercharger only: blower shaft speed / crank speed
+    belt_ratio: float = 2.6              # supercharger only: blower shaft speed / crank speed (a gear ratio on a gear-driven unit)
+    # supercharger only: the blower's real kind --
+    #   "roots"        positive displacement, twin lobed rotors in a case on
+    #                  the manifold: boost tracks shaft speed linearly, the
+    #                  whine is the lobe-pass order (belt_ratio * lobe_count)
+    #   "twin-screw"   positive displacement too (same law), internal
+    #                  compression -- quieter, a higher lobe-pass order
+    #   "centrifugal"  a gear-driven impeller in a volute (a Merlin's two-
+    #                  stage wheelcase blower, a radial's rear-mounted
+    #                  impeller, a modern Vortech): pressure rise goes with
+    #                  tip speed SQUARED, so boost ~ speed_frac^2 -- little
+    #                  at low rpm, all of it at the top; the whine is the
+    #                  blade-pass order (belt_ratio * impeller_blades), a
+    #                  much higher whistle; it can surge like a turbo
+    blower_type: str = "roots"
+    impeller_blades: int = 12            # centrifugal only
+    stages: int = 1                      # centrifugal only: impellers in series
     anti_lag_capable: bool = False        # turbo only: can this car run an anti-lag map at all
     # turbo only: how many real turbochargers -- a "twin turbo" is two
     # compressor/turbine assemblies, each with its own oil feed/drain and
     # wastegate; the graph emits one set per unit, mirrored across banks
     turbo_count: int = 1
+    # turbo only, meaningful when turbo_count > 1:
+    #   "parallel" (default) -- one turbo per bank, mirrored left/right
+    #     (a real "twin turbo" V engine: each bank feeds its own unit).
+    #   "serial" -- a real compound/staged pair (or more) on ONE side,
+    #     chained turbine-outlet-to-turbine-inlet along the exhaust flow
+    #     path (small quick-spooling unit first, a larger one after it) --
+    #     no z-mirroring, since they all breathe the same one collector
+    #     in sequence, not two banks in parallel.
+    turbo_layout: str = "parallel"
+    # supercharger only: "on-block" (default) sits the case's own
+    # manifold plate directly on the intake plenum -- the real, compact
+    # valley-mount pattern most positive-displacement blowers use, and
+    # the only style that can double as the plenum's own lid. "remote"
+    # sits the SAME real rotor pack somewhere else entirely (off to the
+    # side, low, front-mounted -- wherever `blower_position_local` says)
+    # and connects it to the engine by two real ducts instead: an inlet
+    # duct in from the air filter, an outlet duct out to the plenum --
+    # "pass duct to duct", the real option for a blower that doesn't
+    # need (or doesn't fit) sitting on top of the intake at all.
+    blower_mount: str = "on-block"
+    # remote mount only: the case's own real position, in the SAME
+    # engine-local frame every other declared point in this file uses.
+    # None lets engine_parts.py derive a sensible default (low, to one
+    # side, level with the accessory drive) instead of guessing one here.
+    blower_position_local: tuple[float, float, float] | None = None
 
 
 # Real fuel chemistry -- lower heating value (J/kg), stoichiometric
@@ -840,6 +1067,90 @@ def derive_jet_metering_frac(engine: "Engine", fuel_profile: str) -> float:
 
 
 @dataclass
+class AuxiliaryPlant:
+    """The skid of equipment a serious stationary/industrial engine
+    carries alongside itself: a full compressed-air treatment train, a
+    refrigerant loop feeding chillers rather than only a cabin, a
+    hydraulic reservoir with its own cooling, the manifolds everything
+    lands on, the controls, and an accessory battery bank behind a
+    charge isolator so none of it can flatten the starting battery.
+
+    fitted=False (the default) means the engine has no such plant --
+    which is every road engine in this catalogue. It exists because a
+    genset or a machine engine genuinely does carry all of this, and
+    because it is what makes air QUALITY matter: without the train the
+    reserve set fills with water, compressor oil and road dust, and
+    everything downstream of it dies of exactly that."""
+    fitted: bool = False
+    # air treatment (air_treatment.py owns the physics)
+    aftercooler_fitted: bool = True
+    air_chiller_fitted: bool = True
+    separator_fitted: bool = True
+    coalescing_filter_fitted: bool = True
+    particulate_filter_fitted: bool = True
+    reheater_fitted: bool = True
+    wet_tank_capacity_l: float = 12.0
+    # how dirty the air actually is where this machine lives, and how
+    # good its own intake filter is -- the two inputs that decide how
+    # much dust ever gets into the system in the first place
+    dust_environment: str = "workshop"      # clean | workshop | roadside | quarry
+    intake_filter_efficiency: float = 0.99
+    ambient_relative_humidity: float = 0.6
+    # refrigeration (refrigeration.py)
+    chiller_loop_fitted: bool = True
+    refrigerant_charge_frac: float = 1.0
+    # hydraulics
+    hydraulic_fitted: bool = True
+    hydraulic_tank_capacity_l: float = 60.0
+    hydraulic_chiller_fitted: bool = True
+    # seal the hydraulic reservoir and hold it on the plant's own dried
+    # air instead of letting it breathe through a desiccant (real
+    # practice: aircraft bleed-air-pressurised reservoirs, nitrogen
+    # blanketing on industrial power units) -- see hydraulics.py
+    hydraulic_tank_blanketed: bool = True
+    # a nitrogen bottle as the blanket's backup source (dry AND inert:
+    # no oxygen over the oil at all), behind a three-way selector with
+    # the plant air and a desiccant breather -- see hydraulics.py
+    hydraulic_nitrogen_backup: bool = True
+    # a bladder-separated reservoir exchanges no gas at all -- the real
+    # answer for a machine that cycles its cylinders all day, since no
+    # consumable blanket gas can keep up with that
+    hydraulic_bladder_reservoir: bool = False
+    hydraulic_cylinder_swing_l: float = 18.0
+    hydraulic_tank_heater: bool = True
+    # drive the cooling fan hydraulically instead of off a belt: fan
+    # speed then has nothing to do with engine speed, and the same air
+    # feeds the oil cooler and the refrigerant condenser
+    hydraulic_fan_drive: bool = True
+    # the air train's ultra-dry adsorption stage (desiccant.py): a
+    # refrigerated chiller floors at about +3 C dewpoint, so anything
+    # drier has to be adsorbed rather than condensed
+    desiccant_dryer_fitted: bool = True
+    desiccant_kind: str = "activated-alumina"
+    desiccant_bed_kg: float = 8.0
+    # the blanket selector refuses plant air wetter than this: feeding a
+    # sealed reservoir wet air is worse than letting it breathe
+    blanket_max_dewpoint_k: float = 283.15
+    # manifolds
+    pneumatic_manifold_ports: int = 8
+    hydronic_manifold_ports: int = 6
+    # electrical
+    accessory_bank_fitted: bool = True
+    accessory_bank_ah: float = 180.0
+    accessory_bank_voltage_v: float = 24.0
+    accessory_bank_chemistry: str = "agm-lead-acid"
+    isolator_kind: str = "voltage-sensitive-relay"   # or "dc-dc-charger" | "manual-switch" | "diode-split"
+    # A SMALL PANEL ON THE ISOLATOR'S INPUT. Not a power source for the
+    # machine -- a keep-alive for the monitoring that reads the tanks
+    # and the solenoid that trips a start. It works through the isolator
+    # that is already fitted, because a voltage-sensitive relay closes
+    # on a charging voltage without caring where the voltage came from.
+    solar_keep_alive_fitted: bool = False
+    solar_keep_alive_panel_m2: float = 0.60
+    solar_keep_alive_battery_ah: float = 20.0
+
+
+@dataclass
 class PneumaticSystem:
     """A real belt-driven air compressor charging a real reserve tank --
     the same generic belt-driven-compressor mechanical port the AC
@@ -874,6 +1185,45 @@ class PneumaticSystem:
     tank_pressure_pa: float = 827_000.0
     regulator_cut_in_frac: float = 0.84
     regulator_cut_out_frac: float = 1.0
+    # A real, DECLARED second consumer on the SAME reserve tank/receiver
+    # above (not a separate bottle): a fixed-diameter port straight into
+    # the intake manifold that dumps stored air as a genuine anti-stall
+    # boost whenever rpm sags toward idle -- the real reason a stationary/
+    # industrial diesel with its own air receiver anyway sometimes also
+    # carries one of these, instead of just an air starter. compressor_
+    # fitted still has to be True for this to mean anything -- there is
+    # no tank to draw from otherwise. The real industry precedent is
+    # Knorr-Bremse's Pneumatic Booster System: the truck's own brake-
+    # reservoir air, dumped through a ring of large angled nozzles at the
+    # manifold inlet by high-speed solenoid valves -- a LARGE-bore
+    # manifold port class (this 20 mm default), NOT a nitrous-style jet.
+    # Real consequence, kept: at ~8 bar a 20 mm choked port passes on the
+    # order of half a kilo of air a second, so an 80 L reservoir is a
+    # seconds-long burst device, exactly as PBS is -- the tank, not the
+    # port, is what limits it. idle_assist_trip_rpm=None derives a
+    # real default (idle_rpm * 1.15) at wiring time instead of guessing
+    # one here; the live on/off switch itself (a real driver-operable
+    # valve, not always-on hardware) lives on EngineCycleSim, toggled at
+    # runtime, same as the WMI/nitrous arm switches already are.
+    idle_assist_fitted: bool = False
+    idle_assist_port_diameter_mm: float = 20.0
+    # None derives a real anti-stall trip BELOW the governed idle (see
+    # engine_cycle_sim.IDLE_ASSIST_TRIP_FRAC_OF_IDLE): this device is
+    # there to catch an engine being dragged through its idle, not to
+    # dump air into one that is idling perfectly well
+    idle_assist_trip_rpm: float | None = None
+    # The rest of a real truck/machine air system downstream of the wet
+    # tank, when fitted: a PRESSURE-PROTECTION valve (opens only above
+    # protection_valve_pressure_pa, real air-brake practice ~5.5 bar /
+    # 80 psi) guarding the primary/secondary brake reservoirs and the
+    # treadle valve + brake chambers behind it (all chassis-side), plus
+    # the ISOLATION valve the idle-assist dump actually taps -- so the
+    # dump is only ever fed from the protected side and can never rob
+    # the brakes below the protection pressure. This is how a real PBS
+    # is plumbed: off the brake air supply, behind the protection valve.
+    brake_system_fitted: bool = False
+    brake_reservoir_capacity_l: float = 60.0    # primary + secondary together
+    protection_valve_pressure_pa: float = 550_000.0
 
 
 @dataclass
@@ -917,6 +1267,27 @@ class Transmission:
     gear_ratios: tuple[float, ...] = (3.54, 2.13, 1.36, 1.03, 0.82)
     reverse_ratio: float = 3.28
     final_drive_ratio: float = 3.73
+    # What is actually inside the case. A manual box holds a couple of
+    # litres of gear oil that only has to lubricate; an AUTOMATIC is a
+    # hydraulic machine -- its fluid carries the torque through the
+    # converter, applies every clutch pack through the valve body, and
+    # carries the heat out to a cooler, which is why it holds five times
+    # as much and why losing it stops the vehicle outright rather than
+    # just wearing the gears. That difference is the reason this is a
+    # declared kind rather than a cosmetic label.
+    kind: str = "manual"                   # "manual" | "automatic"
+    fluid_capacity_l: float = 0.0          # 0 = derive from the kind
+    cooler_fitted: bool | None = None      # None = automatics get one
+
+    @property
+    def fluid_l(self) -> float:
+        if self.fluid_capacity_l > 0.0:
+            return self.fluid_capacity_l
+        return 9.5 if self.kind == "automatic" else 2.2
+
+    @property
+    def has_cooler(self) -> bool:
+        return self.kind == "automatic" if self.cooler_fitted is None else bool(self.cooler_fitted)
 
 
 @dataclass
@@ -1087,6 +1458,7 @@ class Engine:
     fuel_delivery: FuelDeliverySystem = field(default_factory=FuelDeliverySystem)
     transmission: Transmission = field(default_factory=Transmission)
     pneumatics: PneumaticSystem = field(default_factory=PneumaticSystem)
+    auxiliary_plant: AuxiliaryPlant = field(default_factory=AuxiliaryPlant)
     ecu: ECUProfile = field(default_factory=lambda: ECU_PRESETS["crude"])
     egr: EGRSystem = field(default_factory=EGRSystem)
     # "throttle" (default): a normal pedal/lever controls airflow/fueling.
@@ -1157,6 +1529,27 @@ class Engine:
     # bath, else wet sump). Aircraft engines and a GT flat-six are real
     # dry-sump engines that the race-fuel rule alone never caught.
     lubrication: str = "auto"
+    # How the whole crate is installed: "longitudinal" (crank along the
+    # vehicle, a separate gearbox behind the bellhousing) or "transverse"
+    # (crank across the vehicle, a TRANSAXLE -- gearbox, final drive and
+    # differential in one case -- with halfshafts parallel to the crank).
+    # This is real declared hardware the driveline graph builds from; the
+    # engine's own mount points stay in its own local frame either way.
+    installation: str = "longitudinal"
+    # A compression-release engine brake ("Jake brake"): a hydraulic
+    # slave piston in a housing over the exhaust rockers that cracks the
+    # exhaust valve open near compression TDC, dumping the compressed
+    # charge before it can push the piston back down -- the engine
+    # becomes an air compressor absorbing ~60-70 % of its rated power.
+    # Declared hardware (a real bolt-on housing per bank, an extra
+    # actuation on every exhaust port), not a lifter property: the
+    # ports carry `actuation="compression-release"` and engine_parts
+    # emits the housings. Diesel trucks and industrial units carry one;
+    # it is interlocked to zero fuel and above idle in the sim.
+    compression_release_brake: bool = False
+    # the head's own interior (CombustionChamber above); every piston
+    # engine gets a real kind, per the _CHAMBER table at build time
+    chamber: CombustionChamber = field(default_factory=lambda: CombustionChamber.for_kind("pent-roof"))
     # the DC system this engine's electrics run at: 12 V cars, 24 V
     # trucks / industrial / aircraft / ship control-and-starting batteries
     electrical_system_voltage_v: float = 12.0
@@ -1382,6 +1775,18 @@ _RAW = [
          torque_peak=4200, power_peak=6000, redline=6800, inertia=.16,
          mass=112, clutch_torque=175, combustion_efficiency=.91, coupling_efficiency=.94,
          architecture=("inline-four", 4, 1, 0.0, [1, 3, 4, 2])),
+    dict(identity="toyota-3sfe-camry-1990", label="1990 Toyota Camry 3S-FE 2.0 L DOHC 16v I4 (transverse)", kind="combustion",
+         # 1998 cc, 86 x 86 mm, 9.3:1; 130 hp @ 5400, 197 Nm @ 4400 -> bmep 4*pi*197/0.001998
+         displacement=1.998, bmep=1_240_000, braking_bmep=140_000, idle=750,
+         torque_peak=4400, power_peak=5400, redline=6200, inertia=.15,
+         mass=142, clutch_torque=230, combustion_efficiency=.91, coupling_efficiency=.94,
+         architecture=("inline-four", 4, 1, 0.0, [1, 3, 4, 2])),
+    dict(identity="mazda-b6ze-miata-1990", label="1990 Mazda Miata B6ZE 1.6 L DOHC 16v I4 (longitudinal)", kind="combustion",
+         # 1597 cc, 78 x 83.6 mm, 9.4:1; 116 hp @ 6500, 136 Nm @ 5500 -> bmep 4*pi*136/0.001597
+         displacement=1.597, bmep=1_070_000, braking_bmep=135_000, idle=850,
+         torque_peak=5500, power_peak=6500, redline=7000, inertia=.12,
+         mass=122, clutch_torque=200, combustion_efficiency=.92, coupling_efficiency=.95,
+         architecture=("inline-four", 4, 1, 0.0, [1, 3, 4, 2])),
     dict(identity="aircooled-flat-four-1584", label="1584 cc air-cooled flat-four", kind="combustion",
          displacement=1.584, bmep=720_000, braking_bmep=125_000, idle=850,
          torque_peak=2800, power_peak=4100, redline=4800, inertia=.31,
@@ -1474,6 +1879,9 @@ _RAW = [
 _ACCESSORIES: dict[str, Accessories] = {
     "amc-258-jeep-i6": Accessories(water_pump=True, mechanical_fan=True, alternator=True),
     "honda-style-commuter-i4-1500": Accessories(water_pump=True, mechanical_fan=True, alternator=True),
+    # both 1990 cars: belt water pump, alternator, electric fans (no mechanical fan), A/C
+    "toyota-3sfe-camry-1990": Accessories(water_pump=True, mechanical_fan=False, alternator=True, air_conditioning=True),
+    "mazda-b6ze-miata-1990": Accessories(water_pump=True, mechanical_fan=False, alternator=True, air_conditioning=True),
     "aircooled-flat-four-1584": Accessories(water_pump=False, mechanical_fan=True, alternator=True),
     "springtail-i4-1600": Accessories(water_pump=True, mechanical_fan=True, alternator=True),
     # sportbike-derived four: crank-integrated stator, no belt accessories at
@@ -1527,6 +1935,10 @@ _FUEL: dict[str, dict] = {
                              fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
     "honda-style-commuter-i4-1500": dict(preferred_fuel_profile="pump-gasoline-87",
                                           fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
+    "toyota-3sfe-camry-1990": dict(preferred_fuel_profile="pump-gasoline-87",
+                                   fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
+    "mazda-b6ze-miata-1990": dict(preferred_fuel_profile="pump-gasoline-87",
+                                  fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
     "aircooled-flat-four-1584": dict(preferred_fuel_profile="pump-gasoline-87",
                                       fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
     "springtail-i4-1600": dict(preferred_fuel_profile="pump-gasoline-89",
@@ -1587,6 +1999,8 @@ _FUEL: dict[str, dict] = {
 _LIFTER_SPRING: dict[str, str] = {
     "amc-258-jeep-i6": "soft",
     "honda-style-commuter-i4-1500": "stock",
+    "toyota-3sfe-camry-1990": "stock",
+    "mazda-b6ze-miata-1990": "stock",
     "aircooled-flat-four-1584": "soft",
     "springtail-i4-1600": "stock",
     "superbike-i4-1340": "race",
@@ -1611,7 +2025,8 @@ _FORCED_INDUCTION: dict[str, ForcedInduction] = {
         turbo_count=2),
     # historically a gear-driven two-stage centrifugal supercharger, not a turbo
     "packard-merlin-v1650": ForcedInduction(
-        kind="supercharger", max_boost_frac=0.55, lobe_count=1, belt_ratio=7.0),
+        kind="supercharger", max_boost_frac=0.55, lobe_count=1, belt_ratio=7.0,
+        blower_type="centrifugal", impeller_blades=14, stages=2),
     # industrial diesels are almost always turbocharged
     "cat-c18-industrial-diesel": ForcedInduction(
         kind="turbo", max_boost_frac=0.60, spool_tau_s=1.1, wastegate_frac=0.90, anti_lag_capable=False),
@@ -1620,6 +2035,14 @@ _FORCED_INDUCTION: dict[str, ForcedInduction] = {
     # power -- a real, modest boost figure, not a power-turbo's curve
     "ldt465-multifuel-deuce": ForcedInduction(
         kind="turbo", max_boost_frac=0.15, spool_tau_s=1.4, wastegate_frac=0.90, anti_lag_capable=False),
+    # a uniflow two-stroke crosshead diesel breathes ONLY through its
+    # turbochargers (no crankcase scavenging): four real constant-pressure
+    # units on a 14-cylinder RTA96C, ~3.5 bar absolute scavenge pressure
+    # at rated load (boost ~2.5 x atmospheric above it), no wastegate,
+    # and huge rotors that take seconds to spool
+    "wartsila-rta96c-14cyl-marine-diesel": ForcedInduction(
+        kind="turbo", max_boost_frac=2.5, spool_tau_s=4.0, wastegate_frac=1.0, anti_lag_capable=False,
+        turbo_count=4),
 }
 
 
@@ -1646,7 +2069,8 @@ def _build_radial_engines() -> list[Engine]:
         accessories=Accessories(water_pump=False, mechanical_fan=False, alternator=True),
         preferred_fuel_profile="aviation-gasoline-100-130",
         fuel_compatibility={"aviation-gasoline-100-130": 1.0, "pump-gasoline-93": .55, "nitromethane-race": .65},
-        forced_induction=ForcedInduction(kind="supercharger", max_boost_frac=0.35, lobe_count=1, belt_ratio=8.0),
+        forced_induction=ForcedInduction(kind="supercharger", max_boost_frac=0.35, lobe_count=1, belt_ratio=8.0,
+                                         blower_type="centrifugal", impeller_blades=12),
         lifter_spring=LIFTER_SPRING_PRESETS["stock"],
         # a real single-barrel updraft carburetor (Bendix/Stromberg-type,
         # period-correct for this engine), jetted to its own reference
@@ -1955,6 +2379,80 @@ def _build_turbine_and_atmospheric_engines() -> list[Engine]:
         turbine=turbine_spec,
     ))
 
+    # -- THE ABRAMS ENGINE. A real AGT1500: 1500 shp (1119 kW) from a
+    # regenerated single-spool gas turbine. Three facts about it decide
+    # everything downstream and none of them are flattering:
+    #
+    #   IT WILL BURN ANYTHING. Jet A, diesel, marine diesel, motor
+    #   gasoline -- a turbine burns a continuous flame in a can, so it
+    #   does not care about cetane or octane the way a piston engine
+    #   does. That is the real reason it is on this mount.
+    #
+    #   IT IS APPALLING AT IDLE. A turbine's compressor runs whether
+    #   you are taking power off it or not, so it burns a large
+    #   fraction of full fuel flow doing nothing at all. An Abrams
+    #   sitting still drinks roughly ten gallons an hour. This is why
+    #   the mount carries a second, small engine: to NOT run this one.
+    #
+    #   IT SPOOLS. A piston engine makes torque the moment it fires;
+    #   this has to accelerate a compressor first, so there are tens of
+    #   seconds between asking for power and having it.
+    #
+    # 8.5 kg/s design flow, a real regenerated-cycle ~5.5:1 pressure
+    # ratio (a regenerator recovers exhaust heat, which is what lets a
+    # turbine of this class run a modest PR and still make useful
+    # efficiency), and a real reduction from the gas generator down to
+    # an output shaft in the low thousands.
+    abrams_spec = TurbineSpec(
+        # FLOW SET BY MEASUREMENT, not by writing 1500 hp on the label.
+        # Spooled and loaded to its stall point the cycle makes
+        # 1119 kW / 1500 shp at 5.6 kg/s, which is what the real
+        # engine is rated at. Stated plainly because the first pass
+        # guessed 8.5 kg/s and the thing quietly made 1897 kW -- a
+        # turbine that is 70% stronger than the one it claims to be is
+        # a worse problem than one that is weak, because everything
+        # downstream is then sized against a lie.
+        mdot_design_kg_s=5.6, omega_design_rad_s=3100.0,
+        design_pressure_ratio=5.5, reduction_ratio=4.2,
+        compressor_efficiency=0.84, turbine_efficiency=0.89,
+        shaft_inertia_kg_m2=0.62, bearing_friction_nm=9.0,
+        light_off_spool_time_s=28.0,
+    )
+    abrams_out_omega = abrams_spec.omega_design_rad_s / abrams_spec.reduction_ratio
+    engines_out.append(Engine(
+        identity="agt1500-abrams-turbine",
+        label="AGT1500 regenerated gas turbine (Abrams)", kind="turbine",
+        # placeholders: the real cycle is in `turbine` below
+        displacement_l=12.0, bmep_pa=2_500_000, braking_bmep_pa=250_000,
+        idle_rpm=round(0.55 * abrams_out_omega * 60.0 / (2.0 * math.pi)),
+        torque_peak_rpm=round(0.68 * abrams_out_omega * 60.0 / (2.0 * math.pi)),
+        power_peak_rpm=round(0.96 * abrams_out_omega * 60.0 / (2.0 * math.pi)),
+        redline_rpm=round(1.02 * abrams_out_omega * 60.0 / (2.0 * math.pi)),
+        inertia_kg_m2=0.62, mass_kg=1_134.0, clutch_torque_nm=14_000.0,
+        # a regenerated turbine of this class: good at full load, bad
+        # everywhere else, and that spread is the whole operational story
+        combustion_efficiency=0.28, coupling_efficiency=0.97,
+        architecture=EngineArchitecture(
+            layout="single-shaft-gas-turbine", cylinders=0, banks=1,
+            bank_angle_degrees=0.0, firing_order=[], wobble_amt=0.0),
+        accessories=Accessories(water_pump=False, mechanical_fan=False,
+                                alternator=True, coolant_pump=False),
+        preferred_fuel_profile="jet-a-kerosene",
+        # THE POINT OF IT: it runs on whatever is in the drum. The
+        # numbers are real relative heat content and how well the
+        # burner copes, not a flag saying "multifuel".
+        fuel_compatibility={"jet-a-kerosene": 1.0, "diesel": 0.98,
+                            "pump-gasoline": 0.92},
+        lifter_spring=LIFTER_SPRING_PRESETS["stock"],   # unused, no valvetrain
+        starting_systems=("electric-starter",),
+        electrical_system_voltage_v=24.0,
+        ignition_profile="light-off-igniter",
+        fuel_delivery=FuelDeliverySystem(tank_capacity_l=1_900.0,
+                                         pump_kind="electric",
+                                         pump_flow_capacity_kg_s=0.28),
+        turbine=abrams_spec,
+    ))
+
     # -- the atmospheric/gravity-piston family: a real DESIGN CLASS, not
     # one bespoke engine -- several real historical machines share this
     # exact mechanism (a real free piston, no crank, atmospheric
@@ -2184,6 +2682,8 @@ _REV_LIMITER: dict[str, RevLimiterProfile] = {
     "gt-flat-six-4000": RevLimiterProfile.race_multistage(),
     "supercharged-drag-v8-8200": RevLimiterProfile.race_multistage(),
     "honda-style-commuter-i4-1500": RevLimiterProfile.consumer_soft(),
+    "toyota-3sfe-camry-1990": RevLimiterProfile.consumer_soft(),
+    "mazda-b6ze-miata-1990": RevLimiterProfile.consumer_soft(),
     "springtail-i4-1600": RevLimiterProfile.consumer_soft(),
 }
 
@@ -2194,6 +2694,8 @@ _REV_LIMITER: dict[str, RevLimiterProfile] = {
 # all correctly stuck with the old behavior, unplanned backfires included.
 _ECU: dict[str, ECUProfile] = {
     "honda-style-commuter-i4-1500": ECU_PRESETS["protected"],
+    "toyota-3sfe-camry-1990": ECU_PRESETS["protected"],
+    "mazda-b6ze-miata-1990": ECU_PRESETS["protected"],
     "springtail-i4-1600": ECU_PRESETS["protected"],
     "gt-flat-six-4000": ECU_PRESETS["protected"],
 }
@@ -2203,6 +2705,8 @@ _ECU: dict[str, ECUProfile] = {
 # a genuinely modern control system" story, not a separate one.
 _EGR: dict[str, EGRSystem] = {
     "honda-style-commuter-i4-1500": EGRSystem(has_egr=True, max_egr_frac=0.12),
+    "toyota-3sfe-camry-1990": EGRSystem(has_egr=True, max_egr_frac=0.12),
+    "mazda-b6ze-miata-1990": EGRSystem(has_egr=True, max_egr_frac=0.10),
     "springtail-i4-1600": EGRSystem(has_egr=True, max_egr_frac=0.10),
     "gt-flat-six-4000": EGRSystem(has_egr=True, max_egr_frac=0.08),
 }
@@ -2231,6 +2735,9 @@ _CARBURETOR: dict[str, CarburetorProfile] = {
 # than a magic zero.
 _INTAKE: dict[str, IntakeSystem] = {
     "honda-style-commuter-i4-1500": IntakeSystem(filter_material="paper", filter_surface_area_cm2=220.0, plenum_volume_l=1.8),
+    # 3S-FE: long curved runners over the top of a transverse engine; B6ZE: a short plenum with equal-length runners
+    "toyota-3sfe-camry-1990": IntakeSystem(filter_material="paper", filter_surface_area_cm2=260.0, plenum_volume_l=2.4, runner_length_m=0.42, runner_diameter_mm=40.0),
+    "mazda-b6ze-miata-1990": IntakeSystem(filter_material="paper", filter_surface_area_cm2=200.0, plenum_volume_l=1.6, runner_length_m=0.30, runner_diameter_mm=38.0),
     "amc-258-jeep-i6": IntakeSystem(filter_material="paper", filter_surface_area_cm2=260.0, plenum_volume_l=2.5),
     "supercharged-drag-v8-8200": IntakeSystem(filter_material="velocity_stack", filter_surface_area_cm2=500.0, plenum_volume_l=6.0),
     "monster-540-blown-methanol": IntakeSystem(filter_material="velocity_stack", filter_surface_area_cm2=500.0, plenum_volume_l=6.0),
@@ -2244,6 +2751,8 @@ _INTAKE: dict[str, IntakeSystem] = {
 }
 _EXHAUST: dict[str, ExhaustSystem] = {
     "honda-style-commuter-i4-1500": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=32.0),
+    "toyota-3sfe-camry-1990": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=34.0),
+    "mazda-b6ze-miata-1990": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=33.0),
     "amc-258-jeep-i6": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=35.0),
     "supercharged-drag-v8-8200": ExhaustSystem(header_type="open-header", primary_diameter_mm=54.0),
     "monster-540-blown-methanol": ExhaustSystem(header_type="open-header", primary_diameter_mm=54.0),
@@ -2386,6 +2895,24 @@ def _build_catalogue() -> list[Engine]:
         if e.identity in _DIRECT_DRIVE_FINAL_RATIO:
             e.transmission = Transmission(gear_ratios=(1.0,), reverse_ratio=1.0,
                                            final_drive_ratio=_DIRECT_DRIVE_FINAL_RATIO[e.identity])
+    # REAL AUTOMATICS. An automatic is a different machine from a manual
+    # gearbox, not a manual with different ratios: it is a hydraulic
+    # machine whose fluid carries the torque through a converter and
+    # applies every clutch pack (automatic_transmission.py). Declaring
+    # the kind here is what brings that machine into existence, along
+    # with its converter, pump, valve body and cooler in the graph.
+    #
+    # These are the real boxes these cars were actually sold with:
+    #   Camry 3S-FE -> Toyota A140E, a 4-speed with a lock-up converter,
+    #     which is what its real 2.810/1.549/1.000/0.735 ratios are.
+    _AUTOMATICS = {
+        "toyota-3sfe-camry-1990": Transmission(
+            kind="automatic", gear_ratios=(2.810, 1.549, 1.000, 0.735),
+            reverse_ratio=2.296, final_drive_ratio=3.944, fluid_capacity_l=7.2),
+    }
+    for e in engines:
+        if e.identity in _AUTOMATICS:
+            e.transmission = _AUTOMATICS[e.identity]
     # Real AC fitment: genuinely very few of these actually carry a
     # cabin-comfort compressor at all -- a motorcycle engine, a drag/
     # exhibition special, a WWII aircraft V12, an industrial or marine
@@ -2418,16 +2945,47 @@ def _build_catalogue() -> list[Engine]:
         "monster-540-blown-methanol": "nitromethane-magneto",
         "25cc-two-stroke-trimmer": "flywheel-magneto",
         "fairbanks-morse-z-oilfield-hit-and-miss": "flywheel-magneto",
+        # the B6ZE has no distributor: a cam-angle sensor fires two
+        # wasted-spark coil packs, each serving a pair of cylinders
+        "mazda-b6ze-miata-1990": "wasted-spark-coil-packs",
     }
     # Real dry-sump engines the race-fuel rule alone never caught: both
     # aircraft engines (an oil tank, cooler and scavenge stages are the
     # standard aircraft installation -- the sump must work inverted) and
     # a real GT flat-six (a low, wide engine with nowhere for a deep pan).
+    # real transverse FWD installs -- a transaxle, halfshafts parallel to
+    # the crank; every other catalogue engine is longitudinal (or has no
+    # vehicle driveline at all)
+    _INSTALLATION = {
+        "toyota-3sfe-camry-1990": "transverse",
+        "honda-style-commuter-i4-1500": "transverse",
+    }
+    # real compression-release brakes: the C18's own Cat brake option,
+    # the deuce's LDT-465 (a Jacobs-equipped multifuel in service)
+    _COMPRESSION_RELEASE = {"cat-c18-industrial-diesel", "ldt465-multifuel-deuce"}
+    # real chamber kinds: a blown drag V8 and a WWII radial are hemis; the
+    # Chevy big-blocks / AMC six / VW flat-four are wedges; every modern
+    # DOHC four-valve head is a pent-roof (Merlin's four-valve too); the
+    # diesels are Heron (flat head, bowl in the piston); the 1901 single
+    # and the hit-and-miss are flatheads; the trimmer's is an open dome
+    _CHAMBER = {
+        "supercharged-drag-v8-8200": "hemi", "pw-r1340-wasp": "hemi",
+        "monster-540-blown-methanol": "wedge", "monster-632-twin-turbo": "wedge", "radical-cam-bigblock-7400": "wedge",
+        "amc-258-jeep-i6": "wedge", "aircooled-flat-four-1584": "wedge",
+        "toyota-3sfe-camry-1990": "pent-roof", "mazda-b6ze-miata-1990": "pent-roof", "honda-style-commuter-i4-1500": "pent-roof",
+        "springtail-i4-1600": "pent-roof", "superbike-i4-1340": "pent-roof", "gt-flat-six-4000": "pent-roof",
+        "packard-merlin-v1650": "pent-roof",
+        "cat-c18-industrial-diesel": "heron", "ldt465-multifuel-deuce": "heron", "wartsila-rta96c-14cyl-marine-diesel": "heron",
+        "curved-dash-1901-single": "flathead", "fairbanks-morse-z-oilfield-hit-and-miss": "flathead",
+        "25cc-two-stroke-trimmer": "open",
+    }
     _LUBRICATION = {
         "packard-merlin-v1650": "dry-sump",
         "pw-r1340-wasp": "dry-sump",
         "gt-flat-six-4000": "dry-sump",
         "25cc-two-stroke-trimmer": "total-loss",
+        # a crosshead two-stroke: no wet sump, a separate lube-oil tank
+        "wartsila-rta96c-14cyl-marine-diesel": "dry-sump",
     }
     for e in engines:
         if e.compression_ignition:
@@ -2436,6 +2994,16 @@ def _build_catalogue() -> list[Engine]:
             e.ignition_profile = _IGNITION_PROFILE[e.identity]
         if e.identity in _LUBRICATION and e.lubrication == "auto":
             e.lubrication = _LUBRICATION[e.identity]
+        if e.identity in _INSTALLATION:
+            e.installation = _INSTALLATION[e.identity]
+        if e.identity in _COMPRESSION_RELEASE:
+            e.compression_release_brake = True
+        if e.identity in _CHAMBER:
+            e.chamber = CombustionChamber.for_kind(_CHAMBER[e.identity])
+        # engines built directly (not through the catalogue dicts) still
+        # honour the forced-induction table when they declared nothing
+        if e.identity in _FORCED_INDUCTION and e.forced_induction.kind == "none":
+            e.forced_induction = _FORCED_INDUCTION[e.identity]
     # a real ship's engine rejects its jacket heat to the sea through a
     # central-cooling plate exchanger, not a fan-blown radiator, and is
     # started on compressed air from its own starting-air receivers (two
@@ -2490,10 +3058,43 @@ def _build_catalogue() -> list[Engine]:
         if e.identity == "cat-c18-industrial-diesel":
             # the air side of that: a pneumatic vane starter off a real
             # 80 L reservoir at ~8 bar charged by a belt-driven piston
-            # compressor with a real unloader
+            # compressor with a real unloader -- plus a real 20 mm dump
+            # port straight into the intake, the same reservoir's own
+            # second real job: an anti-stall idle-assist boost when a
+            # sudden load sags a big stationary diesel's rpm
             e.pneumatics = PneumaticSystem(compressor_fitted=True, compressor_rated_w=2_000.0,
                                            reserve_tank_capacity_l=80.0, compressor_kind="belt-piston",
-                                           compressor_drive="crank-belt", tank_kind="reserve-tank")
+                                           compressor_drive="crank-belt", tank_kind="reserve-tank",
+                                           idle_assist_fitted=True, idle_assist_port_diameter_mm=20.0,
+                                           brake_system_fitted=True)
+            # ...and the rest of the skid a real machine engine carries:
+            # the full air-treatment train between that compressor and
+            # its reserve set (aftercooler, refrigerant chiller,
+            # separator, coalescing and particulate filters, reheater,
+            # wet tank), a hydraulic reservoir with its own chiller on
+            # the SAME refrigerant loop as the air chiller, the two
+            # manifolds everything lands on, and an accessory battery
+            # bank behind a charge isolator so the plant's fans, heater
+            # and solenoids cannot flatten the starting battery. This
+            # engine also carries a real AC compressor to drive that
+            # loop -- without one there is nothing to chill with.
+            e.accessories = replace(e.accessories, air_conditioning=True)
+            e.auxiliary_plant = AuxiliaryPlant(
+                fitted=True, wet_tank_capacity_l=12.0, dust_environment="quarry",
+                intake_filter_efficiency=0.985, ambient_relative_humidity=0.7,
+                hydraulic_tank_capacity_l=60.0, pneumatic_manifold_ports=8,
+                hydronic_manifold_ports=6, accessory_bank_ah=180.0,
+                accessory_bank_voltage_v=24.0, isolator_kind="voltage-sensitive-relay",
+                # A KEEP-ALIVE PANEL ON THE ISOLATOR'S INPUT. Sized by
+                # measurement, not by eye: this bank runs 15 days on
+                # monitoring alone and only 3.8 with the drains and a
+                # start solenoid, which is not enough for a station left
+                # unattended. 0.60 m2 makes 246 Wh on a clear winter day
+                # against a 144 Wh standby, and sits at break-even under
+                # winter overcast -- so the little battery only ever has
+                # to cover short dull spells, never a season.
+                solar_keep_alive_fitted=True, solar_keep_alive_panel_m2=0.60,
+                solar_keep_alive_battery_ah=20.0)
         if e.identity == "ldt465-multifuel-deuce":
             # the real cited SAE figure (140 hp @ 2600 rpm) -- see
             # engine_sim.torque_fraction's own comment and Engine.

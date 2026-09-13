@@ -54,6 +54,7 @@ from typing import Callable
 import math
 import random
 
+import engines
 from engines import (
     Engine, RPM_TO_RAD_S, derive_jet_metering_frac, fuel_stoich_afr,
     fuel_latent_heat_j_per_kg, FUEL_SPECIFIC_HEAT_J_PER_KGK, ENGINE_BAY_AMBIENT_K,
@@ -85,6 +86,15 @@ from governor import CaptiveBallGovernor
 from expander import ExpanderCylinderBank
 from valve_state import ValveState
 from crankcase_state import CrankcaseState
+from ballistics import FluidLayer, inferred_fluid
+from damage_state import (
+    Puncture,
+    PartDamageState,
+    mesh_part_identity,
+    record_penetration,
+    register_graph_parts,
+    sync_part_pressures,
+)
 import numpy as _np
 from gas_works import _steam_properties
 from fuel_network import (FuelNetworkRuntime, SupplyTick, charge_energy_factor, intake_flashback_risk)
@@ -134,6 +144,64 @@ class IgnitionEvent:
     knock: bool
     knock_intensity: float
     misfire: bool
+    preignition: bool = False  # surface ignition off a hot spot BEFORE the spark -- see the firing loop
+
+
+# Pre-ignition (surface ignition): a glowing deposit, an overheated
+# exhaust valve or plug electrode lights the charge before the spark
+# ever fires. Unlike knock (end-gas autoignition late in the burn) it
+# starts the burn EARLY, against the rising piston -- a much larger
+# pressure rise, a heavy chamber ring, lost work, and a big heat pulse
+# into that piston, which is how it runs away into holed pistons. The
+# per-cylinder hot-spot risk is valve_state.py's own real deposit model
+# (cylinder_hotspot_risk); charge temperature and load set how easily a
+# hot surface lights the mixture.
+PREIGNITION_BASE_PROB = 0.35          # per spark event at hotspot_risk 1.0, full load, hot charge
+PREIGNITION_STRENGTH_FRAC = 0.6       # work lost to lighting against compression
+PREIGNITION_PISTON_HEAT_K = 4.0       # per event, into that cylinder's own bay temperature
+ATM_PRESSURE_PA = 101_325.0
+# Ring detection. An explicit integrator pushed past its own stability
+# limit does not blow up gently -- it ALTERNATES: the coupling torque
+# flips sign on consecutive steps while its magnitude stays pinned at
+# saturation. Real physics does not do that (a damper's torque decays
+# smoothly toward equilibrium), so a run of sign flips at saturation is
+# a reliable signature of the numerics rather than the machine, and it
+# is worth detecting rather than quietly reporting the phantom slip and
+# phantom heat that come with it.
+RING_WINDOW = 8                 # consecutive samples to judge on
+RING_ALTERNATION_FRAC = 0.75    # this many sign flips in the window = ringing
+RING_SIGNIFICANT_FRAC = 0.2     # ...at a magnitude that is real, not noise
+RING_MAX_ESCALATION = 16        # how far the reactive substepping may go
+RING_ESCALATION_HOLD = 400      # substeps to hold it before relaxing again
+# The anti-stall booster's own real trip calibration. The trip point is
+# BELOW the governed idle (this catches an engine being dragged through
+# its idle, and must not be true at a healthy idle); the sag detector
+# watches a band just above it and fires on rate; release needs a real
+# recovery above idle so it cannot chatter.
+IDLE_ASSIST_TRIP_FRAC_OF_IDLE = 0.88
+IDLE_ASSIST_SAG_WATCH_FRAC = 1.05
+IDLE_ASSIST_SAG_RPM_PER_S = 180.0      # a load that is genuinely pulling the engine down
+IDLE_ASSIST_RELEASE_FRAC_OF_IDLE = 1.02
+# The oil pump's pickup sits just off the floor of the pan. Below this
+# fraction of the pan's own charge the pickup starts breaking surface --
+# on a moving vehicle it does so long before the pan is dry, which is
+# why an oil-pressure light comes on in a corner and not at zero. What
+# it draws instead is air, and the existing cavitation rule
+# (node_effects.OilPumpBehaviour) is what turns that into lost delivery.
+OIL_PICKUP_UNCOVERS_FRAC = 0.35
+OIL_PICKUP_DRY_FRAC = 0.05
+FUEL_BURST_CAP_KG_DEFAULT = 0.05      # burst.py: the fuel vapour that takes part in a deflagration
+# fire.py products into the bay air (air_volumes): a pool fire's plume
+# and its real, sooty carbon-monoxide yield
+AIR_PER_FUEL_MASS = 14.7              # stoichiometric air/fuel by mass
+POOL_FIRE_PLUME_K = 1200.0
+POOL_FIRE_CO_YIELD_KG_PER_KG = 0.05   # a ventilation-limited hydrocarbon pool fire is a serious CO source
+# the shrapnel cascade and vessel rupture (conservative thresholds)
+CASCADE_MIN_J = 25.0                  # a fragment below this dents paint at most
+CASCADE_MAX_RAYS = 12                 # the most energetic fragments of one burst that get a ray
+VESSEL_RUPTURE_MIN_STORED_J = 5_000.0  # a vessel holding less than this just vents through its hole
+VESSEL_RUPTURE_MIN_J = 300.0           # ... and only if the hit spent at least this in its wall
+EFFECTS_EVERY_TICKS = 4               # node_effects.assess cadence
 
 
 # Real production throttle-cable-to-plate-linkage travel curve
@@ -467,6 +535,76 @@ class EngineCycleState:
     oil_flow_lpm: float = 0.0
     nitrous_boost_frac: float = 0.0
     nitrous_fill_frac: float = 0.0
+    pneumatic_idle_assist_boost_frac: float = 0.0
+    pneumatic_idle_assist_delivered_kg_s: float = 0.0
+    # emissions.py / air_volumes.py: what leaves the pipe, where it goes,
+    # and what the engine is breathing back
+    mixture_phi: float = 1.0
+    co_tailpipe_g_s: float = 0.0
+    hc_tailpipe_g_s: float = 0.0
+    nox_tailpipe_g_s: float = 0.0
+    co_engine_out_g_s: float = 0.0
+    preignition_flag: bool = False
+    preignition_intensity: float = 0.0
+    preignition_count: int = 0
+    # parts that have burst (burst.py): gone from the mesh, their fluid
+    # gone from their circuit, an open end left on it
+    absent_parts: set = field(default_factory=set)
+    # node_effects.py verdicts published for the dashboard/audio
+    fire_heat_release_w: float = 0.0
+    fires_burning: int = 0
+    coolant_lost_l: float = 0.0
+    # couplings.py: what the rig is actually driving the load through
+    coupling_kind: str = "dry-friction"
+    coupling_locked: bool = False
+    coupling_slipping: bool = False
+    coupling_capacity_nm: float = 0.0
+    coupling_heat_w: float = 0.0
+    # the solver's own honesty check on the dyno junction
+    junction_ringing: bool = False
+    junction_ring_events: int = 0
+    junction_substeps: int = 1
+    # plant.py readings
+    plant_dewpoint_k: float = 273.15
+    plant_gunk_kg: float = 0.0
+    hydraulic_oil_temp_k: float = 293.15
+    oil_pickup_air_frac: float = 0.0      # how much air the pump is drawing off an uncovered pickup
+    smoke_factor: float = 0.0
+    exhaust_open_frac: float = 0.0
+    engine_dead: str | None = None
+    spark_lost: bool = False
+    brakes_lost: bool = False
+    startable: bool = True
+    mounts_lost: int = 0
+    # per-firing-slot record of what each cylinder ACTUALLY did on its
+    # last pass (engine_sound.py schedules its event kernels off these
+    # on its own crank clock -- no combustion sound for a slot that did
+    # not burn): [strength 0..1 (0 = cut/no fuel), misfire 0/1,
+    # knock_intensity 0..1, preignition 0/1], indexed by firing-order
+    # slot; slot_angles_deg is each slot's own firing angle in the cycle
+    slot_records: list = field(default_factory=list)
+    slot_angles_deg: list = field(default_factory=list)
+    # a hit-and-miss governor holding the exhaust valve off its seat:
+    # the cylinder never compresses, so its exhaust port passes nothing
+    exhaust_valve_held_open: bool = False
+    # count of real ignitions so far (any kind) -- an event stream for
+    # a listener that has no crank slots to clock from (a free piston)
+    fire_event_count: int = 0
+    compression_brake_active: bool = False
+    compression_brake_torque_nm: float = 0.0
+    catalyst_brick_temp_k: float = 293.15
+    catalyst_co_efficiency: float = 0.0
+    catalyst_nox_efficiency: float = 0.0
+    co_emitted_indoors_kg: float = 0.0
+    bay_air_temp_k: float = 293.15
+    bay_co_ppm: float = 0.0
+    bay_o2_frac: float = 0.2095
+    room_co_ppm: float = 0.0
+    room_o2_frac: float = 0.2095
+    room_temp_k: float = 293.15
+    intake_source: str = "bay"
+    intake_o2_factor: float = 1.0
+    occupant_cohb_pct: float = 0.0
     fuel_fill_frac: float = 1.0
     # atmospheric (gas-fuelled) engines only -- the real charge the
     # mixer actually admitted this tick and where it came from (see
@@ -525,6 +663,10 @@ class EngineCycleState:
     # a fresh 0.0 ledger by EngineCycleSim.set_engine (a new engine is
     # a new, unworn part), never by a plain sim reset.
     wear: dict[str, float] = field(default_factory=dict)
+    # Every graph node/edge has a record, while procedural mesh parts
+    # are added on first damage. Punctures survive stop/start and are
+    # cleared only when set_engine installs a different physical engine.
+    part_damage: dict[str, PartDamageState] = field(default_factory=dict)
 
 
 # Chance an unburned charge dumped into the exhaust by a misfire actually
@@ -566,6 +708,13 @@ DYNO_TORQUE_SMOOTH_TAU_S = 0.15
 # closes when engaged (a real closed diesel exhaust brake commonly
 # still passes on the order of 20% of full flow)
 EXHAUST_BRAKE_MAX_RESTRICTION_FRAC = 0.80
+# compression-release brake: the retarding mean effective pressure of a
+# real Jake at rated speed (~0.8-1.0 MPa -- half or more of a diesel's
+# firing BMEP, which is why it absorbs 60-70 % of rated power), scaled
+# with speed (more charge trapped, higher compression pressure) and
+# interlocked to zero fuel and above idle like the real control
+COMPRESSION_RELEASE_MEP_PA = 900_000.0
+COMPRESSION_RELEASE_MIN_RPM_FRAC_OF_IDLE = 1.2
 # The bench-test drum (drivetrain_graph.py's dyno_absorber node) is
 # deliberately light -- 3x the engine's OWN crank inertia, see that
 # node's own comment -- so a resistive brake-load test isn't fighting
@@ -591,6 +740,10 @@ class EngineCycleSim:
     anti_lag_enabled: bool = False    # turbo + forced_induction.anti_lag_capable only
     nitrous_active: bool = False       # engine.has_nitrous only -- opens the real solenoid
     auxiliary_injection_active: bool = True   # engine.has_auxiliary_injection only -- a real WMI kit is normally armed whenever the engine runs, not driver-toggled like nitrous
+    garage_mode: str = "outdoors"                 # air_volumes.AirStack: "outdoors" | "open" | "closed" | "sealed"
+    exhaust_extractor_fitted: bool = False         # the big orange duct over the tailpipe, vented outside
+    cell_fan_m3_s: float = 0.0                     # a dyno-cell ventilation fan on the room
+    pneumatic_idle_assist_enabled: bool = True   # engine.pneumatics.idle_assist_fitted only -- a real toggleable anti-stall switch, armed by default once fitted; the ACTUAL dump also needs rpm to actually be under the trip point
     ac_enabled: bool = False           # engine.accessories.air_conditioning only -- engages the real belt compressor
     # a real exhaust brake valve (see EXHAUST_BRAKE_MAX_RESTRICTION_FRAC
     # and drivetrain_graph.step's exhaust_brake_frac) -- off by default,
@@ -601,6 +754,7 @@ class EngineCycleSim:
     # Valvetrain/bearing friction drag is real mechanical loss and stays
     # on regardless -- that's not what this toggle ever controlled.
     engine_brake_enabled: bool = False
+    compression_brake_enabled: bool = False        # engine.compression_release_brake only -- the Jake switch
     brake_target_rpm: float | None = None  # None = manual brake_load_nm control (E/D).
                                              # Set = a real PI dyno controller drives
                                              # brake_load_nm itself to hold this rpm --
@@ -641,6 +795,61 @@ class EngineCycleSim:
         self._surge_timer = 0.0
         self._antilag_cooldown = 0.0
         self._firing_angle_deg: dict[int, float] = {}
+        self._slot_of_cyl: dict[int, int] = {}
+        from hole_emitters import HoleEmitterField
+        from burst import BurstField
+        self.hole_emitters = HoleEmitterField()
+        # the emitters do not own fluid state: they ask the sim for the
+        # real pressure and the real contents, and hand back every gram
+        # they take, so the HUD, the pump and the leak are one machine
+        self.hole_emitters.pressure_of = self._circuit_pressure_pa
+        self.hole_emitters.remaining_of = self._circuit_remaining_l
+        self.hole_emitters.on_loss = self._deplete_circuit
+        self.bursts = BurstField()
+        self.damage_events: list[dict] = []
+        self._fuel_exposure_s: dict[str, float] = {}
+        # node_effects.py: what the hurt nodes do to the engine, assessed
+        # every few ticks from the damage/emitter/absence records
+        from node_effects import Effects
+        self._effects = Effects()
+        self._node_conditions: dict = {}
+        self._effects_tick = 0
+        self._circuit_base: dict = {}
+        # shrapnel cascade (burst.py -> the projectile engine): the app or
+        # snapshot supplies a RayMesh factory for the live geometry; with
+        # none, fragments fly but hole nothing
+        self.ray_mesh_factory = None
+        self.cascade_log: list[str] = []
+        self._cascade_depth = 0
+        # ordnance.py: placed charges and their fuzes
+        from ordnance import OrdnanceField
+        from fire import FireField
+        from fittings import FittingField
+        from plant import AuxiliaryPlantRuntime
+        # plant.py: the auxiliary skid (air treatment, refrigerant loop,
+        # hydraulic tank, controls, accessory bank) -- None on an engine
+        # that declares no such plant, which is most of them
+        self.plant = AuxiliaryPlantRuntime.build(self.engine)
+        # the machine's own hydraulic lever: how much of the pump's flow
+        # the actuators are taking, and how hard they are pushing. Set
+        # by the operator, the same way brake_load_nm is. Flow 0 with
+        # load 1 is a lever held against its stop -- the whole pump
+        # output over the relief valve as heat.
+        self.hydraulic_flow_frac = 0.0
+        self.hydraulic_load_frac = 0.0
+        # equipment.py: anything bolted on that runs off the engine's
+        # own fluids. None until something is fitted, which is most
+        # engines most of the time.
+        self.equipment = None
+        self.ordnance = OrdnanceField()
+        # automatic_transmission.py: a hydraulic machine, built only for
+        # an engine that declares one -- a manual box is a gear case
+        # (gear_cases.py) and has none of this
+        self.automatic = self._build_automatic()
+        # fire.py: burning as a lasting state, not an event
+        self.fires = FireField()
+        # fittings.py: a hole with something screwed into it is a port
+        self.fittings = FittingField()
         self._last_fire_total_deg: dict[int, float] = {}
         self._last_strength: dict[int, float] = {}
         self._knock_accum: dict[int, float] = {}
@@ -704,6 +913,10 @@ class EngineCycleSim:
         self._brake_junction = self._build_brake_junction()
         self._recompute_firing_angles()
         self._drivetrain = self._build_drivetrain()
+        # WHERE the compressed air is, as distinct from how much there
+        # is: the circuit keeps the one authoritative stored mass, this
+        # says which of the real vessels is holding it (air_vessels.py).
+        self.air_vessels = self._build_air_vessels()
         self._waste_heat_kw = 0.0
         self._intake_supply_pressure_pa = 101_325.0
         self._intake_demand_kg_s = 0.0
@@ -711,6 +924,12 @@ class EngineCycleSim:
         self._fuel_cooling_kw = 0.0
         self._auxiliary_injection_cooling_kw = 0.0
         self._fuel_starvation_frac = 1.0
+        # how fast rpm is really moving, for the anti-stall sag detector
+        self._rpm_rate_per_s = 0.0
+        self._idle_assist_latched = False
+        self._ring_hist: list = []
+        self._ring_escalation = 1
+        self._ring_escalation_ticks = 0
         self._exhaust_demand_kg_s = 0.0
         self._physics_accum_s = 0.0
         if self.engine.load_resistor_frac is not None:
@@ -753,11 +972,1102 @@ class EngineCycleSim:
         self._dyno_mass_kg = dyno_node["mass_kg"]
         self._dyno_inertia_kg_m2 = dyno_node["inertia_kg_m2"]
         self._dyno_drum_radius_m = dyno_node["drum_radius_m"]
-        return DrivetrainSolver(graph)
+        # the idle-assist dump port's own real area (0 -- no flow ever --
+        # when the engine doesn't carry one), and the real trip point:
+        # the engine's own declared idle_assist_trip_rpm if it gave one,
+        # else a real default a bit above idle so the dump actually
+        # catches a sag BEFORE the engine reaches idle, not after
+        pn = self.engine.pneumatics
+        if pn.compressor_fitted and pn.idle_assist_fitted:
+            port_radius_m = max(0.0, pn.idle_assist_port_diameter_mm) / 2000.0
+            self._pneumatic_idle_assist_area_m2 = math.pi * port_radius_m * port_radius_m
+            # The trip point sits BELOW the governed idle, not above it.
+            # This is an ANTI-STALL device: it is there to catch an
+            # engine that a sudden load is dragging down THROUGH its
+            # idle, not to blow air into an engine that is idling
+            # perfectly well. A trip above idle means the condition is
+            # true at normal idle and the reservoir simply empties for
+            # no reason -- which is exactly what it did.
+            self._pneumatic_idle_assist_trip_rpm = (
+                pn.idle_assist_trip_rpm if pn.idle_assist_trip_rpm is not None
+                else self.engine.idle_rpm * IDLE_ASSIST_TRIP_FRAC_OF_IDLE)
+        else:
+            self._pneumatic_idle_assist_area_m2 = 0.0
+            self._pneumatic_idle_assist_trip_rpm = 0.0
+        drivetrain = DrivetrainSolver(graph)
+        # the splash emitters: the crank's dipper on every declared
+        # oil-splash-path (dressing.py) -- rebuilt with the graph
+        self.hole_emitters.emitters = [e for e in self.hole_emitters.emitters if e.kind != "splash"]
+        self.hole_emitters.add_splash_from_graph(graph)
+        register_graph_parts(self.state.part_damage, graph)
+        sync_part_pressures(self.state.part_damage, drivetrain.fluid_circuits)
+        return drivetrain
+
+    def _sync_part_damage_pressures(self) -> None:
+        sync_part_pressures(self.state.part_damage, self._drivetrain.fluid_circuits)
+
+    def apply_penetration(self, penetration) -> list[tuple[str, Puncture]]:
+        """Persist the holes from one ray penetration in the live engine,
+        put an emitter (hole_emitters.HoleEmitter) on every boundary hole
+        so what the part contains actually passes through it from now on,
+        and queue each impact for the damage sound synth."""
+        self._sync_part_damage_pressures()
+        recorded = record_penetration(
+            self.state.part_damage,
+            self._drivetrain.graph,
+            self._drivetrain.fluid_circuits,
+            penetration,
+        )
+        self.hole_emitters.add_from_punctures(recorded, self._drivetrain.graph, self._drivetrain.fluid_circuits)
+        by_part = {ident: p for ident, p in recorded}
+        # a round through a placed charge: its filling's own impact
+        # sensitivity decides whether that starts a firing sequence
+        if self.ordnance.charges and recorded:
+            graph_ = self._drivetrain.graph
+            for c in self.ordnance.charges:
+                if c.fired:
+                    continue
+                cpos = c.where(graph_)
+                for ident, p in recorded:
+                    hit = _np.asarray(p.entry_position_m, dtype=float)
+                    if float(_np.linalg.norm(hit - cpos)) <= 0.15 and c.disturb(p.energy_spent_j):
+                        self.ordnance.log.append(
+                            f"{c.identity} struck by a {p.energy_spent_j:.0f} J hit near {ident.split('.')[-1]}: fuze running")
+        # a pressurised gas vessel holed hard enough lets go (conservative:
+        # a real volume, real pressure, a real hole with energy behind it)
+        import burst as _burst
+        for ident, p in recorded:
+            if ident in self.state.absent_parts or self._cascade_depth >= 3:
+                continue
+            node = next((n for n in self._drivetrain.graph["nodes"] if n["identity"] == ident), None)
+            if node is None:
+                continue
+            # a real declared pressure vessel ("high-pressure-canister":
+            # the pneumatic reserve/brake reservoirs, a nitrous bottle, a
+            # WMI tank, a gasholder) holed with real energy in its wall
+            # lets go -- how much it then releases is its own charge and
+            # pressure (burst.vessel_energy_j), never a constant
+            fill = self._vessel_fill_frac(ident, node)
+            e_stored = _burst.vessel_energy_j(node, fill) if node.get("kind") == "high-pressure-canister" else 0.0
+            if e_stored >= VESSEL_RUPTURE_MIN_STORED_J and p.energy_spent_j >= VESSEL_RUPTURE_MIN_J:
+                p_pa = float(node.get("bottle_pressure_pa", 0.0) or node.get("working_pressure_pa", 0.0) or 0.0)
+                self.cascade_log.append(
+                    f"vessel {ident.split('.')[-1]} ({_burst.vessel_contents_kg(node, fill) * 1000:.0f} g at "
+                    f"{p_pa / 1e5:.0f} bar, {e_stored / 1000:.1f} kJ stored) ruptured by a {p.energy_spent_j:.0f} J hit")
+                self.burst_part(ident)
+
+        for mesh_part, impact in penetration.impacts:
+            identity = mesh_part_identity(mesh_part, self._drivetrain.graph)
+            st = self.state.part_damage.get(identity)
+            p = by_part.get(identity)
+            self.damage_events.append({
+                "kind": "impact", "part": identity, "mode": str(getattr(impact.mode, "value", impact.mode)),
+                "material": (p.material if p is not None else str(mesh_part.split("_")[-1])),
+                "wall_m": float(impact.effective_thickness_m), "energy_spent_j": float(impact.energy_spent_j),
+                "pressure_pa": float(st.pressure_pa) if st is not None else 101_325.0,
+                "speed_after_m_s": float(impact.speed_after_m_s),
+                "calibre_m": float(getattr(impact.projectile_after, "diameter_m", 0.0076) or 0.0076),
+            })
+        return recorded
+
+    # ---- the one place a circuit's real pressure and contents are read ----
+    def _circuit_by_id(self, circuit_id):
+        from hole_emitters import circuit_identity as _cid
+        if circuit_id is None:
+            return None
+        for c in self._drivetrain.fluid_circuits:
+            if _cid(c) == circuit_id:
+                return c
+        return None
+
+    def _plant_reservoir(self, circuit_id):
+        """The auxiliary plant's own fluid stores are NOT graph fluid
+        circuits -- they live on `plant` (hydraulics.py / refrigeration.
+        py) -- so the three accessors below have to know about them, or
+        a hole in the hydraulic tank finds no contents and quietly does
+        nothing. Returns (kind, object) or (None, None)."""
+        p = getattr(self, "plant", None)
+        if p is None:
+            return None, None
+        if circuit_id == "hydraulic":
+            return "hydraulic", getattr(p, "hydraulics", None)
+        if circuit_id == "refrigerant":
+            return "refrigerant", getattr(p, "loop", None)
+        if circuit_id == "nitrogen":
+            return "nitrogen", getattr(p, "hydraulics", None)
+        return None, None
+
+    def _circuit_pressure_pa(self, circuit_id, circuit=None) -> float:
+        """What is really behind a hole in that circuit.
+
+        A DEPLETABLE vessel (an air receiver, a bottle, a fuel tank)
+        does not carry its pressure in `pressure_pa` at all -- its state
+        is `fill_level_frac` against `bottle_capacity_kg`, and in a
+        fixed volume the pressure follows the mass directly, so a
+        half-empty receiver really is at half its working pressure. A
+        vented liquid store has no pressure of its own; a pumped or
+        solved circuit carries its own solved value."""
+        kind, obj = self._plant_reservoir(circuit_id)
+        if obj is not None:
+            if kind == "hydraulic":
+                # a holed reservoir leaks at its blanket pressure, and a
+                # holed line at the working pressure behind it
+                return max(float(getattr(obj, "blanket_pressure_pa", ATM_PRESSURE_PA)), ATM_PRESSURE_PA)
+            if kind == "refrigerant":
+                # the high side is what a holed condenser or drier vents
+                return max(float(getattr(obj, "discharge_pa", 0.0)), ATM_PRESSURE_PA)
+            if kind == "nitrogen":
+                bottle = float(getattr(obj, "nitrogen_bottle_pressure_pa", 0.0) or 0.0)
+                return max(ATM_PRESSURE_PA, bottle * max(0.0, float(getattr(obj, "nitrogen_fill_frac", 0.0))))
+        c = circuit if circuit is not None else self._circuit_by_id(circuit_id)
+        if c is None:
+            return ATM_PRESSURE_PA
+        if float(getattr(c, "bottle_capacity_kg", 0.0) or 0.0) > 0.0:
+            working = float(getattr(c, "working_pressure_pa", 0.0) or 0.0)
+            if working <= 0.0:
+                return max(float(c.pressure_pa), ATM_PRESSURE_PA)
+            return max(ATM_PRESSURE_PA, working * max(0.0, min(1.0, c.fill_level_frac)))
+        return max(float(c.pressure_pa), ATM_PRESSURE_PA)
+
+    def _circuit_remaining_l(self, circuit_id, circuit=None) -> float:
+        """How much is actually left, read from the real reservoir the
+        dashboard shows -- never from a leak ledger."""
+        from hole_emitters import DENSITY_KG_M3
+        kind, obj = self._plant_reservoir(circuit_id)
+        if obj is not None:
+            if kind == "hydraulic":
+                return float(getattr(obj, "oil_l", 0.0))
+            if kind == "refrigerant":
+                return 0.9 * max(0.0, float(getattr(obj, "charge_frac", 0.0)))   # a car-sized charge, litres-equivalent
+            if kind == "nitrogen":
+                return 1e9 if float(getattr(obj, "nitrogen_fill_frac", 0.0)) > 0.0 else 0.0
+        c = circuit if circuit is not None else self._circuit_by_id(circuit_id)
+        if circuit_id == "oil":
+            cs = getattr(self, "_crankcase_state", None)
+            if cs is not None:
+                return float(cs.oil_kg) / 0.87
+        cap = float(getattr(c, "bottle_capacity_kg", 0.0) or 0.0) if c is not None else 0.0
+        if cap > 0.0:
+            rho = DENSITY_KG_M3.get(circuit_id, 745.0)
+            return cap * max(0.0, min(1.0, c.fill_level_frac)) / rho * 1000.0
+        if circuit_id == "coolant" and c is not None:
+            return max(0.0, float(c.volume_l) - self.state.coolant_lost_l)
+        return float(c.volume_l) if c is not None else 0.0
+
+    def _deplete_circuit(self, circuit_id, amount: float) -> None:
+        """Take that much out of the REAL reservoir -- litres for a
+        liquid, kilograms for a gas. This is the only path by which a
+        leak, a burst or a fitted port removes fluid, so the tank bar,
+        the sump reading, the receiver pressure and the engine's own
+        starvation all move together."""
+        from hole_emitters import DENSITY_KG_M3
+        if amount <= 0.0:
+            return
+        kind, obj = self._plant_reservoir(circuit_id)
+        if obj is not None:
+            if kind == "hydraulic":
+                obj.oil_l = max(0.0, obj.oil_l - amount)
+                return
+            if kind == "refrigerant":
+                obj.charge_frac = max(0.0, obj.charge_frac - amount / 0.9)
+                return
+            if kind == "nitrogen":
+                obj.nitrogen_fill_frac = max(0.0, obj.nitrogen_fill_frac
+                                             - amount / max(obj.nitrogen_capacity_kg, 1e-9))
+                return
+        c = self._circuit_by_id(circuit_id)
+        if circuit_id == "oil":
+            cs = getattr(self, "_crankcase_state", None)
+            if cs is not None:
+                cs.oil_kg = max(0.0, cs.oil_kg - amount * 0.87)
+                self.state.sump_oil_l = cs.oil_kg / 0.87
+                return
+        if circuit_id == "coolant":
+            self.state.coolant_lost_l += amount
+            if c is not None:
+                c.volume_l = max(0.05, c.volume_l - amount)   # less coolant really is less thermal mass
+            return
+        if c is not None and float(getattr(c, "bottle_capacity_kg", 0.0) or 0.0) > 0.0:
+            liquid = circuit_id in ("fuel", "water")
+            kg = amount / 1000.0 * DENSITY_KG_M3.get(circuit_id, 745.0) if liquid else amount
+            c.fill_level_frac = max(0.0, c.fill_level_frac - kg / max(c.bottle_capacity_kg, 1e-6))
+
+    def _vessel_fill_frac(self, identity: str, node: dict) -> float:
+        """How full that vessel actually is right now: its circuit's own
+        live fill_level_frac when it has one, else its declared level."""
+        for c in self._drivetrain.fluid_circuits:
+            if identity in c.nodes and float(getattr(c, "bottle_capacity_kg", 0.0) or 0.0) > 0.0:
+                return float(c.fill_level_frac)
+        return float(node.get("fill_level_frac", 1.0) or 1.0)
+
+    def drain_damage_events(self) -> list[dict]:
+        events = self.damage_events
+        self.damage_events = []
+        return events
+
+    def ignite_within(self, centre, radius_m: float, source: str) -> list[str]:
+        """A real ignition source (an ordnance fireball, a burning part)
+        at a point: every flammable thing within reach lights. What is
+        flammable is what is actually THERE -- a fuel emitter's spray,
+        or a fuel-carrying part -- so a shot tank that is merely pouring
+        catches only when something lights it, never on its own."""
+        import burst as _b
+        from hole_emitters import fluid_key as _fk
+        c = _np.asarray(centre, dtype=float)
+        lit: list[str] = []
+        # a spray of fuel in the fireball burns back to its source
+        for em in self.hole_emitters.emitters:
+            if em.fluid != "fuel" or em.regime == "none" or em.part in self.state.absent_parts:
+                continue
+            pts = em.particles(8, 0.3)
+            if len(pts) and float(_np.min(_np.linalg.norm(pts - c[None, :], axis=1))) <= radius_m:
+                lit.append(em.part)
+        # a fuel-carrying part inside it
+        for n in self._drivetrain.graph["nodes"]:
+            ident = n["identity"]
+            if ident in self.state.absent_parts or ident in lit:
+                continue
+            pos = n.get("reference_position")
+            if pos is None or _b.contents_key(n) != "fuel":
+                continue
+            if float(_np.linalg.norm(_np.asarray(pos, dtype=float) - c)) <= radius_m:
+                lit.append(ident)
+        for ident in dict.fromkeys(lit):
+            self.cascade_log.append(f"{source} ignited {ident.split('.')[-1]}")
+            self.burst_part(ident, ignited=True)
+        return list(dict.fromkeys(lit))
+
+    def burst_part(self, identity: str, energy_j: float | None = None, ignited: bool = False) -> "PartBurst | None":
+        """An explosive failure of one graph node: it becomes absent, its
+        material and contents fly (burst.make_burst -- ranged by the
+        density of what they fly into), its fluid leaves its circuit
+        and an open end stays on that circuit as a hole emitter, and
+        the damage synth gets the blast."""
+        import burst as burst_module
+        from hole_emitters import HoleEmitter, LIQUID_OF_CIRCUIT, circuit_identity as _cid
+        graph = self._drivetrain.graph
+        node = next((n for n in graph["nodes"] if n["identity"] == identity), None)
+        if node is None or identity in self.state.absent_parts:
+            return None
+        fluid = node.get("fluid")
+        vol_l = float(node.get("fluid_volume_l", 0.0) or 0.0)
+        if energy_j is None:
+            # what it holds decides: a fuel volume deflagrates, a gas
+            # vessel releases its stored pV work, anything else is a
+            # bare mechanical let-go
+            from hole_emitters import fluid_key as _fkey
+            import burst as _burst_e
+            stored = (_burst_e.vessel_energy_j(node, self._vessel_fill_frac(identity, node))
+                      if node.get("kind") == "high-pressure-canister" else 0.0)
+            if stored > 0.0:
+                energy_j = stored          # a real vessel: its own declared charge and pressure
+            elif _burst_e.contents_key(node) == "fuel" and ignited:
+                self._light_fire(identity, node)
+                # fuel only ever burns when something LIT it: an ordnance
+                # fireball, or its own spray reaching a part above the
+                # fuel's autoignition temperature. A tank that is merely
+                # shot open splits and pours -- petrol does not detonate
+                # because a bullet went through it.
+                energy_j = _burst_e.fuel_vapour_energy_j(node, self._vessel_fill_frac(identity, node))
+            else:
+                c = next((c for c in self._drivetrain.fluid_circuits if identity in c.nodes), None)
+                if c is not None and c.kind_class == "compressible-gas" and c.pressure_pa > 150_000.0:
+                    p = float(c.pressure_pa); v = max(vol_l, 0.1) / 1000.0
+                    energy_j = p * v * math.log(p / 101_325.0)
+                else:
+                    energy_j = 1500.0     # a bare mechanical let-go: it splits, it does not burn
+        pts = [n["reference_position"] for n in graph["nodes"] if not n.get("chassis_side") and n.get("reference_position") is not None]
+        floor_y = min(p[1] for p in pts) - 0.25 if pts else -0.5
+        b = burst_module.make_burst(graph, identity, float(energy_j), self.bursts.rng, floor_y)
+        self.bursts.bursts.append(b)
+        self.state.absent_parts.add(identity)
+        # its fluid is gone from the circuit; the circuit is open here
+        cid = next((_cid(c) for c in self._drivetrain.fluid_circuits if identity in c.nodes), None)
+        if cid is not None:
+            spilled_l = vol_l if vol_l > 0.0 else self._circuit_remaining_l(cid)
+            if spilled_l > 0.0:
+                self.hole_emitters.lost_l[cid] = self.hole_emitters.lost_l.get(cid, 0.0) + spilled_l
+                self._deplete_circuit(cid, spilled_l)     # the real reservoir loses it, not a ledger
+            liquid = LIQUID_OF_CIRCUIT.get(cid) or (_fkey(fluid) if _fkey(fluid) != "gas" else None)
+            r_open = float(next((e.get("radius", 0.008) for e in graph["edges"] if e["a"] == identity or e["b"] == identity), 0.008))
+            self.hole_emitters.emitters.append(HoleEmitter(
+                identity=f"{identity}.burst_open_end", part=identity, circuit=cid, fluid=liquid or "gas",
+                position=tuple(float(v) for v in node["reference_position"]), direction=(0.0, -1.0, 0.0),
+                radius_m=max(0.004, r_open), through=False))
+        # AND WHATEVER IT SIMPLY HELD. A part can contain a real volume
+        # without being on any pumped circuit -- a gear case, a cooler,
+        # a filter housing -- and when the part is gone that volume is
+        # not "still in the system", it is on the floor. This is the
+        # rule that makes it burst in place rather than quietly vanish
+        # with the part.
+        self._spill_contained_fluid(identity, node)
+        self.damage_events.append({"kind": "blast", "part": identity, "energy_j": float(energy_j),
+                                   "volume_m3": max(0.002, vol_l / 1000.0 + 0.01)})
+        self._cascade_fragments(b, node)
+        return b
+
+    def _spill_contained_fluid(self, identity: str, node: dict | None = None) -> float:
+        """A destroyed part dumps what it was holding, where it stood.
+
+        Circuit fluid is already handled by the circuit itself. This is
+        for the volume a part contains on its own -- the gear oil in a
+        differential, the litre in a cooler, what is in a filter
+        housing. It leaves as a real emitter at the part's own position
+        with its own contents, so it pours, pools, sounds and colours
+        itself like any other spill, and it stops when the part is
+        empty because nothing is pumping it."""
+        from hole_emitters import HoleEmitter
+        graph = self._drivetrain.graph
+        if node is None:
+            node = next((n for n in graph["nodes"] if n["identity"] == identity), None)
+        if node is None:
+            return 0.0
+        litres = float(node.get("fluid_volume_l", 0.0) or 0.0)
+        fluid = node.get("fluid")
+        if litres <= 0.0 or not fluid:
+            return 0.0
+        if any(em.identity == f"{identity}.contents" for em in self.hole_emitters.emitters):
+            return 0.0                                   # already spilling
+        from fluids import fluid_key as _fk
+        key = _fk(fluid)
+        if key is None or key == "gas":
+            return 0.0
+        pos = node.get("reference_position") or (0.0, 0.0, 0.0)
+        half = node.get("body_half_extent_m") or (0.05, 0.05, 0.05)
+        # a case that has been destroyed is open across its whole
+        # bottom, not through a bullet hole: the opening is sized from
+        # the part itself
+        r_open = max(0.01, 0.35 * min(float(half[0]), float(half[2])))
+        self.hole_emitters.emitters.append(HoleEmitter(
+            identity=f"{identity}.contents", part=identity, circuit=None, fluid=key,
+            position=tuple(float(v) for v in pos), direction=(0.0, -1.0, 0.0),
+            radius_m=r_open, through=False, kind="contained",
+            contained_l=litres, contained_head_m=max(0.05, float(half[1]) * 2.0)))
+        self.damage_events.append({"kind": "spill", "part": identity,
+                                   "fluid": key, "litres": litres})
+        return litres
+
+    def _cascade_fragments(self, b, node) -> None:
+        """The shrapnel through the projectile engine: the casing
+        fragments with real energy (>= CASCADE_MIN_J, the most energetic
+        CASCADE_MAX_RAYS of them) each become a tumbling projectile
+        (ballistics.ProjectileState: its own mass, size, speed, a random
+        yaw and tumble rate, the casing material's hardness) fired along
+        its launch direction through RayMesh.penetrate -> apply_
+        penetration -- holes, emitters, sounds, and possibly the next
+        rupture (depth-limited). Conservative: fragments are blunt,
+        tumbling, and mostly below the energy that holes a casting."""
+        if self.ray_mesh_factory is None or self._cascade_depth >= 3:
+            return
+        from ballistics import ProjectileState
+        from engine_rays import Ray
+        import burst as burst_module
+        solid = b.clouds[0] if b.clouds else None
+        if solid is None or not len(solid.pos):
+            return
+        e = 0.5 * solid.mass * _np.sum(solid.vel ** 2, axis=1)
+        order = _np.argsort(-e)
+        picks = [i for i in order[:CASCADE_MAX_RAYS] if e[i] >= CASCADE_MIN_J]
+        if not picks:
+            return
+        hardness = 1.0e9 if "iron" in str(node.get("material", "")) or "steel" in str(node.get("material", "")) else 0.5e9
+        rm = self.ray_mesh_factory()
+        rng = self.bursts.rng
+        self._cascade_depth += 1
+        try:
+            for i in picks:
+                v = solid.vel[i]; speed = float(_np.linalg.norm(v))
+                d = v / max(speed, 1e-9)
+                r = float(solid.radius[i])
+                ps = ProjectileState(mass_kg=float(solid.mass[i]), diameter_m=2.0 * r, speed_m_s=speed,
+                                     direction=tuple(float(x) for x in d), length_m=2.5 * r,
+                                     yaw_rad=float(rng.uniform(0.2, math.pi / 2)), tumble_rad_s=float(rng.uniform(30.0, 200.0)),
+                                     hardness_pa=hardness, integrity=0.8)
+                start = solid.pos[i] + d * 0.02
+                pen = rm.penetrate(Ray.from_points(start, start + d), ps.energy_j, 2.0 * r, projectile=ps,
+                                   fluid_by_part=self.ballistic_fluid_for_part)
+                rec = self.apply_penetration(pen)
+                if rec:
+                    self.cascade_log.append(
+                        f"fragment {solid.mass[i] * 1000:.0f} g at {speed:.0f} m/s ({e[i]:.0f} J) from {b.part.split('.')[-1]}: "
+                        + "; ".join(f"{ident.split('.')[-1]} {q.damage_mode}" for ident, q in rec))
+        finally:
+            self._cascade_depth -= 1
+
+    def _step_oil_pickup(self) -> None:
+        """A falling sump uncovers the pickup, and the pump draws air.
+        The air is put into the oil circuit's own contents (the same
+        FluidMix a hole's ingest would fill), so the SAME cavitation
+        rule that handles a holed suction line handles a dry sump --
+        one mechanism, not two."""
+        cs = getattr(self, "_crankcase_state", None)
+        c = self._circuit_by_id("oil")
+        if cs is None or c is None:
+            return
+        level = float(cs.oil_kg) / max(float(cs.oil_capacity_kg), 1e-6)
+        if level >= OIL_PICKUP_UNCOVERS_FRAC:
+            self.state.oil_pickup_air_frac = 0.0
+            return
+        span = max(OIL_PICKUP_UNCOVERS_FRAC - OIL_PICKUP_DRY_FRAC, 1e-6)
+        air = max(0.0, min(1.0, (OIL_PICKUP_UNCOVERS_FRAC - level) / span))
+        self.state.oil_pickup_air_frac = air
+        mix = self.hole_emitters.contents("oil", c, "engine-oil")
+        total = mix.total_kg
+        if total > 0.0:
+            # hold the blend at the fraction of air the pickup is really
+            # drawing, rather than accumulating it forever
+            want_air = total * air
+            have_air = mix.kg.get("air", 0.0)
+            if want_air > have_air:
+                mix.add("air", want_air - have_air)
+            elif have_air > want_air:
+                mix.kg["air"] = want_air
+        # and the delivered pressure falls with it: a pump passing air
+        # cannot hold its relief pressure
+        self.state.oil_pressure_pa = ATM_PRESSURE_PA + (self.state.oil_pressure_pa - ATM_PRESSURE_PA) * (1.0 - air)
+
+    def _apply_node_effects(self) -> None:
+        """node_effects.assess -> the levers the sim already integrates:
+        per-cylinder charge (in the firing loop via _effects), fuel and
+        mixture (idem), exhaust restriction (the solver call), boost (the
+        turbo step), the coolant/oil circuits' own exchange and pump
+        sizing (scaled from their untouched base), a dead engine (the
+        crank seizes: ignition off, a hard decel)."""
+        import node_effects
+        self._node_conditions, self._effects = node_effects.assess(self)
+        ef = self._effects
+        # A PART THAT HAS LOST ITS STRUCTURE DUMPS WHAT IT HELD. This
+        # catches the destruction that is not an explosion -- a case
+        # beaten open by repeated hits, a housing corroded until its
+        # remaining wall gave up -- which otherwise left its oil
+        # nowhere, neither in the part nor on the floor.
+        for ident, cond in self._node_conditions.items():
+            if cond.structure_lost:
+                self._spill_contained_fluid(ident)
+        from hole_emitters import circuit_identity as _cid
+        for c in self._drivetrain.fluid_circuits:
+            cid = _cid(c)
+            base = self._circuit_base.setdefault(cid, (float(c.active_heat_exchange_w_per_k), float(c.pump_design_flow_lpm)))
+            if cid == "coolant":
+                c.active_heat_exchange_w_per_k = base[0] * ef.coolant_exchange_factor
+                c.pump_design_flow_lpm = base[1] * ef.coolant_flow_factor
+            elif cid == "oil":
+                c.pump_design_flow_lpm = base[1] * ef.oil_flow_factor
+        self.state.smoke_factor = ef.smoke_factor
+        self.state.exhaust_open_frac = ef.exhaust_open_frac
+        if ef.engine_dead and not self.state.engine_dead:
+            self.state.engine_dead = ef.engine_dead
+            self.state.ignition_cut = True
+        if ef.spark_lost and not self.engine.compression_ignition:
+            # a compression-ignition engine has no spark to lose; a spark
+            # engine with its ignition shot away simply stops firing
+            self.state.ignition_cut = True
+        self.state.spark_lost = ef.spark_lost
+        self.state.brakes_lost = ef.brakes_lost
+        self.state.startable = ef.startable
+        self.state.mounts_lost = ef.mounts_lost
+
+    def _light_fire(self, identity: str, node: dict) -> None:
+        """A real pool fire from what that part was actually holding."""
+        import burst as _b
+        fuel_kg = _b.vessel_contents_kg(node, self._vessel_fill_frac(identity, node))
+        if fuel_kg <= 0.0:
+            fuel_kg = float(node.get("fluid_volume_l", 0.0) or 0.0) / 1000.0 * 745.0
+        pos = node.get("reference_position") or (0.0, 0.0, 0.0)
+        f = self.fires.light(identity, pos, _b.contents_key(node) or "fuel", max(fuel_kg, 0.05), "ignition")
+        if f is not None:
+            self.cascade_log.append(f"{identity.split('.')[-1]} alight: {f.heat_release_w / 1000:.0f} kW pool fire")
+
+    def _step_fire(self, dt: float) -> None:
+        """Burn, spread by radiation, breathe the bay's own oxygen, and
+        heat what is around. Nothing here starts a fire -- only a real
+        ignition does (ignite_within / an ordnance fireball / a spray on
+        a hot part)."""
+        air = getattr(self, "_air", None)
+        # a fire breathes the volume it is actually IN: a spill under the
+        # vehicle pools on the garage floor, not inside the engine bay,
+        # and a 60-litre tank fire in a one-cubic-metre bay would be a
+        # fiction. Each fire is assigned the smallest volume that
+        # contains it -- the bay if it is inside the engine's own
+        # envelope, else the room, else outdoors.
+        volumes = self._fire_volumes(air)
+        burned = 0.0
+        for f in self.fires.fires:
+            vol = volumes.get(f.identity)
+            o2 = float(getattr(vol, "o2_frac", 0.2095)) if vol is not None else 0.2095
+            used = f.step(dt, o2)
+            burned += used
+            if used > 0.0 and vol is not None and dt > 0.0:
+                fuel_kg_s = used / dt
+                vol.add_exhaust(fuel_kg_s * (1.0 + AIR_PER_FUEL_MASS), POOL_FIRE_PLUME_K,
+                                fuel_kg_s * POOL_FIRE_CO_YIELD_KG_PER_KG, 0.0)
+        self.fires.total_burned_kg += burned
+        self.state.fire_heat_release_w = self.fires.heat_release_w
+        self.state.fires_burning = len(self.fires.burning)
+        if not self.fires.burning:
+            return
+        # spread: anything flammable this fire is radiating enough at
+        import burst as _b
+        cand = []
+        for n in self._drivetrain.graph["nodes"]:
+            ident = n["identity"]
+            if ident in self.state.absent_parts or _b.contents_key(n) != "fuel":
+                continue
+            if any(f.identity == ident for f in self.fires.fires):
+                continue
+            pos = n.get("reference_position")
+            if pos is not None:
+                cand.append((ident, pos))
+        for ident, pos, flux in self.fires.spread_targets(cand):
+            self.cascade_log.append(f"fire spread to {ident.split('.')[-1]} ({flux / 1000:.0f} kW/m2 radiant)")
+            self.burst_part(ident, ignited=True)
+
+
+    def _fire_volumes(self, air) -> dict:
+        """Which air volume each fire breathes: the engine bay when the
+        fire sits inside the engine's own envelope, otherwise the room
+        (or nothing at all, outdoors)."""
+        if air is None:
+            return {}
+        pts = [n["reference_position"] for n in self._drivetrain.graph["nodes"]
+               if not n.get("chassis_side") and n.get("reference_position") is not None]
+        out = {}
+        if pts:
+            lo = [min(p[i] for p in pts) - 0.15 for i in range(3)]
+            hi = [max(p[i] for p in pts) + 0.15 for i in range(3)]
+        else:
+            lo = hi = None
+        room = getattr(air, "garage", None)
+        for f in self.fires.fires:
+            inside = lo is not None and all(lo[i] <= f.position[i] <= hi[i] for i in range(3))
+            out[f.identity] = air.bay if inside else room
+        return out
+
+    def _plant_wants_cooling(self) -> bool:
+        """True while the plant's refrigerant loop has a load calling and
+        its master switch is on -- what actually pulls the clutch in."""
+        p = getattr(self, "plant", None)
+        if p is None or not p.controls.main_chiller:
+            return False
+        return any(l.calling and l.demand_w > 0.0 for l in p.loop.loads)
+
+    def _plant_leak_losses(self, dt: float) -> None:
+        """What the plant's own holed hardware is losing.
+
+        The refrigerant loop is the one that matters most: a holed
+        chiller, condenser or drier vents its charge to atmosphere, and
+        the loop's own LOW-PRESSURE CUTOUT is what then stops the
+        compressor -- which is the real protection, and the real reason
+        a shot air-conditioning system simply stops working rather than
+        destroying its compressor."""
+        p = self.plant
+        if p is None:
+            return
+        vented = 0.0
+        for em in self.hole_emitters.emitters:
+            if em.circuit == "refrigerant" and em.regime not in ("none", "fitted"):
+                vented += em.mass_flow_kg_s * dt
+        if vented > 0.0:
+            # a car-sized loop holds well under a kilogram, so a real
+            # hole empties it in seconds
+            charge_kg = 0.9
+            p.loop.charge_frac = max(0.0, p.loop.charge_frac - vented / charge_kg)
+        # the hydraulic reservoir loses what its own holes pass
+        h = getattr(p, "hydraulics", None)
+        if h is not None:
+            lost_l = 0.0
+            for em in self.hole_emitters.emitters:
+                if em.circuit == "hydraulic" and em.regime not in ("none", "fitted", "splash"):
+                    lost_l += em.mass_flow_kg_s / 870.0 * 1000.0 * dt
+            if lost_l > 0.0:
+                h.oil_l = max(0.0, h.oil_l - lost_l)
+        # and a holed nitrogen bottle simply empties
+        if h is not None and h.nitrogen_fitted:
+            n2 = sum(em.mass_flow_kg_s for em in self.hole_emitters.emitters
+                     if em.circuit == "nitrogen" and em.regime not in ("none", "fitted"))
+            if n2 > 0.0:
+                h.nitrogen_fill_frac = max(0.0, h.nitrogen_fill_frac
+                                           - n2 * dt / max(h.nitrogen_capacity_kg, 1e-9))
+
+    def fit_loadout(self, identity: str) -> list[str]:
+        """Bolt a named equipment package onto this engine.
+
+        The rig then drives the engine's own hydraulic levers from what
+        the equipment is really doing, and takes bench supply for
+        whatever this engine cannot provide -- which is the whole point
+        of not having to build the parts onto the engine by hand."""
+        from equipment import EquipmentRig
+        self.equipment = EquipmentRig.from_loadout(identity)
+        import loadouts
+        sup = loadouts.supply_from_engine(self)
+        if sup is None:
+            return [f"  {identity} fitted; this engine has no hydraulic plant, so the bench "
+                    f"will supply all of it"]
+        return loadouts.get(identity).check_against(sup["flow_l_min"], sup["pressure_pa"])
+
+    def remove_loadout(self) -> None:
+        """Take the equipment off, and stop driving the levers it was
+        driving -- otherwise the plant keeps loading the crank for work
+        nothing is doing any more."""
+        self.equipment = None
+        self.hydraulic_flow_frac = 0.0
+        self.hydraulic_load_frac = 0.0
+
+    def _step_equipment(self, dt: float) -> None:
+        if self.equipment is not None:
+            self.equipment.step(dt, self)
+
+    def _build_automatic(self):
+        """The automatic gearbox this engine declares, if it declares
+        one."""
+        tr = getattr(self.engine, "transmission", None)
+        if tr is None or str(getattr(tr, "kind", "manual")) != "automatic":
+            return None
+        from automatic_transmission import AutomaticTransmission
+        return AutomaticTransmission(
+            fluid_l=float(getattr(tr, "fluid_l", 9.5)),
+            gear_ratios=tuple(tr.gear_ratios), final_drive_ratio=float(tr.final_drive_ratio))
+
+    def _step_automatic(self, dt: float) -> None:
+        """The converter and the packs, against what the crank and the
+        load are really doing this tick."""
+        at = getattr(self, "automatic", None)
+        if at is None:
+            return
+        ambient = 293.15
+        air = getattr(self, "_air", None)
+        if air is not None and getattr(air, "bay", None) is not None:
+            ambient = float(getattr(air.bay, "temp_k", 293.15) or 293.15)
+        at.step(dt, float(self._omega), float(self._load_omega), float(self.throttle), ambient)
+        # what a hole took out of it is what it has lost: the emitter is
+        # the only place fluid leaves, here as everywhere else
+        for em in self.hole_emitters.emitters:
+            if em.fluid == "transmission-fluid" and em.mass_flow_kg_s > 0.0 and em.regime not in ("none", "fitted"):
+                at.lose(em.mass_flow_kg_s / 850.0 * 1000.0 * dt)
+
+    def _build_air_vessels(self):
+        """The real pneumatic vessels this build actually carries."""
+        try:
+            from air_vessels import AirVesselSet
+            from hole_emitters import circuit_identity as _cid
+        except Exception:
+            return None
+        pneu = next((c for c in self._drivetrain.fluid_circuits
+                     if _cid(c) == "pneumatic-reserve"), None)
+        if pneu is None or pneu.bottle_capacity_kg <= 0.0:
+            return None
+        return AirVesselSet.from_graph(self._drivetrain.graph, pneu)
+
+    def _step_air_vessels(self, dt: float) -> None:
+        """Distribute the circuit's own stored mass across the vessels.
+
+        The circuit stays authoritative -- this never creates or
+        destroys air, it only moves the one real total between the wet
+        tank, the reserve and the protected brake reservoirs."""
+        vs = getattr(self, "air_vessels", None)
+        if vs is None:
+            return
+        from hole_emitters import circuit_identity as _cid
+        pneu = next((c for c in self._drivetrain.fluid_circuits
+                     if _cid(c) == "pneumatic-reserve"), None)
+        if pneu is None:
+            return
+        vs.protection_pressure_pa = float(getattr(pneu, "protection_pressure_pa", 0.0) or 0.0)
+        vs.step(dt, float(pneu.fill_level_frac) * float(pneu.bottle_capacity_kg))
+
+    def _step_plant(self, dt: float) -> None:
+        """Feed the auxiliary plant what the engine is really doing: the
+        compressor's own delivered mass flow, the AC compressor's real
+        shaft speed, the bus it charges from, and the airflow its
+        condenser is actually getting."""
+        from hole_emitters import circuit_identity as _cid
+        pneu = next((c for c in self._drivetrain.fluid_circuits if _cid(c) == "pneumatic-reserve"), None)
+        flow = float(getattr(pneu, "delivered_flow_kg_s", 0.0) or 0.0) if pneu is not None else 0.0
+        ac_omega = float(self._drivetrain.omega.get("ac_compressor", 0.0))
+        ambient_k = 293.15
+        air = getattr(self, "_air", None)
+        if air is not None and getattr(air, "bay", None) is not None:
+            ambient_k = float(getattr(air.bay, "temp_k", 293.15) or 293.15)
+        # the condenser sits in the cooling stack: it gets whatever air
+        # the fan and road speed are really moving through it
+        fan_frac = 1.0 if self.engine.accessories.mechanical_fan else 0.0
+        fan_frac = max(fan_frac, float(self._drivetrain_out.get("cooling_fan_flow_m3_s", 0.0)) > 0.0)
+        reading = getattr(self.electrical, "reading", None)
+        bus_v = float(getattr(reading, "voltage_v", 12.6) or 12.6)
+        charging = float(getattr(reading, "battery_current_a", 0.0) or 0.0) >= -0.5 and self.state.rpm > 200.0
+        self.plant.step(dt, compressor_flow_kg_s=flow, ac_omega_rad_s=ac_omega,
+                        intake_k=float(self.state.intake_charge_temp_k or 293.15),
+                        tank_pressure_pa=float(self.engine.pneumatics.tank_pressure_pa),
+                        ambient_k=ambient_k, bus_voltage_v=bus_v, engine_charging=bool(charging),
+                        condenser_airflow=float(fan_frac), crank_rpm=float(self.state.rpm),
+                        coolant_temp_k=float(self.state.coolant_temp_k))
+        h = self.plant.hydraulics
+        if h is not None:
+            h.commanded_flow_frac = float(self.hydraulic_flow_frac)
+            h.load_frac = float(self.hydraulic_load_frac)
+            # oil over its own flash point is a real fire waiting for a
+            # source: a hydraulic tank that hot, holed and spraying is
+            # exactly how machine fires start. It is NOT self-igniting --
+            # the same rule as everything else here: something has to
+            # light it (fire.py / ignite_within), and if anything already
+            # is burning nearby, this is what catches next.
+            if h.burning and self.fires.burning:
+                tank = next((n for n in self._drivetrain.graph["nodes"]
+                             if n["identity"] == "plant.hydraulic_tank"), None)
+                if tank is not None and "plant.hydraulic_tank" not in self.state.absent_parts:
+                    if not any(f.identity == "plant.hydraulic_tank" for f in self.fires.fires):
+                        self.cascade_log.append(
+                            f"hydraulic oil at {h.temp_k - 273.15:.0f} C is over its flash point next to a fire")
+                        self.fires.light("plant.hydraulic_tank", tank["reference_position"], "engine-oil",
+                                         h.oil_l / 1000.0 * 870.0, "hydraulic oil over flash point")
+        self.state.plant_dewpoint_k = self.plant.delivered_dewpoint_k
+        self.state.plant_gunk_kg = self.plant.treatment.gunk.total_kg
+        if self.plant.hydraulics is not None:
+            self.state.hydraulic_oil_temp_k = self.plant.hydraulics.temp_k
+
+    def _step_fittings(self, dt: float) -> None:
+        """Anything screwed into a hole gets its flow this tick."""
+        if not self.fittings.ports:
+            return
+        from hole_emitters import circuit_identity as _cid, DENSITY_KG_M3
+        pressures = {_cid(c): self._circuit_pressure_pa(_cid(c), c) for c in self._drivetrain.fluid_circuits}
+        by_id = {em.identity: em for em in self.hole_emitters.emitters}
+        self.fittings.step(dt, by_id, {"pressures": pressures, "fires": self.fires,
+                                       "coolant_temp_k": self.state.coolant_temp_k})
+        # what a fitted port takes really leaves the circuit
+        for port in self.fittings.ports:
+            if port.flow_kg_s > 0.0 and not port.fed_from_outside:
+                em = by_id.get(port.emitter_identity)
+                if em is not None and em.circuit:
+                    if em.fluid == "gas":
+                        self._deplete_circuit(em.circuit, port.flow_kg_s * dt)
+                    else:
+                        rho = DENSITY_KG_M3.get(em.fluid, 900.0)
+                        self._deplete_circuit(em.circuit, port.flow_kg_s * dt / rho * 1000.0)
+
+    def _check_burst_triggers(self, dt: float) -> None:
+        """The real fire: fuel spraying from a punctured fuel part whose
+        stream reaches an exhaust part above the fuel's autoignition
+        temperature lights after a short exposure, and the fuel part
+        deflagrates."""
+        if not self.hole_emitters.emitters:
+            return
+        import burst as burst_module
+        hot = float(self.state.exhaust_temp_k) >= burst_module.FUEL_AUTOIGNITION_K["fuel"]
+        graph = self._drivetrain.graph
+        hot_nodes = None
+        for em in self.hole_emitters.emitters:
+            if em.fluid != "fuel" or em.regime not in ("spray", "pour") or em.part in self.state.absent_parts:
+                continue
+            if not hot:
+                self._fuel_exposure_s[em.part] = 0.0
+                continue
+            if hot_nodes is None:
+                hot_nodes = _np.array([n["reference_position"] for n in graph["nodes"]
+                                      if "exhaust" in n["identity"] and n.get("reference_position") is not None] or [[1e9, 1e9, 1e9]])
+            pts = em.particles(8, 0.3)
+            d = float(_np.min(_np.linalg.norm(pts[:, None, :] - hot_nodes[None, :, :], axis=2)))
+            if d <= 0.12:
+                self._fuel_exposure_s[em.part] = self._fuel_exposure_s.get(em.part, 0.0) + dt
+                if self._fuel_exposure_s[em.part] >= burst_module.FUEL_EXPOSURE_S:
+                    self.cascade_log.append(
+                        f"fuel spray from {em.part.split('.')[-1]} on {self.state.exhaust_temp_k:.0f} K exhaust: ignited")
+                    self.burst_part(em.part, ignited=True)
+                    self._fuel_exposure_s[em.part] = 0.0
+            else:
+                self._fuel_exposure_s[em.part] = max(0.0, self._fuel_exposure_s.get(em.part, 0.0) - dt)
+
+    def raise_blast(self, energy_j: float, part: str = "", volume_m3: float = 0.01) -> None:
+        """An explosive failure event for the damage synth (a fuel volume
+        lighting, a vessel letting go) -- the sim's failure logic calls
+        this; nothing here invents one."""
+        self.damage_events.append({"kind": "blast", "part": part, "energy_j": float(energy_j), "volume_m3": float(volume_m3)})
+
+    def ballistic_fluid_for_part(self, mesh_part: str, material: str) -> FluidLayer | None:
+        """Return the live contained fluid seen behind a struck part wall."""
+        self._sync_part_damage_pressures()
+        identity = mesh_part_identity(mesh_part, self._drivetrain.graph)
+        state = self.state.part_damage.get(identity)
+        if state is None and "water_jacket" in mesh_part:
+            state = PartDamageState(identity=mesh_part)
+            self.state.part_damage[mesh_part] = state
+            self._sync_part_damage_pressures()
+        pressure_pa = state.pressure_pa if state is not None else 101_325.0
+        return inferred_fluid(mesh_part, material, pressure_pa)
+
+    def _ensure_air_stack(self):
+        """The bay/room air chain (air_volumes.AirStack), sized off the
+        engine's own real graph envelope, rebuilt when the engine or the
+        room mode changes."""
+        import air_volumes
+        key = (self.engine.identity, self.garage_mode)
+        if getattr(self, "_air_key", None) != key:
+            ext = (0.9, 0.7, 0.8)
+            try:
+                pts = [n["reference_position"] for n in self._drivetrain_graph_nodes() if not n.get("chassis_side")]
+                lo = [min(p[i] for p in pts) for i in range(3)]; hi = [max(p[i] for p in pts) for i in range(3)]
+                ext = tuple(max(0.3, hi[i] - lo[i]) for i in range(3))
+            except Exception:
+                pass
+            bay_m3 = (ext[0] + 0.4) * (ext[1] + 0.3) * (ext[2] + 0.4)
+            self._air = air_volumes.AirStack.build(bay_m3, garage_mode=self.garage_mode)
+            self._air_key = key
+        self._air.set_garage_mode(self.garage_mode) if self._air.garage_mode != self.garage_mode else None
+        self._air.extractor_fitted = self.exhaust_extractor_fitted
+        self._air.cell_fan_m3_s = self.cell_fan_m3_s
+        return self._air
+
+    def _drivetrain_graph_nodes(self):
+        return self._drivetrain.graph.get("nodes", [])
+
+    def _step_air_and_emissions(self, dt: float) -> None:
+        """Engine-out -> catalyst -> the volume the pipe ends in ->
+        the occupant; and what the intake breathes back next tick."""
+        import emissions
+        eng = self.engine
+        air = self._ensure_air_stack()
+        if not hasattr(self, "_catalyst_state"):
+            self._catalyst_state = emissions.CatalystState()
+            self._occupant = emissions.Occupant()
+        ci = getattr(eng, "compression_ignition", False) or eng.identity in getattr(engines, "_COMPRESSION_IGNITION", set())
+        running = not self.state.stalled
+        exhaust_kg_s = (self._exhaust_demand_kg_s if running else 0.0)
+        fuel_kg_s = (self._fuel_demand_kg_s * min(self.state.mixture_phi, 2.0) if running else 0.0)
+        rates = emissions.engine_out(exhaust_kg_s, fuel_kg_s, self.state.mixture_phi,
+                                     self.state.manifold_pressure_frac, ci, misfire_frac=0.0,
+                                     crevice_factor=eng.chamber.hc_factor)
+        self.state.co_engine_out_g_s = rates.co_kg_s * 1000.0
+        cat_spec = None
+        if eng.exhaust_system.catalyst_fitted and eng.exhaust_system.layout_has_catalyst:
+            cat_spec = self.catalytic_converter
+        # the brick sees the collector-outlet gas: segment temps after the
+        # collector, before the cat (the chain the sim already computes)
+        inlet_k = self.state.exhaust_temp_k
+        segs = eng.exhaust_system.segments
+        temps = eng.exhaust_system.segment_outlet_temps_k(self.state.exhaust_temp_k, exhaust_kg_s, EXHAUST_TEMP_AMBIENT_K)
+        for s, t in zip(segs, temps):
+            if s.kind == "collector":
+                inlet_k = t
+        co, hc, nox = self._catalyst_state.step(dt, cat_spec, inlet_k, exhaust_kg_s, self.state.mixture_phi, rates)
+        self.state.catalyst_brick_temp_k = self._catalyst_state.brick_temp_k
+        self.state.catalyst_co_efficiency = self._catalyst_state.co_efficiency
+        self.state.catalyst_nox_efficiency = self._catalyst_state.nox_efficiency
+        self.state.co_tailpipe_g_s = co * 1000.0
+        self.state.hc_tailpipe_g_s = hc * 1000.0
+        self.state.nox_tailpipe_g_s = nox * 1000.0
+        # where the pipe ends
+        dest = "bay" if eng.exhaust_system.open_ended_in_bay else "tailpipe"
+        indoors = air.exhaust_to(dest, exhaust_kg_s, self.state.exhaust_tailpipe_temp_k, co, rates.o2_frac_in_exhaust)
+        self.state.co_emitted_indoors_kg += indoors * dt
+        # heat into the bay: the block/radiator share of waste heat (the
+        # exhaust share left through the pipe above) -- a disclosed 0.55
+        # of the total, the coolant+oil+convection fraction this sim's
+        # own circuit heat shares carry
+        air.bay.heat_in_w += max(self._waste_heat_kw, 0.0) * 1000.0 * 0.55 * (1.0 if running else 0.0)
+        air.ventilate_bay(self._drivetrain_out.get("cooling_fan_flow_m3_s", 0.0))
+        air.ventilate_garage()
+        # the intake draw, from wherever the filter actually is
+        source_name = getattr(eng.intake_system, "air_source", "engine-bay")
+        if source_name == "engine-bay":
+            source = air.bay
+            self.state.intake_source = "bay"
+        else:
+            source = air.outside
+            self.state.intake_source = "room" if source is not None else "outside"
+        draw = (self._intake_demand_kg_s / 1.2) if running else 0.0
+        if source is not None:
+            source.draw_m3_s += draw
+            self._intake_source_temp_k = source.temp_k
+            self.state.intake_o2_factor = max(0.0, min(1.0, source.o2_frac / 0.2095))
+        else:
+            self._intake_source_temp_k = EXHAUST_TEMP_AMBIENT_K
+            self.state.intake_o2_factor = 1.0
+        air.step(dt)
+        self.state.bay_air_temp_k = air.bay.temp_k
+        self.state.bay_co_ppm = air.bay.co_ppm
+        self.state.bay_o2_frac = air.bay.o2_frac
+        if air.garage is not None:
+            self.state.room_co_ppm = air.garage.co_ppm
+            self.state.room_o2_frac = air.garage.o2_frac
+            self.state.room_temp_k = air.garage.temp_k
+            self._occupant.step(dt, air.garage.co_ppm)
+        else:
+            self.state.room_co_ppm = 0.0; self.state.room_o2_frac = 0.2095; self.state.room_temp_k = EXHAUST_TEMP_AMBIENT_K
+            self._occupant.step(dt, 0.0)
+        self.state.occupant_cohb_pct = self._occupant.cohb_pct
+
+    @property
+    def catalytic_converter(self):
+        """The real cat this engine's declared exhaust carries (None when
+        the layout has none or it has been pulled)."""
+        from engines import CatalyticConverter
+        eng = self.engine
+        if not (eng.exhaust_system.layout_has_catalyst and eng.exhaust_system.catalyst_fitted):
+            return None
+        ci = eng.identity in getattr(engines, "_COMPRESSION_IGNITION", set())
+        era = 1990 if "1990" in eng.identity else 2000
+        return CatalyticConverter.for_engine(eng.displacement_l, ci, era_year=era)
+
+    @property
+    def occupant(self):
+        return getattr(self, "_occupant", None)
+
+    def _pneumatic_idle_assist_active(self) -> bool:
+        """The real trip decision.
+
+        This is an ANTI-STALL booster, and what it is looking for is a
+        SAG -- an engine being dragged down by a load it cannot take --
+        not simply a low rpm. A static "below this speed" window is
+        wrong twice over: it is true at normal idle (so the reservoir
+        empties for nothing), and it fires too LATE to help, because by
+        the time a big diesel has actually reached the threshold the
+        stall is already unavoidable. So there are two ways in, and one
+        way out:
+
+          TRIP if rpm has fallen below the trip point (which sits below
+          the governed idle), OR if rpm is near idle and FALLING faster
+          than the sag rate -- catching it on the way down, which is
+          the whole point of the device.
+
+          RELEASE once rpm has recovered above idle again, with real
+          hysteresis, so it does not chatter on and off across a
+          threshold.
+
+        Plus the interlocks: the hardware fitted, the toggle on, the
+        engine actually running (a stalled or cranking engine has no
+        sag to catch, and dumping air into a dead one does nothing).
+        """
+        if self._pneumatic_idle_assist_area_m2 <= 0.0 or not self.pneumatic_idle_assist_enabled:
+            self._idle_assist_latched = False
+            return False
+        rpm = self.state.rpm
+        idle = max(self.engine.idle_rpm, 1.0)
+        if self.state.stalled or rpm <= idle * 0.4:
+            # cranking, dying or dead: not a sag
+            self._idle_assist_latched = False
+            return False
+        if self._idle_assist_latched:
+            # stay in until it has genuinely recovered
+            if rpm >= idle * IDLE_ASSIST_RELEASE_FRAC_OF_IDLE:
+                self._idle_assist_latched = False
+        else:
+            below = rpm < self._pneumatic_idle_assist_trip_rpm
+            sagging = (rpm < idle * IDLE_ASSIST_SAG_WATCH_FRAC
+                       and self._rpm_rate_per_s < -IDLE_ASSIST_SAG_RPM_PER_S)
+            if below or sagging:
+                self._idle_assist_latched = True
+        return self._idle_assist_latched
+
+    def _note_junction_ring(self, torque_nm: float, capacity_nm: float) -> None:
+        """Watch the junction torque for the alternating-sign signature
+        of an integrator past its stability limit."""
+        hist = self._ring_hist
+        hist.append(torque_nm)
+        if len(hist) > RING_WINDOW:
+            del hist[0]
+        if len(hist) < RING_WINDOW or capacity_nm <= 0.0:
+            return
+        flips = sum(1 for a, b in zip(hist, hist[1:]) if a * b < 0.0)
+        # Alternation alone is the signature; it does NOT have to be
+        # pinned at capacity to be ringing. Requiring saturation as well
+        # (the first version did) missed the commonest case: a junction
+        # flipping between, say, -75 % and +100 % of capacity every
+        # single step, which is just as unphysical and just as wrong.
+        # The only thing to exclude is alternation in the noise, so the
+        # magnitude has to be a real fraction of what the coupling can
+        # hold.
+        mean_mag = sum(abs(t) for t in hist) / len(hist)
+        ringing = (flips >= (RING_WINDOW - 1) * RING_ALTERNATION_FRAC
+                   and mean_mag >= capacity_nm * RING_SIGNIFICANT_FRAC)
+        self.state.junction_ringing = bool(ringing)
+        if ringing:
+            self.state.junction_ring_events += 1
+            # REACTIVE, TRANSIENT-ONLY SUBSTEPPING. The a-priori plan
+            # (_clutch_substep_plan) sizes the step from the junction's
+            # own natural frequency, which is the right first answer but
+            # cannot know about everything else feeding the same shaft --
+            # a governor cutting fuel, a rev limiter chopping in and out,
+            # a load that has no equilibrium to settle into. When the
+            # torque actually alternates anyway, escalate: subdivide this
+            # junction harder for a short while and let it decay. The
+            # escalation decays on its own, so it costs nothing once the
+            # transient has passed.
+            self._ring_escalation = min(RING_MAX_ESCALATION, max(2, self._ring_escalation * 2))
+            self._ring_escalation_ticks = RING_ESCALATION_HOLD
+
+    def _coupling_apply_pa(self) -> float:
+        """Where this coupling's apply pressure comes from."""
+        spec = getattr(self, "coupling_spec", None)
+        if spec is None:
+            return 0.0
+        if spec.apply_source == "engine-hydraulics":
+            # the PILOT circuit: a regulated supply live whenever the
+            # pump turns, not the implement circuit's working pressure
+            plant = getattr(self, "plant", None)
+            h = getattr(plant, "hydraulics", None) if plant is not None else None
+            return float(h.pilot_pressure_pa) if (h is not None and h.pilot_available) else 0.0
+        return spec.apply_pressure_pa      # a rig pump, or a clamping spring
+
+    def _coupled_junction_torque(self, dt: float, omega_drive: float, omega_load: float) -> float:
+        """The torque the rig's coupling actually passes to the load.
+
+        ONE capacity, owned by the coupling. For a FRICTION coupling the
+        solver's own ClutchPort spring/damper computes the torque and
+        saturates at exactly the capacity the coupling's apply pressure
+        buys -- the port is the numerics, the coupling is the hardware,
+        and neither caps what the other already capped. For a
+        HYDRODYNAMIC coupling the port's tanh is simply the wrong law
+        (a fluid coupling goes with the square of the speed difference),
+        so the coupling computes the torque itself and the port is not
+        used at all.
+        """
+        c = getattr(self, "coupling", None)
+        if c is None:
+            return self._brake_junction.step(dt, omega_drive, omega_load)
+        c.engagement = self.clutch_frac
+        apply_pa = self._coupling_apply_pa()
+        if c.kind in ("fluid-coupling", "torque-converter"):
+            torque = c.step(dt, omega_drive, omega_load, 0.0, apply_pa)
+        else:
+            cap = max(c.set_apply(apply_pa), 1e-3)
+            self._brake_junction.max_torque_nm = cap
+            self._brake_junction.stiffness_nm_per_rad_s = cap / c.transition_slip_rad_s
+            torque = self._brake_junction.step(dt, omega_drive, omega_load)
+            c.observe(torque, omega_drive - omega_load)
+            self._note_junction_ring(torque, cap)
+        # a wet clutch runs in the machine's own oil, so its slip heat
+        # goes into that oil -- assigned unconditionally, because a
+        # clutch that has stopped slipping is making none
+        if getattr(self.coupling_spec, "apply_source", "") == "engine-hydraulics":
+            plant = getattr(self, "plant", None)
+            h = getattr(plant, "hydraulics", None) if plant is not None else None
+            if h is not None:
+                h.coupling_heat_w = c.heat_w
+        return torque
 
     def _build_brake_junction(self) -> ClutchPort:
+        """The rig's coupling to the load.
+
+        A test cell does not couple every engine through the same
+        clutch: it uses what the engine is actually built to drive
+        through (`couplings.recommended_for`), and on a heavy engine
+        that is a wet multi-plate applied off the engine's OWN hydraulic
+        reservoir -- which is why a big diesel can hold full brake
+        torque here without the slip a dry plate would give. The
+        ClutchPort below stays as the numerical spring/damper the solver
+        integrates; the coupling decides how much torque it is allowed
+        to pass and whether it is locked.
+        """
+        import couplings
         peak = max(self.engine.peak_torque_nm, 1.0)
-        return ClutchPort(stiffness_nm_per_rad_s=peak * 8.0, max_torque_nm=peak * 3.0)
+        self.coupling_spec = couplings.recommended_for(self.engine)
+        self.coupling = self.coupling_spec.build(peak)
+        cap = max(self.coupling.torque_capacity_nm() or peak * 3.0, peak * 0.2)
+        # the port's "stiffness" is the SLOPE of the tanh that stands in
+        # for friction, so it is capacity over the coupling's own real
+        # transition width -- not a number picked off peak torque
+        return ClutchPort(stiffness_nm_per_rad_s=cap / self.coupling.transition_slip_rad_s,
+                          max_torque_nm=cap)
 
     def shift_up(self) -> None:
         self._request_quick_shift(self.gear_index + 1)
@@ -927,6 +2237,9 @@ class EngineCycleSim:
         self._cylinder_volume_m3 = (self.engine.displacement_l / 1000.0) / max(arch.cylinders, 1)
         self.ignition.reset(len(self.engine.rev_limiter.stages))
         self._firing_angle_deg = {cyl: slot * step_deg for slot, cyl in enumerate(arch.firing_order)}
+        self._slot_of_cyl = {cyl: slot for slot, cyl in enumerate(arch.firing_order)}
+        self.state.slot_angles_deg = [slot * step_deg for slot in range(len(arch.firing_order))]
+        self.state.slot_records = [[0.0, 0.0, 0.0, 0.0] for _ in arch.firing_order]
         self._last_fire_total_deg = {cyl: -1e9 for cyl in arch.firing_order}
         self._last_strength = {cyl: 0.0 for cyl in arch.firing_order}
         self._knock_accum = {cyl: 0.0 for cyl in arch.firing_order}
@@ -935,9 +2248,61 @@ class EngineCycleSim:
         self._flame_radius_m = {}
         self._burned_frac = {}
 
+    def reset_damage(self) -> None:
+        """Put the machine back to undamaged, everywhere at once.
+
+        Damage is not one list: it is punctures on the mesh pieces,
+        emitters on the holes they made, missing parts, burst debris,
+        fires, contamination, spilled contents and the fluid those
+        spills took out of the real reservoirs. Undoing it in one place
+        rather than several is the point -- a half-reset machine, still
+        carrying an emitter for a hole that no longer exists, is worse
+        than one that was never reset."""
+        self.state.part_damage = {}
+        self.state.absent_parts = set()
+        self.state.coolant_lost_l = 0.0
+        # NOTE: these are the fields, not the reports. `fouling()` and
+        # `summary()` are DERIVED from `mix`; assigning over one of them
+        # replaces a method with a dict and the next dashboard frame
+        # dies calling it. The real state is what gets cleared here.
+        self.hole_emitters.emitters = []
+        self.hole_emitters.lost_l = {}
+        self.hole_emitters.mix = {}
+        self.hole_emitters.ingest_kg_s = {}
+        self.bursts.bursts = []
+        self.fires.fires = []
+        self.fires.total_burned_kg = 0.0
+        self.ordnance.charges = []
+        self.ordnance.log = []
+        self.fittings.ports = []
+        self.damage_events = []
+        self.cascade_log = []
+        self._fuel_exposure_s = {}
+        self._node_conditions = {}
+        from node_effects import Effects
+        self._effects = Effects()
+        # the fluids themselves go back to full: a reset machine that is
+        # still empty of oil has not been reset
+        for c in self._drivetrain.fluid_circuits:
+            c.fill_level_frac = 1.0
+        cs = getattr(self, "_crankcase_state", None)
+        if cs is not None:
+            cs.oil_kg = cs.oil_capacity_kg
+        p = getattr(self, "plant", None)
+        if p is not None:
+            p.loop.charge_frac = 1.0
+            h = getattr(p, "hydraulics", None)
+            if h is not None:
+                h.oil_l = h.tank_capacity_l
+                h.nitrogen_fill_frac = 1.0
+        # and the splash emitters, which are hardware rather than damage
+        self.hole_emitters.add_splash_from_graph(self._drivetrain.graph)
+        register_graph_parts(self.state.part_damage, self._drivetrain.graph)
+
     def set_engine(self, engine: Engine) -> None:
         self.engine = engine
         self.state.wear = wear_module.new_wear_state(engine)
+        self.state.part_damage = {}
         self.fuel_choice = None
         self._recompute_firing_angles()
         if engine.load_resistor_frac is not None:
@@ -974,6 +2339,16 @@ class EngineCycleSim:
         self._load_omega = 0.0
         self._brake_junction = self._build_brake_junction()
         self._drivetrain = self._build_drivetrain()
+        # a different engine is a different machine: the holes, missing
+        # parts, fires and spills of the last one do not belong to it
+        from plant import AuxiliaryPlantRuntime
+        self.plant = AuxiliaryPlantRuntime.build(self.engine)
+        self.air_vessels = self._build_air_vessels()
+        self.automatic = self._build_automatic()
+        self.equipment = None
+        self.hydraulic_flow_frac = 0.0
+        self.hydraulic_load_frac = 0.0
+        self.reset_damage()
         self._waste_heat_kw = 0.0
         self._intake_supply_pressure_pa = 101_325.0
         self._intake_demand_kg_s = 0.0
@@ -1228,8 +2603,19 @@ class EngineCycleSim:
             blower_omega = self._drivetrain.omega.get("supercharger_rotor", 0.0)
             blower_speed_frac = max(0.0, min(1.5, blower_omega / max(target_blower_omega, 1.0)))
             st.turbo_spool_frac = min(1.0, blower_speed_frac)
-            st.boost_frac = fi.max_boost_frac * blower_speed_frac
-            st.surge_flag = False
+            if fi.blower_type == "centrifugal":
+                # an impeller's pressure rise goes with tip speed squared:
+                # boost climbs with the square of the ratio to its rated
+                # speed (rated = crank at power_peak_rpm through the gears)
+                rated_omega = max(self.engine.power_peak_rpm, 1.0) * RPM_TO_RAD_S * fi.belt_ratio
+                rated_frac = max(0.0, min(1.5, blower_omega / rated_omega))
+                st.boost_frac = fi.max_boost_frac * rated_frac * rated_frac
+                # a centrifugal stage surges like a turbo's when the
+                # throttle shuts on it at speed
+                st.surge_flag = self.throttle < 0.08 and rated_frac > 0.6
+            else:
+                st.boost_frac = fi.max_boost_frac * blower_speed_frac
+                st.surge_flag = False
             self._surge_timer = 0.0
         else:  # turbo
             # Real exhaust gas energy: a turbine extracts real work from
@@ -1302,11 +2688,51 @@ class EngineCycleSim:
         self._physics_accum_s = min(
             self._physics_accum_s + dt, FIXED_PHYSICS_DT_S * MAX_CATCHUP_STEPS)
         while self._physics_accum_s >= FIXED_PHYSICS_DT_S:
+            _rpm_before = self.state.rpm
             self._step_once(FIXED_PHYSICS_DT_S)
+            # the real rate of change of rpm, smoothed just enough to be
+            # a usable signal -- what the anti-stall sag detector reads
+            raw = (self.state.rpm - _rpm_before) / FIXED_PHYSICS_DT_S
+            self._rpm_rate_per_s += (raw - self._rpm_rate_per_s) * min(1.0, FIXED_PHYSICS_DT_S / 0.08)
             self._physics_accum_s -= FIXED_PHYSICS_DT_S
+            if self.hole_emitters.emitters:
+                self.hole_emitters.step(FIXED_PHYSICS_DT_S, self._drivetrain.fluid_circuits, self.state.exhaust_temp_k,
+                                        crank_omega_rad_s=self._omega)
+                self._check_burst_triggers(FIXED_PHYSICS_DT_S)
+            if self.bursts.bursts:
+                self.bursts.step(FIXED_PHYSICS_DT_S, self._drivetrain.graph)
+            if self.ordnance.charges:
+                self.ordnance.step(FIXED_PHYSICS_DT_S, self)
+            self._step_equipment(FIXED_PHYSICS_DT_S)
+            self._step_air_vessels(FIXED_PHYSICS_DT_S)
+            if self.automatic is not None:
+                self._step_automatic(FIXED_PHYSICS_DT_S)
+            if self.plant is not None:
+                self._plant_leak_losses(FIXED_PHYSICS_DT_S)
+                self._step_plant(FIXED_PHYSICS_DT_S)
+            if self.fires.fires:
+                self._step_fire(FIXED_PHYSICS_DT_S)
+            if self.fittings.ports:
+                self._step_fittings(FIXED_PHYSICS_DT_S)
+            self._step_oil_pickup()
+            self._effects_tick += 1
+            if (self.hole_emitters.emitters or self.state.absent_parts or any(
+                    st.impacts for st in self.state.part_damage.values())) and self._effects_tick % EFFECTS_EVERY_TICKS == 0:
+                self._apply_node_effects()
+        self._sync_part_damage_pressures()
 
     def _step_once(self, dt: float) -> None:
         eng = self.engine
+        if self.state.engine_dead:
+            # the crank is seized/free of its block: no torque, a hard decel
+            self._omega *= math.exp(-dt * 6.0)
+            if self._omega < 0.5:
+                self._omega = 0.0
+            self.state.rpm = self._omega / RPM_TO_RAD_S
+            self.state.current_torque_nm = 0.0
+            self.state.power_kw = 0.0
+            self.state.ignition_cut = True
+            return
         if (self.state.stalled and not self.starter.engaged) or dt <= 0.0:
             self.state.rpm = 0.0
             self.state.current_torque_nm = 0.0
@@ -1422,6 +2848,7 @@ class EngineCycleSim:
             exhaust_demand_kg_s=self._exhaust_demand_kg_s,
             fuel_demand_kg_s=self._fuel_demand_kg_s,
             exhaust_brake_frac=EXHAUST_BRAKE_MAX_RESTRICTION_FRAC if self.engine_brake_enabled else 0.0,
+            exhaust_system_restriction_frac=eng.exhaust_system.static_backpressure_frac * self._effects.exhaust_restriction_factor,
             # a fuel heater (SVO conversion) is the same real "condition
             # the line's fuel toward a target" mechanism a drag cooler is
             fuel_cooler_target_k=(net_tick.fuel_conditioning_target_k
@@ -1433,9 +2860,20 @@ class EngineCycleSim:
             # and the driver's transmission clutch already use) is what
             # gives smooth, self-limiting engagement, not a hand-rolled
             # ramp layered on top of the wrong coupling type
-            ac_active=self.ac_enabled and eng.accessories.air_conditioning,
+            # the AC compressor turns when the cabin asks for it OR the
+            # auxiliary plant's own chillers do -- it is one machine
+            # driving all three evaporators, so anything calling on the
+            # loop is what engages the clutch
+            ac_active=((self.ac_enabled or self._plant_wants_cooling())
+                       and eng.accessories.air_conditioning),
             disabled_edges=frozenset({"dyno_friction_clutch", "dyno_roller_contact"}),
-            starting_air_kg_s=self.starter.reading.air_kg_s)
+            starting_air_kg_s=self.starter.reading.air_kg_s,
+            pneumatic_idle_assist_active=self._pneumatic_idle_assist_active(),
+            # a fouled air system does not pass what a clean one does:
+            # sludge in the ports and stuck spools are a real restriction
+            # on every pneumatic consumer, the idle-assist dump included
+            pneumatic_idle_assist_port_area_m2=(self._pneumatic_idle_assist_area_m2
+                                                * self._effects.air_flow_factor))
         self._step_forced_induction(dt, rpm_frac, dthrottle_dt)
         self._prev_throttle = self.throttle
         # real nitrous effect: extra oxidizer (the wet kit's fuel
@@ -1446,6 +2884,18 @@ class EngineCycleSim:
         nitrous_flow_kg_s = self._drivetrain_out.get("nitrous_delivered_kg_s", 0.0)
         self.state.nitrous_boost_frac = min(0.35, nitrous_flow_kg_s * 8.0)
         self.state.nitrous_fill_frac = self._drivetrain_out.get("nitrous_fill_frac", 0.0)
+        # real compressed-air idle assist: unlike nitrous (a liquid
+        # oxidizer whose MAP-equivalent gain is a modeling convenience),
+        # this really is gas dumped straight into the manifold, so its
+        # boost-frac is the genuinely physical ratio of what the port
+        # just delivered to what the engine itself is actually demanding
+        # to breathe this tick -- not a flat, empirically-tuned constant.
+        # Capped at 0.5 atm-equivalent: a real anti-stall dump is sized
+        # to bridge a momentary sag, not run the engine on stored air.
+        pneumatic_flow_kg_s = self._drivetrain_out.get("pneumatic_idle_assist_delivered_kg_s", 0.0)
+        self.state.pneumatic_idle_assist_delivered_kg_s = pneumatic_flow_kg_s
+        self.state.pneumatic_idle_assist_boost_frac = (
+            min(0.5, pneumatic_flow_kg_s / max(self._intake_demand_kg_s, 1e-4)) if pneumatic_flow_kg_s > 0.0 else 0.0)
         # real fuel-supply starvation: how much of last tick's actual
         # combustion demand the pump/tank could really deliver (1.0 =
         # kept up fully; drops as the tank empties or demand outruns
@@ -1473,9 +2923,11 @@ class EngineCycleSim:
             # closed-throttle blown engine above atmospheric at idle,
             # which is not how a blower behind a shut butterfly behaves --
             # it pulls a vacuum on its own inlet instead.
-            raw_map_frac = self._map_frac_na * (1.0 + self.state.boost_frac) + self.state.nitrous_boost_frac
+            raw_map_frac = (self._map_frac_na * (1.0 + self.state.boost_frac)
+                           + self.state.nitrous_boost_frac + self.state.pneumatic_idle_assist_boost_frac)
         else:
-            raw_map_frac = self._map_frac_na + self.state.boost_frac + self.state.nitrous_boost_frac
+            raw_map_frac = (self._map_frac_na + self.state.boost_frac
+                           + self.state.nitrous_boost_frac + self.state.pneumatic_idle_assist_boost_frac)
         self._intake_supply_pressure_pa = 101_325.0 * raw_map_frac
         # real engine breathing demand at the current rpm -- displacement
         # swept once per two crank revs (four-stroke) -- times the real
@@ -1704,6 +3156,18 @@ class EngineCycleSim:
         # diesel alike -- an empty tank or an outrun pump doesn't care
         # which metering scheme is downstream of it
         fuel_quantity_frac *= self._fuel_starvation_frac
+        # the real mixture this tick, for emissions: metering relative
+        # to stoich (a carb's jet, an EFI's correct 1.0), plus any power
+        # enrichment; a diesel's rack is load, and it always burns lean
+        if eng.identity in getattr(engines, "_COMPRESSION_IGNITION", set()):
+            self.state.mixture_phi = 0.2 + 0.7 * max(0.0, min(1.0, fuel_quantity_frac))
+        else:
+            self.state.mixture_phi = max(0.3, fuel_quantity_frac / max(self._fuel_starvation_frac, 1e-6)) * (1.0 + afr_cooling_frac)
+        # oxygen actually in what it is breathing (air_volumes): a bay or
+        # a sealed room going oxygen-poor is real power loss
+        fuel_quantity_frac *= max(0.0, self.state.intake_o2_factor) ** 0.5
+        # node_effects: a starved/aerated fuel supply, a leaned or oiled charge
+        fuel_quantity_frac *= self._effects.fuel_supply_factor * self._effects.mixture_factor
         if computerized and not self.ecu.powered:
             # an EFI engine's injectors are the computer's outputs -- no
             # computer, no fuel. A carbureted or diesel engine keeps
@@ -1753,7 +3217,8 @@ class EngineCycleSim:
             strengths = _np.array([self._last_strength.get(c, 0.0) for c in range(1, cs.n_cyl + 1)])
             cs.step(dt, self.state.rpm, strengths, fuel_quantity_frac, self.state.coolant_temp_k,
                     fires_per_s=self.state.rpm / 60.0 * eng.architecture.firing_events_per_rev
-                    if hasattr(eng.architecture, "firing_events_per_rev") else self.state.rpm / 120.0 * cs.n_cyl)
+                    if hasattr(eng.architecture, "firing_events_per_rev") else self.state.rpm / 120.0 * cs.n_cyl,
+                    deposit_kg_s=self.hole_emitters.splash_deposit_kg_s(cs.n_cyl))
             self.state.cylinder_oil_film_mg = (cs.film_kg * 1e6).tolist()
             self.state.oil_consumption_ml_per_h = float(cs.burn_kg_s.sum()) * 3600.0 / 0.87 * 1000.0
             self.state.blowby_l_per_min = float(cs.blowby_kg_s.sum()) / 1.2 * 60000.0
@@ -1786,6 +3251,8 @@ class EngineCycleSim:
         any_knock = False
         max_knock_intensity = 0.0
         any_misfire = False
+        any_preignition = False
+        max_preignition = 0.0
 
         # intake/exhaust harmonics: how many times per crank REVOLUTION a
         # runner/pipe actually gets excited -- a 4-stroke cylinder fires
@@ -1811,6 +3278,7 @@ class EngineCycleSim:
 
             governor_skip = (eng.governor_mode == "hit_and_miss"
                               and live_rpm >= (eng.governor_target_rpm or eng.redline_rpm))
+            self.state.exhaust_valve_held_open = bool(governor_skip)
 
             torque_nm = 0.0
             any_real_ignition_this_substep = False
@@ -1826,6 +3294,16 @@ class EngineCycleSim:
                     # own pumping/friction/dyno load instead of being
                     # teleported to a dead stop
                     cut = misfire or limiter_cut or governor_skip or self.state.ignition_cut
+                    # surface ignition before the spark: a hot spot (this
+                    # cylinder's own real deposit/valve risk) lights a hot,
+                    # dense charge early -- see PREIGNITION_* above
+                    hotspot = (self.state.cylinder_hotspot_risk[cyl - 1]
+                               if 0 < cyl <= len(self.state.cylinder_hotspot_risk) else 0.0)
+                    preignition = False
+                    if (not cut) and hotspot > 0.0 and not eng.compression_ignition:
+                        heat_factor = max(0.0, min(1.5, 0.3 + (self.state.intake_charge_temp_k - 300.0) / 120.0))
+                        p_pre = PREIGNITION_BASE_PROB * hotspot * (0.2 + 0.8 * self.state.manifold_pressure_frac) * heat_factor
+                        preignition = random.random() < p_pre
 
                     # the real cylinder cycle integrating the slower
                     # fluid transfer: this event draws its own charge out
@@ -1846,6 +3324,9 @@ class EngineCycleSim:
                     # in a real rpm band, not present at all off that band.
                     cylinder_charge_frac *= eng.intake_system.resonance_gain(
                         live_rpm, firing_events_per_rev, self.state.intake_charge_temp_k)
+                    # the head's own breathing ceiling (valve size the
+                    # included angle allows) and its wall-loss penalty
+                    cylinder_charge_frac *= eng.chamber.breathing_factor * eng.chamber.efficiency_factor
                     # real ideal-gas density correction: the same MAP can
                     # hold a lighter (hotter) or denser (cooler) charge --
                     # a boosted engine's charge is compression-heated by
@@ -1857,12 +3338,23 @@ class EngineCycleSim:
                     # charge at the same MAP is a genuinely denser one.
                     charge_density_frac = REFERENCE_INTAKE_TEMP_K / max(self.state.intake_charge_temp_k, 200.0)
                     cyl_valve = float(self._cyl_valve_factor[cyl - 1]) if 0 < cyl <= len(self._cyl_valve_factor) else 1.0
+                    cyl_valve *= self._effects.cylinder_factor.get(cyl, 1.0)      # node_effects: a holed/dead bore
                     base_strength = (torque_fraction(eng, self.state.rpm) * cylinder_charge_frac
                                       * charge_density_frac
                                       * fuel_quantity_frac * eng.combustion_efficiency * float_penalty
                                       * cyl_valve
                                       * (1.0 - egr_active_frac))
                     strength = 0.0 if cut else base_strength
+                    if preignition:
+                        strength *= PREIGNITION_STRENGTH_FRAC
+                        pre_intensity = min(1.0, 0.6 + 0.4 * hotspot)
+                        any_knock = True
+                        max_knock_intensity = max(max_knock_intensity, pre_intensity)
+                        any_preignition = True
+                        max_preignition = max(max_preignition, pre_intensity)
+                        self.state.preignition_count += 1
+                        if 0 < cyl <= len(self.state.cylinder_block_temps_k):
+                            self.state.cylinder_block_temps_k[cyl - 1] += PREIGNITION_PISTON_HEAT_K * pre_intensity
 
                     if cut:
                         if governor_skip or (limiter_cut and ecu.limiter_fuel_cut):
@@ -1882,6 +3374,14 @@ class EngineCycleSim:
 
                     self._last_fire_total_deg[cyl] = self._total_crank_deg
                     self._last_strength[cyl] = strength
+                    slot = self._slot_of_cyl.get(cyl)
+                    if slot is not None and slot < len(self.state.slot_records):
+                        self.state.slot_records[slot] = [
+                            float(strength), 1.0 if misfire else 0.0,
+                            float(min(1.0, 0.6 + 0.4 * hotspot)) if preignition else 0.0,
+                            1.0 if preignition else 0.0]
+                    if not cut:
+                        self.state.fire_event_count += 1
                     self._knock_accum[cyl] = 0.0
                     self._knocked_this_burn[cyl] = False
                     # a real spark kernel, seeded at ignition -- see the
@@ -1893,7 +3393,10 @@ class EngineCycleSim:
                     # burn window closes and knock is fully resolved (see
                     # the finalize branch below)
                     ev = IgnitionEvent(cylinder=cyl, position_key=cyl, strength=strength,
-                                        knock=False, knock_intensity=0.0, misfire=misfire)
+                                        knock=preignition, knock_intensity=(min(1.0, 0.6 + 0.4 * hotspot) if preignition else 0.0),
+                                        misfire=misfire, preignition=preignition)
+                    if preignition:
+                        self._knocked_this_burn[cyl] = True   # the early burn already IS the violent one; no second knock on top
                     self._active_event[cyl] = ev
                     any_misfire = any_misfire or misfire
                     any_real_ignition_this_substep = any_real_ignition_this_substep or not cut
@@ -1933,6 +3436,9 @@ class EngineCycleSim:
             # slow_compression_knock_factor -- relative to this engine's
             # own torque-peak speed so the calibrated rate there is untouched
             knock_rate *= slow_compression_knock_factor(eng, live_rpm)
+            # chamber geometry: a long flame path (side plug) parks the
+            # end gas longer; squish turbulence burns it first
+            knock_rate *= eng.chamber.knock_factor
             for cyl, last_fire in self._last_fire_total_deg.items():
                 since = self._total_crank_deg - last_fire
                 burned = self._burned_frac.get(cyl, 1.0)
@@ -1960,12 +3466,19 @@ class EngineCycleSim:
                             if ev is not None:
                                 ev.knock = True
                                 ev.knock_intensity = intensity
+                            slot = self._slot_of_cyl.get(cyl)
+                            if slot is not None and slot < len(self.state.slot_records):
+                                self.state.slot_records[slot][2] = max(self.state.slot_records[slot][2], float(intensity))
                             any_knock = True
                             max_knock_intensity = max(max_knock_intensity, intensity)
-                    turbulent_flame_speed = LAMINAR_FLAME_SPEED_M_S + FLAME_TURBULENCE_GAIN * eng.mean_piston_speed_m_s(live_rpm)
+                    turbulent_flame_speed = (LAMINAR_FLAME_SPEED_M_S + FLAME_TURBULENCE_GAIN * eng.mean_piston_speed_m_s(live_rpm)) \
+                        * eng.chamber.burn_speed_factor
+                    # the front has to cross the chamber's REAL farthest
+                    # path (a side plug: nearly a whole bore), not half a bore
+                    path_m = bore_half_m * eng.chamber.flame_path_rel
                     self._flame_radius_m[cyl] = min(
-                        bore_half_m, self._flame_radius_m.get(cyl, SPARK_KERNEL_SEED_RADIUS_M) + turbulent_flame_speed * sub_dt)
-                    new_burned = min(1.0, (self._flame_radius_m[cyl] / bore_half_m) ** 3)
+                        path_m, self._flame_radius_m.get(cyl, SPARK_KERNEL_SEED_RADIUS_M) + turbulent_flame_speed * sub_dt)
+                    new_burned = min(1.0, (self._flame_radius_m[cyl] / path_m) ** 3)
                     d_burned = max(0.0, new_burned - burned)
                     self._burned_frac[cyl] = new_burned
                     strength = self._last_strength[cyl]
@@ -2011,6 +3524,18 @@ class EngineCycleSim:
             throttle_pumping_loss_nm = eng.peak_braking_torque_nm * torque_fraction(eng, self.state.rpm) * \
                 (1.0 - self.state.manifold_pressure_frac) * 0.5
             brake_component = eng.peak_braking_torque_nm * torque_fraction(eng, self.state.rpm) * live_backpressure_frac
+            # the compression-release brake: real retarding torque from
+            # dumping each cylinder's compressed charge at TDC, T = MEP *
+            # V / cycle_rad, only with the fuel off and above idle
+            compression_release_nm = 0.0
+            if (eng.compression_release_brake and self.compression_brake_enabled and self.throttle < 0.05
+                    and live_rpm > eng.idle_rpm * COMPRESSION_RELEASE_MIN_RPM_FRAC_OF_IDLE):
+                cycle_rad = math.radians(arch.cycle_degrees)
+                speed_frac = max(0.35, min(1.0, live_rpm / max(eng.power_peak_rpm, 1.0)))
+                compression_release_nm = COMPRESSION_RELEASE_MEP_PA * (eng.displacement_l / 1000.0) / cycle_rad * speed_frac
+            brake_component += compression_release_nm
+            self.state.compression_brake_active = compression_release_nm > 0.0
+            self.state.compression_brake_torque_nm = compression_release_nm
             # bearing/seal/oil-pump drag: real, always present, independent of
             # the compression/pumping braking the engine-brake toggle controls
             # -- piston engines already get a floor from valvetrain_drag_nm, but
@@ -2069,25 +3594,50 @@ class EngineCycleSim:
             # alone, exactly like a real neutral-clutch-in.
             self._brake_junction.engagement = self.clutch_frac
             effective_ratio = self._current_gear_ratio()
-            if effective_ratio > 0.0:
-                junction_torque = self._brake_junction.step(
-                    sub_dt, self._omega, self._load_omega * effective_ratio)
-            else:
-                junction_torque = 0.0
-            # plus whatever is turning the crank from outside: the
-            # starting system's torque (starter.py) and any attachment
-            # the game feeds through the crank nose
-            net_torque = torque_nm - pumping_loss - junction_torque + self._crank_assist_nm
-            domega = net_torque / max(eng.inertia_kg_m2, 1e-9) * sub_dt
-            self._omega = max(0.0, self._omega + domega)
-
-            if effective_ratio > 0.0:
-                dyno_torque_nm = junction_torque * effective_ratio
-                domega_load = (dyno_torque_nm - self.brake_load_nm) / load_inertia_kg_m2 * sub_dt
-            else:
-                dyno_torque_nm = 0.0
-                domega_load = -self.brake_load_nm / load_inertia_kg_m2 * sub_dt
-            self._load_omega = max(0.0, self._load_omega + domega_load)
+            # THE JUNCTION GETS ITS OWN STABLE STEP. The combustion loop
+            # subdivides on CRANK ANGLE (MAX_SUBSTEP_DEG), which has
+            # nothing to do with how fast the clutch/dyno pair actually
+            # is: behind a low gear a light dyno drum reflects into the
+            # crank's frame as a tiny, very fast inertia, and stepping
+            # that at the crank-angle substep integrates it well past
+            # its own stability limit. The turbine, electric and
+            # atmospheric paths already asked `_clutch_substep_plan` for
+            # the right step (see its docstring -- the same bug was
+            # found there once); the piston loop never did, and rang.
+            #
+            # This costs nothing when the junction is comfortably
+            # stable: n_sub comes back as 1 and it is one pass.
+            n_j, j_dt = (self._clutch_substep_plan(sub_dt, eng.inertia_kg_m2)
+                         if effective_ratio > 0.0 else (1, sub_dt))
+            # ...and whatever the ring detector has asked for on top
+            if self._ring_escalation_ticks > 0:
+                self._ring_escalation_ticks -= 1
+                n_j = min(DrivetrainSolver.SUBSTEP_CAP, n_j * self._ring_escalation)
+                j_dt = sub_dt / n_j
+            elif self._ring_escalation > 1:
+                self._ring_escalation = max(1, self._ring_escalation // 2)
+            self.state.junction_substeps = n_j
+            junction_torque = 0.0
+            net_torque = 0.0
+            dyno_torque_nm = 0.0
+            for _ in range(n_j):
+                if effective_ratio > 0.0:
+                    junction_torque = self._coupled_junction_torque(
+                        j_dt, self._omega, self._load_omega * effective_ratio)
+                else:
+                    junction_torque = 0.0
+                # plus whatever is turning the crank from outside: the
+                # starting system's torque (starter.py) and any
+                # attachment the game feeds through the crank nose
+                net_torque = torque_nm - pumping_loss - junction_torque + self._crank_assist_nm
+                self._omega = max(0.0, self._omega + net_torque / max(eng.inertia_kg_m2, 1e-9) * j_dt)
+                if effective_ratio > 0.0:
+                    dyno_torque_nm = junction_torque * effective_ratio
+                    domega_load = (dyno_torque_nm - self.brake_load_nm) / load_inertia_kg_m2 * j_dt
+                else:
+                    dyno_torque_nm = 0.0
+                    domega_load = -self.brake_load_nm / load_inertia_kg_m2 * j_dt
+                self._load_omega = max(0.0, self._load_omega + domega_load)
             self._last_dyno_torque_nm = dyno_torque_nm
 
             self.state.current_torque_nm = net_torque + pumping_loss + junction_torque
@@ -2103,10 +3653,19 @@ class EngineCycleSim:
         self.state.dyno_kinetic_energy_j = 0.5 * self._dyno_inertia_kg_m2 * self._load_omega * self._load_omega
         self.state.dyno_torque_nm = self._last_dyno_torque_nm
         self.state.brake_clutch_locked = self._brake_junction.locked
+        c = getattr(self, "coupling", None)
+        if c is not None:
+            self.state.coupling_kind = c.kind
+            self.state.coupling_locked = bool(c.locked)
+            self.state.coupling_slipping = bool(c.slipping)
+            self.state.coupling_capacity_nm = float(c.capacity_nm)
+            self.state.coupling_heat_w = float(c.heat_w)
         self.state.rev_limiter_active = self.ignition.any_stage_active or (eng.rev_limiter.soft_taper and active_severity > 0.0)
         self.state.knock_flag = any_knock
         self.state.knock_intensity = max_knock_intensity
         self.state.misfire_flag = any_misfire
+        self.state.preignition_flag = any_preignition
+        self.state.preignition_intensity = max_preignition
 
         new_backfires = self.pending_backfires[backfires_before:]
         self.state.backfire_flag = len(new_backfires) > 0
@@ -2176,6 +3735,7 @@ class EngineCycleSim:
             exhaust_segment_temps_k[-1] if exhaust_segment_temps_k else self.state.exhaust_temp_k)
         self.state.exhaust_pressure_frac = self._drivetrain_out.get("exhaust_backpressure_frac", 0.0)
         self.state.coolant_temp_k = self._drivetrain_out.get("coolant_temp_k", EXHAUST_TEMP_AMBIENT_K)
+        self._step_air_and_emissions(dt)
         self.state.coolant_flow_lpm = self._drivetrain_out.get("coolant_flow_lpm", 0.0)
 
         # Real per-cylinder block-metal temperature: a simple lumped
@@ -2265,10 +3825,13 @@ class EngineCycleSim:
             block_temp_k = self.state.oil_temp_k
         else:
             block_temp_k = ENGINE_BAY_AMBIENT_K
-        runner_surround_temp_k = EXHAUST_TEMP_AMBIENT_K + (
-            block_temp_k - EXHAUST_TEMP_AMBIENT_K) * RUNNER_BLOCK_CONDUCTION_FRAC
+        # the air the filter actually draws (air_volumes): hot under-hood
+        # air for a bay filter, the room/outside for a cold-air box
+        inlet_air_k = getattr(self, "_intake_source_temp_k", EXHAUST_TEMP_AMBIENT_K)
+        runner_surround_temp_k = inlet_air_k + (
+            block_temp_k - inlet_air_k) * RUNNER_BLOCK_CONDUCTION_FRAC
         runner_temp_k = eng.intake_system.runner_outlet_temp_k(
-            EXHAUST_TEMP_AMBIENT_K, self._intake_demand_kg_s, runner_surround_temp_k)
+            inlet_air_k, self._intake_demand_kg_s, runner_surround_temp_k)
         self.state.intake_runner_temp_k = runner_temp_k
         plenum_temp_k = (self._drivetrain_out.get("intake_charge_temp_k", EXHAUST_TEMP_AMBIENT_K)
                           + (runner_temp_k - EXHAUST_TEMP_AMBIENT_K))
@@ -2518,7 +4081,8 @@ class EngineCycleSim:
         dyno_torque_nm = 0.0
         for _ in range(n_sub):
             if effective_ratio > 0.0:
-                junction_torque = self._brake_junction.step(sub_dt, self._omega, self._load_omega * effective_ratio)
+                junction_torque = self._coupled_junction_torque(
+                    sub_dt, self._omega, self._load_omega * effective_ratio)
             else:
                 junction_torque = 0.0
             output_load_nm = junction_torque + accessory_reaction_nm
@@ -2558,7 +4122,7 @@ class EngineCycleSim:
         # populate for the same physical quantity (spool-up fraction,
         # pressure rise, exhaust gas temperature)
         self.state.turbo_spool_frac = turb.n1_frac
-        self.state.boost_frac = max(0.0, turb.pressure_ratio - 1.0)
+        self.state.boost_frac = max(0.0, turb.pressure_ratio - 1.0) * self._effects.boost_factor
         self.state.exhaust_temp_k = turb.egt_k
         self.state.manifold_pressure_frac = min(1.0, turb.n1_frac)
         self.state.ignition_timing_deg = 0.0
@@ -2935,6 +4499,8 @@ class EngineCycleSim:
             # to (see _record_ignition's own docstring: this is a
             # every-kind mechanism, not bespoke to this engine)
             just_ignited = prev_phase == "awaiting_ignition" and cyl.phase == "free_flight"
+            if just_ignited and fire:
+                self.state.fire_event_count += 1
             if just_ignited:
                 self.pending_events.append(IgnitionEvent(
                     cylinder=0, position_key=0, strength=1.0,

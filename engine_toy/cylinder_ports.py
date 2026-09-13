@@ -81,6 +81,12 @@ class PortSpec:
     direction: Vec3           # outward unit vector the port stub points along
     radius_m: float
     fluid_role: str           # "intake" | "exhaust" | "ignition" | "fuel" | "admission" | "drain" | "lubrication" | "rod"
+    # how the port's valve is driven -- the "advanced port type" hook:
+    #   "cam"                  the camshaft alone (every ordinary valve)
+    #   "compression-release"  cam PLUS a compression-release brake slave
+    #                          piston that can crack it near compression TDC
+    #   "none"                 no valve at all (a wall port, a boss)
+    actuation: str = "cam"
 
 
 @dataclass(frozen=True)
@@ -309,8 +315,15 @@ def cylinder_port_layout(engine) -> list[tuple[CylinderGeometry, list[PortSpec]]
         ports: list[PortSpec] = []
 
         def P(name, port_kind, pos, direction, radius, role):
+            if port_kind == "exhaust-valve-port" and getattr(engine, "compression_release_brake", False):
+                actuation = "compression-release"
+            elif port_kind.endswith("-valve-port"):
+                actuation = "cam"
+            else:
+                actuation = "none"
             ports.append(PortSpec(name=name, port_kind=port_kind, position=tuple(float(x) for x in pos),
-                                  direction=tuple(float(x) for x in _unit(direction)), radius_m=radius, fluid_role=role))
+                                  direction=tuple(float(x) for x in _unit(direction)), radius_m=radius, fluid_role=role,
+                                  actuation=actuation))
 
         if kind == ROTARY:
             # a Wankel housing: side intake ports in the end plate, a
@@ -463,7 +476,7 @@ def piston_pin_distance_m(crank_radius_m: float, rod_length_m: float, crank_angl
 
 def build_parts_from_layout(layout, piston_travel_frac: float | dict[int, float] = 0.5,
                             crank_angle_deg: float = 0.0, covers_off: bool = False, engine=None,
-                            moving_only: bool = False, spring_style: str = "helix") -> list:
+                            moving_only: bool = False, spring_style: str = "helix", chamber=None) -> list:
     """`crank_angle_deg` is the crank's own angle (the sim's state.
     crank_angle_deg); each cylinder's piston, rod and crankpin follow
     from it through that cylinder's own throw phase. piston_travel_frac
@@ -568,13 +581,13 @@ def build_parts_from_layout(layout, piston_travel_frac: float | dict[int, float]
                 vtx, nrm = _tube(pin, p0, r * 0.14, sides=10)
                 parts.append(SolidPart(vertices=vtx, normals=nrm, thermal_group=None, name=f"{tag}_con_rod"))
             vtx, nrm = _tube(p0 - axis * (r * 0.35), p0 + axis * (r * 0.45), r * 0.96, sides=20)
-            parts.append(SolidPart(vertices=vtx, normals=nrm, thermal_group=None, name=f"{tag}_piston"))
+            parts.append(SolidPart(vertices=vtx, normals=nrm, thermal_group=grp, name=f"{tag}_piston"))
         else:
             frac = piston_travel_frac.get(g.number, 0.5) if isinstance(piston_travel_frac, dict) else piston_travel_frac
             stroke_span = g.length_m - wall * 2.0
             p0 = base + axis * (wall + stroke_span * max(0.0, min(1.0, frac)) * 0.8)
             vtx, nrm = _tube(p0, p0 + axis * (r * 0.6), r * 0.96, sides=20)
-            parts.append(SolidPart(vertices=vtx, normals=nrm, thermal_group=None, name=f"{tag}_piston"))
+            parts.append(SolidPart(vertices=vtx, normals=nrm, thermal_group=grp, name=f"{tag}_piston"))
         if g.kind == ATMOSPHERIC:
             # The Otto-Langen's "crank": the rack drives a pinion, and
             # the pinion turns the flywheel shaft ONLY through a real
@@ -640,7 +653,7 @@ def build_parts_from_layout(layout, piston_travel_frac: float | dict[int, float]
         return parts
     parts.extend(build_crank_train_parts(layout, crank_angle_deg))
     # heads, cam case, valve covers and the valley/top cover, per bank
-    parts.extend(build_head_parts(layout, covers_off=covers_off, engine=engine, crank_angle_deg=crank_angle_deg,
+    parts.extend(build_head_parts(layout, covers_off=covers_off, engine=engine, crank_angle_deg=crank_angle_deg, chamber=chamber,
                                   spring_style=spring_style))
     return parts
 

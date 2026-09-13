@@ -238,3 +238,102 @@ def prism_mesh(polygon_uv, centre, axis, half_length: float, u_dir, v_dir) -> tu
         n = _normalized3(np.cross(edge_dir, axis))
         verts.extend([a0, b0, b1, a0, b1, a1]); norms.extend([n] * 6)
     return np.array(verts, dtype=np.float64), np.array(norms, dtype=np.float64)
+
+
+def frustum_mesh(start, end, radius_start: float, radius_end: float, sides: int = 12) -> tuple[np.ndarray, np.ndarray]:
+    """tube_mesh between two radii -- a real conical transition."""
+    sides = _sides(sides)
+    start = np.asarray(start, dtype=np.float64); end = np.asarray(end, dtype=np.float64)
+    axis = _normalized3(end - start)
+    u, v = _perpendicular_basis(axis)
+    length = float(np.linalg.norm(end - start))
+    slope = (radius_start - radius_end) / max(length, 1e-9)
+    angles = np.arange(sides + 1) * (2.0 * np.pi / sides)
+    radial = np.outer(np.cos(angles), u) + np.outer(np.sin(angles), v)
+    verts = []; norms = []
+    for i in range(sides):
+        ra, rb = radial[i], radial[i + 1]
+        na = _normalized3(ra + axis * slope); nb = _normalized3(rb + axis * slope)
+        p0 = start + ra * radius_start; p1 = start + rb * radius_start
+        p2 = end + rb * radius_end; p3 = end + ra * radius_end
+        for point, normal in ((p0, na), (p1, nb), (p2, nb), (p0, na), (p2, nb), (p3, na)):
+            verts.append(point); norms.append(normal)
+    return np.array(verts, dtype=np.float64), np.array(norms, dtype=np.float64)
+
+
+def beveled_drum_mesh(start, end, radius: float, bevel_len: float, end_radius: float,
+                      sides: int = 18) -> tuple[np.ndarray, np.ndarray]:
+    """A can with bevelled corners: the full-radius body between two
+    conical transitions down to end_radius (the pipe it sits on) --
+    a catalytic converter or muffler shell rather than a sharp-edged
+    drum or a box. The cone ends are capped at the pipe radius."""
+    start = np.asarray(start, dtype=np.float64); end = np.asarray(end, dtype=np.float64)
+    axis = _normalized3(end - start)
+    length = float(np.linalg.norm(end - start))
+    bevel = max(0.0, min(bevel_len, length * 0.45))
+    a1 = start + axis * bevel; b1 = end - axis * bevel
+    body_v, body_n = tube_mesh(a1, b1, radius, sides=sides)
+    c0_v, c0_n = frustum_mesh(start, a1, end_radius, radius, sides=sides)
+    c1_v, c1_n = frustum_mesh(b1, end, radius, end_radius, sides=sides)
+    caps_v, caps_n = capped_tube_mesh(start, end, end_radius, sides=sides)
+    n_tube = 6 * _sides(sides)
+    caps_v, caps_n = caps_v[n_tube:], caps_n[n_tube:]   # the end discs only
+    return (np.concatenate([body_v, c0_v, c1_v, caps_v]), np.concatenate([body_n, c0_n, c1_n, caps_n]))
+
+
+def ring_mesh(centre, axis, outer_radius: float, inner_radius: float,
+              thickness: float, segments: int = 48) -> tuple[np.ndarray, np.ndarray]:
+    """A ring of rectangular section: the shape a slew bearing actually
+    is.
+
+    Two plates with rolling elements between them and a gear cut into
+    one race is, to a renderer and to a ray, an annulus with a real
+    wall -- an outer face, an inner bore, and two flat sides. Drawing it
+    as a box was wrong in the way that matters for a bullet: a box has
+    no bore, so a round through the middle of a slew ring hit solid
+    metal instead of the hole the turret's own hydraulics pass through.
+    """
+    import math
+    centre = np.asarray(centre, dtype=np.float64)
+    axis = _normalized3(np.asarray(axis, dtype=np.float64))
+    u, v = _perpendicular_basis(axis)
+    half = float(thickness) / 2.0
+    outer = max(float(outer_radius), 1e-6)
+    inner = max(min(float(inner_radius), outer * 0.98), 0.0)
+    n = max(8, _sides(segments))
+    verts, norms = [], []
+
+    def point(radius, angle, side):
+        return centre + (u * math.cos(angle) + v * math.sin(angle)) * radius + axis * side * half
+
+    for i in range(n):
+        a0 = 2.0 * math.pi * i / n
+        a1 = 2.0 * math.pi * (i + 1) / n
+        radial0 = u * math.cos(a0) + v * math.sin(a0)
+        radial1 = u * math.cos(a1) + v * math.sin(a1)
+        for side, sign in ((+1.0, +1.0), (-1.0, -1.0)):
+            # the flat faces, wound so the normal points away from the
+            # ring's own mid-plane
+            o0, o1 = point(outer, a0, side), point(outer, a1, side)
+            i0, i1 = point(inner, a0, side), point(inner, a1, side)
+            face = axis * sign
+            if sign > 0:
+                tris = ((i0, o0, o1), (i0, o1, i1))
+            else:
+                tris = ((o0, i0, i1), (o0, i1, o1))
+            for tri in tris:
+                verts.extend(tri)
+                norms.extend((face, face, face))
+        # the outer wall
+        o0t, o1t = point(outer, a0, +1.0), point(outer, a1, +1.0)
+        o0b, o1b = point(outer, a0, -1.0), point(outer, a1, -1.0)
+        for tri, nrm in (((o0b, o1b, o1t), radial0), ((o0b, o1t, o0t), radial0)):
+            verts.extend(tri)
+            norms.extend((nrm, radial1, radial1))
+        # and the bore, whose normals point inward
+        i0t, i1t = point(inner, a0, +1.0), point(inner, a1, +1.0)
+        i0b, i1b = point(inner, a0, -1.0), point(inner, a1, -1.0)
+        for tri in ((i0b, i1t, i1b), (i0b, i0t, i1t)):
+            verts.extend(tri)
+            norms.extend((-radial0, -radial1, -radial1))
+    return np.asarray(verts, dtype=np.float64), np.asarray(norms, dtype=np.float64)

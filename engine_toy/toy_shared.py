@@ -48,11 +48,12 @@ class EventLog:
         self.entries: list[LogEntry] = []
         self._last_kind_time: dict[str, float] = {}
 
-    def add(self, text: str, kind: str = "info") -> None:
+    def add(self, text: str, kind: str = "info", *, cooldown: bool = True) -> None:
         now = _time.perf_counter()
-        if now - self._last_kind_time.get(kind, -1e9) < self.cooldown_s:
+        if cooldown and now - self._last_kind_time.get(kind, -1e9) < self.cooldown_s:
             return
-        self._last_kind_time[kind] = now
+        if cooldown:
+            self._last_kind_time[kind] = now
         self.entries.append(LogEntry(text, now, kind))
         if len(self.entries) > self.max_entries:
             self.entries = self.entries[-self.max_entries:]
@@ -69,6 +70,11 @@ def poll_engine_events(sim: EngineCycleSim, log: EventLog) -> None:
         log.add(f"KNOCK (intensity {st.knock_intensity * 100:.0f}%)", "knock")
     if st.misfire_flag:
         log.add("MISFIRE", "misfire")
+    if st.compression_brake_active and not getattr(sim, "_jake_logged", False):
+        log.add(f"COMPRESSION-RELEASE BRAKE: {st.compression_brake_torque_nm:.0f} Nm retarding", "limiter")
+    sim._jake_logged = st.compression_brake_active
+    if st.preignition_flag:
+        log.add(f"PRE-IGNITION (hot spot, {st.preignition_intensity * 100:.0f}%) -- piston heating", "knock")
     if st.backfire_flag:
         log.add(f"BACKFIRE ({st.backfire_kind})", "backfire")
     if st.valve_float_flag:
@@ -156,6 +162,214 @@ def select_engine_by_index(sim: EngineCycleSim, roster: list, one_based_index: i
         sim.set_engine(roster[idx])
 
 
+def _bar(frac: float, width: int = 10) -> str:
+    n = int(max(0.0, min(1.0, frac)) * width)
+    return "#" * n + "." * (width - n)
+
+
+def tanks_and_controls_lines(sim: EngineCycleSim) -> list[str]:
+    """Every real capacity on this engine as one dense block of hash
+    bars, plus the state of every switch that governs them.
+
+    The plant's own report is honest but long (sixteen lines), and on a
+    780-pixel column that pushed the tanks off the bottom of the screen
+    -- which is exactly where a reading you check at a glance must not
+    be. This is the same information, gauged rather than narrated: one
+    bar per store, several to a line, and the controls as a row of
+    on/off names instead of a paragraph each."""
+    st = sim.state
+    eng = sim.engine
+    gauges: list[tuple[str, float, str]] = []
+
+    # fuel, from the real depletable circuit
+    gauges.append(("fuel", st.fuel_fill_frac, f"{st.fuel_fill_frac * 100:3.0f}%"))
+    # the sump, against its own real capacity
+    cs = getattr(sim, "_crankcase_state", None)
+    if cs is not None and cs.oil_capacity_kg > 0.0:
+        gauges.append(("oil", cs.oil_kg / cs.oil_capacity_kg, f"{st.sump_oil_l:4.1f}L"))
+    # the cooling system's own real charge -- what is still in the
+    # jacket, radiator and bottle after whatever has been lost out of a
+    # hole (state.coolant_lost_l against the circuit's declared volume),
+    # with the temperature beside it because on a cooling system those
+    # two readings only mean anything together
+    drivetrain = getattr(sim, "_drivetrain", None)
+    if drivetrain is not None:
+        cool = next((c for c in drivetrain.fluid_circuits
+                     if c.kind_class == "thermal-liquid" and float(c.volume_l or 0.0) > 0.0
+                     and any("coolant" in n or "radiator" in n for n in c.nodes)), None)
+        if cool is not None:
+            have_l = max(0.0, float(cool.volume_l) - float(getattr(st, "coolant_lost_l", 0.0)))
+            gauges.append(("coolant", have_l / max(float(cool.volume_l), 1e-6), f"{have_l:4.1f}L"))
+
+    # an automatic carries its fluid as a working fluid, so the gauge
+    # that matters is how much of it is left and how hot it is
+    at = getattr(sim, "automatic", None)
+    if at is not None:
+        gauges.append(("atf", at.fill_frac, f"{at.temp_k - 273.15:3.0f}C"))
+        gauges.append(("atf-life", at.life_frac, f"{at.life_frac * 100:3.0f}%"))
+
+    # every sealed case of gears, with what is actually left in it --
+    # a differential that has lost its oil is a differential about to
+    # weld itself shut, and that deserves a gauge, not a log line
+    if drivetrain is not None:
+        try:
+            import gear_cases as _gc
+            for case in _gc.discover(drivetrain.graph, eng):
+                lost = sim.hole_emitters.lost_l.get(case.identity, 0.0)
+                em = next((e for e in sim.hole_emitters.emitters
+                           if e.identity == f"{case.identity}.contents"), None)
+                have = (em.contained_l if em is not None
+                        else max(0.0, case.capacity_l - lost))
+                gauges.append((case.short_label, have / max(case.capacity_l, 1e-6), f"{have:4.1f}L"))
+        except Exception:
+            pass
+
+    # EVERY PNEUMATIC VESSEL SEPARATELY. The wet tank, the reserve and
+    # the two protected brake reservoirs are four real vessels with a
+    # pressure-protection valve between them, and collapsing them into
+    # one "air" bar hid the single most important thing the airpack has
+    # to tell you: whether the brakes still have air after the service
+    # side has lost it. air_vessels.py splits the circuit's one
+    # authoritative stored mass across them; it does not invent any.
+    vs = getattr(sim, "air_vessels", None)
+    if vs is not None:
+        for label, frac, txt in vs.gauges():
+            gauges.append((label, frac, txt))
+    # anything else depletable this build carries
+    if drivetrain is not None:
+        for c in drivetrain.fluid_circuits:
+            if c.bottle_capacity_kg <= 0.0:
+                continue
+            ids = " ".join(sorted(c.nodes))
+            if "fuel." in ids:
+                continue
+            if "pneumatic" in ids and vs is not None:
+                continue          # already shown, vessel by vessel
+            label = ("air" if "pneumatic" in ids else "N2O" if "nitrous" in ids
+                     else "WMI" if "auxiliary_injection" in ids else "tank")
+            gauges.append((label, c.fill_level_frac, f"{c.fill_level_frac * 100:3.0f}%"))
+    p = getattr(sim, "plant", None)
+    if p is not None:
+        h = getattr(p, "hydraulics", None)
+        if h is not None:
+            # named for the fluid, not the subsystem: "hyd" next to a
+            # dozen other three-letter labels reads as one more switch
+            gauges.append(("hyd-oil", h.oil_l / max(h.tank_capacity_l, 1e-6), f"{h.oil_l:4.1f}L"))
+            if h.nitrogen_fitted:
+                gauges.append(("hyd-N2", h.nitrogen_fill_frac, f"{h.nitrogen_fill_frac * 100:3.0f}%"))
+            gauges.append(("hyd-life", h.oil_life_frac, f"{h.oil_life_frac * 100:3.0f}%"))
+        gauges.append(("refrig", p.loop.charge_frac, f"{p.loop.charge_frac * 100:3.0f}%"))
+        if p.bank is not None:
+            gauges.append(("acc-bat", p.bank.soc_frac, f"{p.bank.soc_frac * 100:3.0f}%"))
+        d = getattr(p, "dryer", None)
+        if d is not None and d.fitted:
+            bed = d.online_bed
+            gauges.append(("desicc", 1.0 - bed.loading_frac, f"{(1 - bed.loading_frac) * 100:3.0f}%"))
+    gauges.append(("batt", st.battery_soc_frac if hasattr(st, "battery_soc_frac") else 1.0,
+                   f"{(getattr(st, 'battery_soc_frac', 1.0)) * 100:3.0f}%"))
+
+    out: list[str] = []
+    # Anything bolted on that runs off this engine's fluids goes ABOVE
+    # the tanks. It is the thing being operated, so it is the thing that
+    # must survive a trim; the gauges under it are monitoring, and the
+    # reference readings further down are neither.
+    eq = getattr(sim, "equipment", None)
+    if eq is not None:
+        out.extend(eq.summary())
+    out.append("  -- TANKS --")
+    per_line = 3
+    for i in range(0, len(gauges), per_line):
+        chunk = gauges[i:i + per_line]
+        out.append("  " + "  ".join(f"{name:>8s}[{_bar(frac)}]{txt}" for name, frac, txt in chunk))
+
+    # every switch that governs them, on one or two lines
+    if p is not None:
+        c = p.controls
+        switches = [("chiller", c.main_chiller), ("dryer", c.air_dryer_enable), ("reheat", c.reheater_enable),
+                    ("ac-fan", c.aftercooler_fan), ("sep-drn", c.separator_auto_drain),
+                    ("tank-drn", c.wet_tank_auto_drain), ("hyd-chill", c.hydraulic_chiller_enable),
+                    ("res-iso", c.reserve_isolation)]
+        out.append("  -- CONTROLS --")
+        for i in range(0, len(switches), 4):
+            out.append("  " + "  ".join(f"{n}:{'ON ' if v else 'off'}" for n, v in switches[i:i + 4]))
+        h = getattr(p, "hydraulics", None)
+        if h is not None:
+            out.append(f"  blanket:{h.blanket_active_source:12s} pilot:{'LIVE' if h.pilot_available else 'DEAD'}  "
+                       f"fan-drv:{h.fan_drive_rpm:4.0f}rpm  oil:{h.temp_k - 273.15:4.0f}C")
+        out.append(f"  refrig: {'CLUTCH IN ' if p.loop.clutch_engaged else 'clutch out'} "
+                   f"{p.loop.cooling_w / 1000:5.2f}kW" + (f"  [{p.loop.lockout}]" if p.loop.lockout else ""))
+    if at is not None:
+        out.extend(at.describe())
+    return out
+
+
+# How many lines of damage reporting the left column can actually show.
+# The column is about fifty lines tall and the fixed readouts already
+# use most of it, so an engine that is genuinely coming apart -- a dozen
+# holes, four fires, a cascade log -- can push the gauges off the bottom
+# of the screen. Losing the tank gauges at exactly the moment everything
+# is emptying is the worst possible time to lose them, so the damage
+# section is capped and says how much it is not showing.
+LEAK_SECTION_MAX_LINES = 14
+
+
+def _cap(lines: list[str], limit: int, what: str) -> list[str]:
+    if len(lines) <= limit:
+        return lines
+    return lines[:limit] + [f"  ... and {len(lines) - limit} more {what} (worst shown first)"]
+
+
+def leak_lines(sim: EngineCycleSim) -> list[str]:
+    """Every hole emitter with something passing, and each circuit's loss."""
+    field = getattr(sim, "hole_emitters", None)
+    if field is None or not field.emitters:
+        return []
+    lines = []
+    live = [e for e in field.emitters if e.regime != "none" and e.kind != "splash"]
+    splash = [e for e in field.emitters if e.kind == "splash" and e.regime != "none"]
+    if splash:
+        lines.append(f"  SPLASH: {len(splash)} dippers, {sum(e.mass_flow_kg_s for e in splash) * 1000:.0f} g/s oil at "
+                     f"{splash[0].jet_speed_m_s:.1f} m/s, {splash[0].character}")
+    live.sort(key=lambda e: -e.mass_flow_kg_s)      # worst first, so the cap keeps those
+    for em in live[:6]:
+        rate = (f"{em.mass_flow_kg_s * 1000:.1f} g/s" if em.fluid != "gas" else f"{em.mass_flow_kg_s * 1000:.2f} g/s gas")
+        extra = (f" {em.drip_rate_hz:.1f} drops/s" if em.regime == "drip"
+                 else " drawing in" if em.regime == "ingest" else f" jet {em.jet_speed_m_s:.1f} m/s")
+        lines.append(f"  LEAK {em.part.split('.')[-1]}: {em.fluid or '-'} {em.regime} {rate}{extra} [{em.character}]")
+    for cid, lost in field.lost_l.items():
+        lines.append(f"  LOST {cid}: {lost:.2f} L")
+    lines.extend(getattr(sim, "bursts", None).summary() if getattr(sim, "bursts", None) else [])
+    if getattr(sim, "_node_conditions", None):
+        import node_effects
+        lines.extend(node_effects.condition_lines(sim._node_conditions, sim._effects, limit=6))
+    if getattr(sim.state, "oil_pickup_air_frac", 0.0) > 0.01:
+        lines.append(f"  OIL PICKUP UNCOVERED: drawing {sim.state.oil_pickup_air_frac * 100:.0f}% air, "
+                     f"{sim.state.oil_pressure_pa / 1000:.0f} kPa at the gallery")
+    c = getattr(sim, "coupling", None)
+    if c is not None:
+        lines.append("  COUPLING " + c.describe()
+                     + (f"  (applied from {sim.coupling_spec.apply_source})"
+                        if c.is_hydraulically_applied else ""))
+    # the plant's long narration is available on demand (the dashboard
+    # shows its capacities as gauges in tanks_and_controls_lines); only
+    # the exceptions are worth a line here
+    p_ = getattr(sim, "plant", None)
+    if p_ is not None:
+        for l_ in p_.summary():
+            if "!" in l_ or "OFF:" in l_ or "FLAT" in l_:
+                lines.append(l_)
+    lines.extend(getattr(sim, "fires", None).summary() if getattr(sim, "fires", None) else [])
+    lines.extend(getattr(sim, "fittings", None).summary()[:5] if getattr(sim, "fittings", None) else [])
+    lines.extend(getattr(sim, "ordnance", None).summary()[:4] if getattr(sim, "ordnance", None) else [])
+    for line in getattr(sim, "cascade_log", [])[-4:]:
+        lines.append("  CASCADE " + line)
+    for cid, fr in field.fouling().items():
+        lines.append(f"  FOUL {cid}: " + ", ".join(f"{k} {v * 100:.2f}%" for k, v in list(fr.items())[:4]))
+    idle_holes = sum(1 for e in field.emitters if e.kind != "splash" and e.regime == "none")
+    if idle_holes:
+        lines.append(f"  holes with nothing passing: {idle_holes}")
+    return _cap(lines, LEAK_SECTION_MAX_LINES, "damage lines")
+
 def tank_lines(sim: EngineCycleSim) -> list[str]:
     """Every real depletable reservoir this engine's own build actually
     carries, walked generically off the drivetrain graph's own fluid
@@ -192,7 +406,8 @@ def tank_lines(sim: EngineCycleSim) -> list[str]:
 
 
 def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
-                     help_text: str | None, last_export: str, panel=None) -> list[str]:
+                     help_text: str | None, last_export: str, panel=None,
+                     max_lines: int | None = None) -> list[str]:
     """Pure text content -- no cursor/rendering assumptions -- so both a
     terminal (ANSI cursor-up redraw) and a pygame window (blit each line)
     can present the exact same dashboard."""
@@ -224,10 +439,12 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
     # this is shown as a fact, not corrected.
     derived_limit = eng.derived_redline_rpm()
     if derived_limit is not None:
-        margin_note = ("PAST its own real limit" if eng.redline_rpm > derived_limit
-                        else "within its own real limit")
-        lines.append(f"  redline basis: piston-speed/valve-float ceiling {derived_limit:.0f} rpm"
-                     f"  ({margin_note})")
+        # only worth a line when the redline is actually past what the
+        # hardware can stand: "within its own real limit" is the normal
+        # case and spends a line saying nothing is wrong
+        if eng.redline_rpm > derived_limit:
+            lines.append(f"  ! redline {eng.redline_rpm:.0f} is PAST its own piston-speed/valve-float "
+                         f"ceiling of {derived_limit:.0f} rpm")
     if st.wear:
         worst = wear_module.worst_component(st.wear)
         if worst is not None:
@@ -252,7 +469,10 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
         warn = f"  ! {st.fuel_network_warnings[0]}" if st.fuel_network_warnings else ""
         lines.append(f"    supply {st.fuel_supply_pressure_pa / 1e5:5.2f} bar  availability {st.fuel_availability_frac * 100:3.0f}%"
                      f"  fill {st.fuel_fill_frac * 100:3.0f}%  fuel {st.fuel_temp_k - 273.15:4.0f} C{warn}")
-    if st.cylinder_valve_factor:
+    # per-cylinder valve factors matter once they diverge or carbon
+    # builds; at build tolerance they are a line of noise
+    if st.cylinder_valve_factor and (max(st.cylinder_carbon_frac[:8], default=0.0) > 0.01
+                                     or max(abs(v - 1.0) for v in st.cylinder_valve_factor[:8]) > 0.05):
         lines.append("  valves: factor " + " ".join(f"{v:.3f}" for v in st.cylinder_valve_factor[:8])
                      + "  carbon% " + " ".join(f"{v * 100:.0f}" for v in st.cylinder_carbon_frac[:8]))
     if st.cylinder_oil_film_mg:
@@ -274,10 +494,14 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
     thr_bar = "#" * int(sim.throttle * bar_w) + "." * (bar_w - int(sim.throttle * bar_w))
     plate_note = f"  butterfly {st.throttle_plate_angle_deg:4.1f} deg" if eng.architecture.cylinders else ""
     lines.append(f"  THROTTLE[{thr_bar}] {sim.throttle * 100:5.1f}%{plate_note}")
+    # the mode hint belongs ON the bar it governs, not under it: the
+    # left column is only about fifty lines tall and every line spent
+    # restating which key does what is a capacity gauge pushed off the
+    # bottom of the screen.
     if sim.throttle_target_rpm is not None:
-        lines.append(f"  throttle mode: AUTO, target {sim.throttle_target_rpm:.0f} rpm  (R/Y raise/lower target, T to release)")
+        lines[-1] += f"  AUTO {sim.throttle_target_rpm:.0f}rpm (R/Y/T)"
     else:
-        lines.append(f"  throttle mode: manual  (W/S set throttle directly, T to hold current rpm)")
+        lines[-1] += "  manual (W/S, T holds)"
     if has_dyno_rig:
         n_forward = len(eng.transmission.gear_ratios)
         gear_label = ("R" if sim.gear_index < 0 else "N" if sim.gear_index == 0 else str(sim.gear_index))
@@ -288,9 +512,9 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
     brk_bar = "#" * int(load_frac * bar_w) + "." * (bar_w - int(load_frac * bar_w))
     lines.append(f"  BRAKE   [{brk_bar}] {sim.brake_load_nm:6.0f} Nm  ({load_frac * 100:4.1f}% of peak)")
     if sim.brake_target_rpm is not None:
-        lines.append(f"  brake mode: TARGET {sim.brake_target_rpm:.0f} rpm  (E/D raise/lower target, U to release)")
+        lines[-1] += f"  TGT {sim.brake_target_rpm:.0f}rpm (E/D/U)"
     else:
-        lines.append(f"  brake mode: manual  (E/D set brake load directly, U to hold current rpm)")
+        lines[-1] += "  manual (E/D, U holds)"
     lines.append(f"  torque RMS {st.torque_rms_nm:6.0f} Nm  (inst {sim.current_torque_nm:6.0f})"
                  f"   power RMS {st.power_rms_kw:6.1f} kW  (inst {sim.power_kw:6.1f})")
     if has_dyno_rig:
@@ -309,7 +533,7 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
                          f"{st.dyno_pull_peak_torque_nm:.0f} Nm @ {st.dyno_pull_peak_torque_rpm:.0f} rpm, "
                          f"{st.dyno_pull_peak_power_kw:.1f} kW @ {st.dyno_pull_peak_power_rpm:.0f} rpm")
         else:
-            lines.append(f"  dyno pull: idle  (P for a WOT pull, transmission exit, top gear)")
+            lines[-1] += "   (P: WOT pull)"
     if eng.kind == "atmospheric":
         # the piston's own REAL activity -- what's actually happening
         # this instant, as distinct from the flywheel's own speed above
@@ -466,16 +690,18 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
         flags.append("MISFIRE" if st.misfire_flag else "misfire: clear")
         if st.rev_limiter_active:
             flags.append("LIMITER")
-        lines.append(f"  {'  '.join(flags)}")
-        limiter_note = "ON" if sim.rev_limiter_enabled else "OFF -- unchecked over-rev, watch for it"
-        lines.append(f"  rev limiter: {limiter_note}  (N to toggle)")
-        lines.append(f"  brake clutch: {'locked' if st.brake_clutch_locked else 'slipping'}")
+        flags.append("limiter:ON" if sim.rev_limiter_enabled else "limiter:OFF -- unchecked over-rev")
+        flags.append("brake clutch " + ("locked" if st.brake_clutch_locked else "SLIPPING"))
+        lines.append(f"  {'  '.join(flags)}  (N limiter)")
         spring = eng.lifter_spring
         spring_cap = spring.max_safe_rpm()
         spring_drag = spring.drag_torque_nm(eng.architecture.cylinders)
         float_note = f"  VALVE FLOAT (risk {st.valve_float_risk * 100:.0f}%)" if st.valve_float_flag else ""
-        lines.append(f"  lifter spring: {spring.spring_rate_n_per_mm:.0f} N/mm, safe to ~{spring_cap:.0f} rpm"
-                     f"  (drag {spring_drag:.1f} Nm){float_note}")
+        # a spring nowhere near float is not news; near it, or floating,
+        # it is the most important line on the screen
+        if st.valve_float_flag or sim.rpm > spring_cap * 0.85:
+            lines.append(f"  lifter spring: {spring.spring_rate_n_per_mm:.0f} N/mm, safe to ~{spring_cap:.0f} rpm"
+                         f"  (drag {spring_drag:.1f} Nm){float_note}")
         fi = eng.forced_induction
         if fi.kind != "none":
             if fi.kind == "turbo":
@@ -485,9 +711,8 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
                              f"boost {st.boost_frac * 100:4.0f}%"
                              + ("  WASTEGATE" if st.wastegate_flutter else "")
                              + ("  SURGE" if st.surge_flag else ""))
-                al = "ON" if sim.anti_lag_enabled else "off"
-                cap = "" if fi.anti_lag_capable else "  (not fitted on this build)"
-                lines.append(f"  anti-lag: {al}  (A to toggle){cap}")
+                if fi.anti_lag_capable:
+                    lines.append(f"  anti-lag: {'ON' if sim.anti_lag_enabled else 'off'}  (A to toggle)")
             else:
                 # blower PR-1 is what the belt is delivering (rotor speed
                 # x displacement ratio); the GAUGE reads what a real boost
@@ -504,7 +729,8 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
         # fuel supply -- tank_lines() covers every OTHER real reservoir
         # (nitrous, WMI, pneumatic, coolant, ...), genuinely piston-
         # accessory-specific
-        lines.extend(tank_lines(sim))
+        lines.extend(tanks_and_controls_lines(sim))
+        lines.extend(leak_lines(sim))
         carb = eng.carburetor
         if carb.is_carbureted:
             ref_mm = engines.reference_jet_diameter_mm(eng, current_fuel(sim))
@@ -518,14 +744,44 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
         panel_lines = panel.lines()
         if panel_lines:
             lines.extend(panel_lines)
+    st = sim.state
+    cat = sim.catalytic_converter
+    if cat is not None:
+        lines.append(f"  CAT     {cat.kind} {cat.substrate_volume_l:.1f} L  brick {st.catalyst_brick_temp_k - 273.15:5.0f} C  "
+                     f"CO conv {st.catalyst_co_efficiency * 100:3.0f}%  NOx conv {st.catalyst_nox_efficiency * 100:3.0f}%  "
+                     f"PGM {cat.pgm_g:.1f} g (Pt {cat.pt_g:.1f} Pd {cat.pd_g:.1f} Rh {cat.rh_g:.2f})  scrap ~${cat.scrap_value_usd:,.0f}")
+    elif eng.exhaust_system.layout_has_catalyst:
+        lines.append("  CAT     PULLED -- no conversion; backpressure down, everything engine-out goes straight out the pipe")
+    lines.append(f"  EXHAUST phi {st.mixture_phi:4.2f}  CO {st.co_tailpipe_g_s * 3.6:6.2f} kg/h (engine-out {st.co_engine_out_g_s * 3.6:5.2f})  "
+                 f"HC {st.hc_tailpipe_g_s * 3600:6.0f} g/h  NOx {st.nox_tailpipe_g_s * 3600:6.0f} g/h")
+    room = sim.garage_mode
+    extractor = " + extractor duct" if sim.exhaust_extractor_fitted and room != "outdoors" else ""
+    lines.append(f"  AIR     bay {st.bay_air_temp_k - 273.15:4.0f} C  CO {st.bay_co_ppm:6.0f} ppm  O2 {st.bay_o2_frac * 100:4.1f}%   "
+                 f"intake from: {st.intake_source} (O2 factor {st.intake_o2_factor:4.2f})   room: {room}{extractor}")
+    if room != "outdoors":
+        occ = sim.occupant
+        ttl = occ.minutes_to_lethal(st.room_co_ppm) if occ else None
+        ttl_txt = f"  time to lethal COHb at this ppm: {ttl:5.0f} min" if ttl is not None else ""
+        lines.append(f"  ROOM    CO {st.room_co_ppm:6.0f} ppm  O2 {st.room_o2_frac * 100:4.1f}%  {st.room_temp_k - 273.15:3.0f} C   "
+                     f"you: COHb {st.occupant_cohb_pct:4.1f}% -- {occ.condition if occ else ''}{ttl_txt}")
     lines.append(f"  listening: {listen.mode}  (L to cycle: stereo header/bay -> header solo -> bay solo)")
     if last_export:
         lines.append(f"  last export: {last_export}")
     if help_text:
         lines.append("-" * 64)
         lines.extend(help_text.strip().splitlines())
+        # TRIM TO WHAT THE SCREEN ACTUALLY HAS. A caller that knows how
+    # many lines it can draw says so, and the tail is what goes: the
+    # readings at the bottom (catalyst, emissions, bay air, what the
+    # microphone is listening to) are reference rather than things you
+    # watch while something is going wrong, and the gauges above them
+    # are not. Silently drawing past the bottom of the window -- which
+    # is what used to happen -- hides whichever section happens to be
+    # last, which on a damaged engine was the tank gauges.
+    if max_lines is not None and len(lines) > max_lines:
+        hidden = len(lines) - (max_lines - 1)
+        lines = lines[:max_lines - 1] + [f"  ... {hidden} more lines below the window"]
     return lines
-
 
 def bake_snapshot(sim: EngineCycleSim) -> str:
     rpm = max(sim.rpm, sim.engine.idle_rpm)

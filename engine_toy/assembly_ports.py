@@ -60,11 +60,28 @@ class PartPort:
     mating: bool              # True: a gasket-face hole that mates when parts bolt up; False: a line port (needs a hose/pipe/plug)
     connected_to: str | None = None
     fluid: str = "oil"
+    # ---- THE PORT PICKS THE JOINT ----
+    # A port is not only a place, it is a KIND OF JUNCTION. Two faces
+    # bolted through a gasket transmit everything; a trunnion boss at
+    # the same coordinates transmits everything but one rotation. The
+    # difference is not a property of the parts and it is not something
+    # a solver can infer from geometry -- it is the hardware that is
+    # actually in the hole, so it is declared here, on the port, where
+    # the hardware is.
+    joint: str = "bolted-flange"          # a key in joints.JOINT_TYPES
+    joint_axis: tuple | None = None       # world axis of the freed rotation, if any
 
 
 # kinds that mate with each other across a joint face
 MATE_PAIRS = {("oil-feed", "oil-feed"), ("oil-return", "oil-return"), ("coolant", "coolant"),
-              ("pump-pickup", "pump-pickup"), ("pan-rim", "pan-rim")}
+              ("pump-pickup", "pump-pickup"), ("pan-rim", "pan-rim"),
+              # A STRUCTURAL MOUNT MATES THE SAME WAY A GASKET FACE DOES:
+              # two ports on two parts, at the same point, facing each
+              # other. That is the whole mechanism, and it is why a
+              # ported joint cannot reach into the middle of a body --
+              # the seal edge between a mated pair has zero length,
+              # because both ends are on the surface.
+              ("structural-mount", "structural-mount")}
 
 
 def _perp(axis):
@@ -73,7 +90,21 @@ def _perp(axis):
     return u, v
 
 
-def part_ports(layout, wet_sump: bool = True) -> list[PartPort]:
+def lube_kind_for(engine) -> str:
+    """The real lube system a layout's castings carry ports for:
+    "wet-sump" (a pan, a dipstick, galleries), "dry-sump" (galleries and
+    returns, a scavenge drain in the case, NO pan or dipstick -- the
+    tank has those; a race engine, or a crosshead two-stroke with its
+    separate lube tank), "total-loss" (a premix two-stroke: a breather
+    and nothing else)."""
+    two_stroke = bool(getattr(engine.architecture, "two_stroke", False))
+    declared = getattr(engine, "lubrication", "auto")
+    if two_stroke:
+        return "dry-sump" if declared == "dry-sump" else "total-loss"
+    return "dry-sump" if declared == "dry-sump" else "wet-sump"
+
+
+def part_ports(layout, wet_sump: bool = True, lube: str | None = None) -> list[PartPort]:
     """Every casting's ports for this layout: heads per bank, the
     crankcase, the pan. Expander and atmospheric layouts have no oil
     galleries in this sense (open cranks, drip lubricators) and get
@@ -86,6 +117,10 @@ def part_ports(layout, wet_sump: bool = True) -> list[PartPort]:
     string trimmer."""
     from head_mesh import banks
     from crank_mesh import crank_stations, _pitch
+    if lube is None:
+        lube = "wet-sump" if wet_sump else "total-loss"
+    has_galleries = lube in ("wet-sump", "dry-sump")
+    wet_sump = lube == "wet-sump"
     ports: list[PartPort] = []
     bank_list = banks(layout)
     stations = crank_stations(layout)
@@ -109,7 +144,7 @@ def part_ports(layout, wet_sump: bool = True) -> list[PartPort]:
         deck = f"crankcase.deck{b_index + 1}"   # the block's deck face under THIS bank
         # deck-face holes: feed gallery at the rear, returns at both ends, coolant passages between cylinders
         feed = deck_c.copy(); feed[0] = max(xs) + pitch * 0.30; feed = feed + side * (bore * 0.45)
-        if wet_sump:
+        if has_galleries:
             # pressure-fed head oiling: a feed gallery up through the deck
             # and returns at both ends -- a total-loss two-stroke has no
             # oil galleries between case and head at all
@@ -127,7 +162,7 @@ def part_ports(layout, wet_sump: bool = True) -> list[PartPort]:
                     for part, dirn in ((head, -axis), (deck, axis)):
                         ports.append(PartPort(f"{part}.coolant_face_{k + 1}{'a' if sgn < 0 else 'b'}", "crankcase" if part == deck else part, "coolant",
                                               cp.copy(), dirn, 0.006, True, fluid="coolant"))
-        if wet_sump:
+        if has_galleries:
             # the FILL: a line port on top of the head/cover, open until something is put on it
             top = deck_c + axis * (bore * 0.9); top[0] = min(xs) + pitch * 0.2
             ports.append(PartPort(f"{head}.oil_fill", head, "oil-fill", top, axis, 0.016, False))
@@ -139,10 +174,16 @@ def part_ports(layout, wet_sump: bool = True) -> list[PartPort]:
     rim_y = y0 - tunnel_r * 0.6
     ports.append(PartPort("crankcase.breather", "crankcase", "breather", np.array([x_a + bore * 0.4, y0 + tunnel_r, z0 - bore * 0.3]),
                           np.array([0.0, 1.0, 0.0]), 0.009, False, fluid="crankcase-gas"))
-    if not wet_sump:
+    if not has_galleries:
         return ports
     ports.append(PartPort("crankcase.main_gallery", "crankcase", "main-gallery", np.array([x_b + bore * 0.1, y0 + bore * 0.2, z0 + tunnel_r]),
                           np.array([0.0, 0.0, 1.0]), 0.008, False))
+    if not wet_sump:
+        # dry sump: the case's own low-point scavenge drain (the scavenge
+        # pump pulls from here into the tank); no pan, no dipstick
+        ports.append(PartPort("crankcase.scavenge_drain", "crankcase", "scavenge-drain",
+                              np.array([(x_a + x_b) / 2.0, rim_y, z0]), np.array([0.0, -1.0, 0.0]), 0.010, False))
+        return ports
     ports.append(PartPort("crankcase.dipstick", "crankcase", "dipstick", np.array([(x_a + x_b) / 2.0, y0 + tunnel_r * 0.8, z0 + tunnel_r * 0.9]),
                           np.array([0.0, 0.7, 0.7]), 0.005, False))
     for k, xr in enumerate((x_a + bore * 0.2, (x_a + x_b) / 2.0, x_b - bore * 0.2)):
@@ -215,18 +256,61 @@ def mate_ports(ports: list[PartPort], tolerance_m: float = MATE_TOLERANCE_M) -> 
     return result
 
 
-def emit_ports_graph(ports: list[PartPort], result: MateResult, node, edge) -> None:
+#: What a mated pair's edge IS, per declared joint type. A fluid gasket
+#: face keeps its own name because the thing being modelled there is a
+#: seal rather than a load path; a structural port names the mechanism.
+JOINT_CONSTRAINT = {
+    "bolted-flange": "bolted-flange-mount",
+    "solid-welded": "rigid-distance",
+    "jacketed-welded": "rigid-distance",
+    "brazed": "rigid-distance",
+    "hollow-socket": "socket-joining",
+    "pinned-clevis": "pinned-trunnion-mount",
+    "spherical-seat": "spherical-thrust-seat",
+    "universal": "universal-joint",
+    "bushed": "bushing-mount",
+}
+
+
+def emit_ports_graph(ports: list[PartPort], result: MateResult, node, edge,
+                     prefix: str = "powertrain") -> None:
     """Ports as engine-block-port nodes (connected flag = mated or
-    plumbed), seals as zero-length 'port-face-seal' edges in the
-    fluid's own circuit."""
+    plumbed), seals as zero-length edges of the joint each port
+    DECLARES.
+
+    The constraint is not chosen by the caller and it is not guessed
+    from the kind: it comes from the port's `joint`, resolved through
+    `joints.JOINT_TYPES`, so the six-degree-of-freedom transform on the
+    edge and the hardware in the hole are the same statement. A
+    trunnion boss emits a pinned mount that frees one rotation about a
+    stated world axis; a bolted flange emits a mount that frees
+    nothing. Both are zero length, because both ends are on the two
+    surfaces that touch."""
+    from joints import JOINT_TYPES, FREE, DOF_NAMES
     for p in ports:
-        node(f"powertrain.{p.identity}", [float(v) for v in p.position], "engine-block-port", port_kind=p.kind,
+        jt = JOINT_TYPES.get(p.joint)
+        node(f"{prefix}.{p.identity}", [float(v) for v in p.position], "engine-block-port", port_kind=p.kind,
              port_direction=[float(v) for v in _unit(p.direction)], port_radius_m=p.radius_m, fluid_role=p.fluid,
-             mating=p.mating, connected=p.connected_to is not None, part=p.part)
+             mating=p.mating, connected=p.connected_to is not None, part=p.part,
+             joint_type=p.joint,
+             **({"joint_axis": [float(v) for v in _unit(p.joint_axis)]}
+                if p.joint_axis is not None else {}))
     for a, b in result.seals:
         circuit = {"oil": "oil", "coolant": "coolant", "crankcase-gas": "crankcase"}.get(a.fluid, a.fluid)
-        edge(f"powertrain.seal.{a.identity}__{b.identity}", f"powertrain.{a.identity}", f"powertrain.{b.identity}",
-             "port-face-seal", radius=a.radius_m, circuit_identity=circuit, gasket=True)
+        jt = JOINT_TYPES.get(a.joint)
+        structural = a.kind == "structural-mount"
+        constraint = (JOINT_CONSTRAINT.get(a.joint, "bolted-flange-mount")
+                      if structural else "port-face-seal")
+        extra = {}
+        if jt is not None:
+            extra["dof_transform"] = {n: t for n, t in zip(DOF_NAMES, jt.transform)}
+            extra["free_rotations"] = list(jt.freedoms())
+            extra["bond"] = jt.bond
+        if a.joint_axis is not None:
+            extra["free_rotation_axis"] = [float(v) for v in _unit(a.joint_axis)]
+        edge(f"{prefix}.seal.{a.identity}__{b.identity}", f"{prefix}.{a.identity}", f"{prefix}.{b.identity}",
+             constraint, radius=a.radius_m, circuit_identity=circuit,
+             gasket=not structural, joint_type=a.joint, **extra)
 
 
 def transplant(ports_on_block: list[PartPort], donor_head_ports: list[PartPort], x_offset_m: float = 0.0,

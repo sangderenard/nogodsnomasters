@@ -72,11 +72,22 @@ _SOURCING_OVERRIDES: tuple[tuple[str, PartSourcing], ...] = (
     ("mount.transmission_right", PartSourcing.SUPPLIED_ELSEWHERE),
     ("mount.transfer_case_left", PartSourcing.SUPPLIED_ELSEWHERE),
     ("mount.transfer_case_right", PartSourcing.SUPPLIED_ELSEWHERE),
+    # a transverse install's transaxle and its halfshafts are the same
+    # real decision as a gearbox: not in the crate unless deliberately baked
+    ("powertrain.transaxle", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("powertrain.final_drive", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("powertrain.differential", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("powertrain.halfshaft_left", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("powertrain.halfshaft_right", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("mount.transaxle", PartSourcing.SUPPLIED_ELSEWHERE),
+    ("mount.torque_rod", PartSourcing.SUPPLIED_ELSEWHERE),
 )
 
 _TRANSMISSION_IDENTITY_PREFIXES = (
     "powertrain.transmission", "powertrain.transfer_case", "powertrain.direct_drive_bypass",
     "mount.transmission_", "mount.transfer_case_",
+    "powertrain.transaxle", "powertrain.final_drive", "powertrain.differential", "powertrain.halfshaft_",
+    "mount.transaxle", "mount.torque_rod",
 )
 
 

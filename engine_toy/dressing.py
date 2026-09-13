@@ -79,6 +79,9 @@ def derive_dressing(engine) -> DressingSpec:
         ignition = "glow"
     elif "magneto" in prof:
         ignition = "magneto"
+    elif "coil" in prof:
+        # a declared coil-pack / coil-on-plug system -- no distributor
+        ignition = "coil-on-plug"
     elif fm == "velocity_stack" or (engine.redline_rpm >= 9000.0 and not carbureted):
         ignition = "coil-on-plug"
     else:
@@ -573,7 +576,13 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
                  capacity_l=8.0, drum_axis=[0.0, 1.0, 0.0], drum_radius_m=bore * 0.9, drum_length_m=bore * 2.6)
             node("powertrain.scavenge_pump", [float(v) for v in (np.array(pump["reference_position"]) + np.array([bore * 0.6, 0.0, 0.0]))],
                  "rotating-mass", mass_kg=1.5, body_half_extent_m=[bore * 0.2] * 3)
-            edge("powertrain.pan_to_scavenge", "powertrain.oil_pan", "powertrain.scavenge_pump", "oil-line", radius=0.008, circuit_identity="oil")
+            # the scavenge pulls from the pan when there is one, else from
+            # the case's own scavenge drain port (a dry-sump two-stroke)
+            scav_src = ("powertrain.oil_pan" if by_id.get("powertrain.oil_pan") is not None
+                        else "powertrain.crankcase.scavenge_drain" if by_id.get("powertrain.crankcase.scavenge_drain") is not None
+                        else None)
+            if scav_src is not None:
+                edge("powertrain.pan_to_scavenge", scav_src, "powertrain.scavenge_pump", "oil-line", radius=0.008, circuit_identity="oil")
             edge("powertrain.scavenge_to_tank", "powertrain.scavenge_pump", "powertrain.oil_reserve_tank", "oil-line", radius=0.008, circuit_identity="oil")
             for e in edges:
                 if e["identity"] == "powertrain.oil_pan_to_pump":
