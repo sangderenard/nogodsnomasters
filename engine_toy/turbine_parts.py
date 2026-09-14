@@ -165,6 +165,64 @@ def modules_for(engine) -> list[TurbineModule]:
     return maker() if maker else []
 
 
+def emit_module_records(engine, node, edge, *, at=(0.0, 0.0, 0.0)) -> list[str]:
+    """Emit the declared modules into an ordinary drivetrain graph.
+
+    This is the callback-builder counterpart of ``emit_modules`` below.
+    These records are physical parts: mass properties, damage/ray identity,
+    package dimensions and rendered geometry all originate here.
+    """
+    mods = modules_for(engine)
+    made = []
+    # These are the already-existing drivetrain state nodes which carry the
+    # live shaft/flow state for each physical module.  A module record owns
+    # casing, dimensions and mass; it must not create a second independently
+    # integrated rotor beside the one EngineCycleSim already advances.
+    state_node_for_role = {
+        "air-inlet": "powertrain.inlet_plenum",
+        "compressor": "powertrain.compressor_impeller",
+        "combustor": "powertrain.combustor",
+        "turbine-stage": None,  # selected by identity below (two shafts)
+        "gearbox": "powertrain.power_turbine_reduction",
+        "exhaust": "powertrain.exhaust_duct",
+        "accessory-drive": "powertrain.accessory_gearbox",
+    }
+    for module in mods:
+        attrs = dict(module.attributes)
+        state_node = state_node_for_role.get(module.role)
+        if module.identity == "turbine.gas_generator_turbine":
+            state_node = "powertrain.turbine_wheel"
+        elif module.identity == "turbine.power_turbine":
+            state_node = "powertrain.power_turbine"
+        attrs.update(
+            mass_kg=float(module.mass_kg), mass_in_total=True,
+            material=module.material, part_role=module.role,
+            label=module.label, of_engine=engine.identity,
+            body_half_extent_m=[float(v) for v in module.half_extent],
+            shape=f"agt1500-{module.role}", in_view=True,
+            state_node=state_node,
+            moving_geometry=("rotor" if module.role in {
+                "compressor", "turbine-stage", "heat-exchanger"} else None),
+            thermal_group=("intake" if module.role in {"air-inlet", "compressor"}
+                           else "exhaust" if module.role in {"heat-exchanger", "combustor", "turbine-stage", "exhaust"}
+                           else "oil" if module.role in {"gearbox", "lubrication", "accessory-drive"}
+                           else None))
+        node(module.identity,
+             [at[i] + float(module.position[i]) for i in range(3)],
+             "engine-block-component", **attrs)
+        made.append(module.identity)
+        if state_node is not None:
+            edge(f"{module.identity}.state_binding", module.identity,
+                 state_node, "physical-module-state-binding",
+                 in_view=False, physical_state_binding=True)
+    order = sorted(mods, key=lambda m: m.position[0])
+    for a, b in zip(order, order[1:]):
+        edge(f"{a.identity}__{b.identity}", a.identity, b.identity,
+             "rigid-bolted-joint", radius=0.022,
+             physical_module_flange=True)
+    return made
+
+
 def envelope(modules: list[TurbineModule]) -> dict:
     """The package the modules actually occupy."""
     if not modules:

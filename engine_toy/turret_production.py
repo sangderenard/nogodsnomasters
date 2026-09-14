@@ -211,6 +211,12 @@ class ProductionGraph:
             # it says so for itself.
             "motion_group": self.motion_group,
             "assembly": self.assembly,
+            # Structural solvers resolve ``auto`` from incident physical
+            # members.  A baked engine/machine may instead mark internal
+            # render/state parts false or name their one gestalt body with
+            # ``solver_condensed_into``.
+            "structural_participation": attributes.pop(
+                "structural_participation", "auto"),
             # declared visible: the engine view's keyword allowlist was
             # written for engine parts and knows nothing about a turret
             "in_view": True,
@@ -255,6 +261,7 @@ class ProductionGraph:
         # solver's own car defaults -- which is what every member
         # authored before this was silently being analysed as.
         from milspec import TubeSection, damage_record, MATERIAL_BY_KEY
+        section_properties = attributes.pop("section_properties", None)
         alloy = attributes.pop("alloy", None) or mc.alloy
         wall = attributes.pop("wall_m", None) or max(
             0.0025, min(radius * 0.42, 0.0045 + radius * 0.16))
@@ -269,6 +276,8 @@ class ProductionGraph:
         travels = mc.travels
         damage = None if routed else damage_record(
             section, rest_length, spring_like=spring_like, travels=travels)
+        if damage is not None and section_properties:
+            damage.update(section_properties)
         bushing = _bushing(frame_mount) if mc.bushed else None
         self.edges.append({
             "identity": identity, "a": a, "b": b, "constraint": constraint,
@@ -348,10 +357,14 @@ class ProductionGraph:
         # a structure needs more members than a mechanism: every free
         # node wants at least three non-coplanar connections or it is a
         # hinge the author did not mean to draw
+        parent_of = {n["identity"]: n.get("solver_condensed_into")
+                     or n["identity"] for n in self.nodes}
         degree = {i: 0 for i in ids}
         for e in self.edges:
-            degree[e["a"]] = degree.get(e["a"], 0) + 1
-            degree[e["b"]] = degree.get(e["b"], 0) + 1
+            a, b = parent_of.get(e["a"], e["a"]), parent_of.get(e["b"], e["b"])
+            if a != b:
+                degree[a] = degree.get(a, 0) + 1
+                degree[b] = degree.get(b, 0) + 1
         for ident, d in sorted(degree.items()):
             node = next(n for n in self.nodes if n["identity"] == ident)
             if node.get("fixed_to") or node.get("kind") == "recoiling-weapon-mass":
@@ -363,7 +376,13 @@ class ProductionGraph:
             # a body is located by the body. A two-opening passage is a
             # passage; demanding a third connection of it would mean
             # inventing plumbing to satisfy a structural check.
-            if node.get("internal_channel"):
+            if node.get("internal_channel") or node.get("solver_condensed_into"):
+                continue
+            # A welded/bent fabrication path legitimately has two incident
+            # members: its fixed-angle joint transmits moment.  Degree three
+            # is a useful space-frame heuristic, not a law for a continuous
+            # strap or weld seam.
+            if node.get("fabrication_path_node"):
                 continue
             if d < 3:
                 problems.append(f"{ident}: only {d} connection(s) -- underconstrained")
@@ -2336,6 +2355,9 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
     g.node("turret.blast_panel", [0.0, gun_y, BREECH_Z - breech_length_m / 2.0 - 0.05],
            "frangible-blast-panel", motion_group="fine", recoils=True,
            mass_kg=14.0, mass_in_total=False, material="steel-plate",
+           structural_participation=False,
+           solver_condensed_into="turret.breech", solver_condensed_mass=True,
+           condensed_while="frangible-seats-are-latched",
            half_extent_m=(breech_radius_m * 0.8, breech_radius_m * 0.8, 0.035),
            vents="rearward", release_pressure_pa=3.5e6,
            opens_on="over-recoil-past-the-backstop")
@@ -2655,16 +2677,23 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
                palette="rollbar-silver", beam_solvable=True,
                part_role="spine-module-joint",
                load_path="square-hollow-section-stiffening-the-tube")
-    # two bands per module, or the channel is a flap rather than a beam
+    # One fabricated clamp strap per module.  This used to be two abstract
+    # centre-to-surface spokes called "bands".  They had neither a perimeter,
+    # a hinge, a tensioning screw nor contact surfaces, so fixed beam ends were
+    # standing in for all four pieces of real hardware.
+    from fabrication import WrapProfile, emit_shaped_iron_strap
     for i in range(spine_modules + 1):
-        f = i / spine_modules
-        w = min(int(f * (N_WASHER - 1)), N_WASHER - 1)
-        for k, off in enumerate((0, 1)):
-            g.edge(f"turret.spine_band.{i}.{k}", f"turret.spine.{i}",
-                   outer_nodes[f"w{min(max(w + off, 0), N_WASHER - 1)}.3"],
-                   "rigid-distance", radius=0.020, palette="rollbar-silver",
-                   part_role="spine-band",
-                   load_path="spine-clamped-to-the-barrel")
+        z = spine_z0 + SPINE_SECTION_M * i
+        emit_shaped_iron_strap(
+            g, f"turret.spine_strap.{i}",
+            (WrapProfile("turret.outer_barrel", "circle", (0.0, gun_y),
+                         radius_m=outer_r),
+             WrapProfile(f"turret.spine.{i}", "box", (0.0, spine_y),
+                         half_extent_m=(spine_side_m / 2.0,
+                                        spine_side_m / 2.0))),
+            station_m=z, width_m=0.100, thickness_m=0.020,
+            clearance_m=0.002, material="4130n", bolt="M20",
+            bolt_class="10.9", set_torque_nm=430.0)
         # SUPPORT HARD POINTS, at every module joint. Firing near
         # vertical the tube is a mast and wants holding somewhere other
         # than the trunnion it is already hanging off.
@@ -2736,11 +2765,19 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
     for i in range(0, spine_modules + 1, 2):
         f = i / spine_modules
         w = min(int(f * (N_WASHER - 1)), N_WASHER - 1)
+        # This is a drilled/raked void through metal already owned by the
+        # evacuator and outer-barrel bodies. It has flow area, but no separate
+        # mass, section or material capacity of its own.
         g.edge(f"turret.evacuator_port.{i}", f"turret.evacuator.{i}",
-               outer_nodes[f"w{w}.3"], "rigid-distance",
-               radius=0.010, palette="rollbar-silver",
+               outer_nodes[f"w{w}.3"], "exhaust-flow-path",
+               radius=0.006, wall_m=0.0, material="propellant-gas",
+               circuit_identity="bore-evacuator", palette="service-line",
                part_role="evacuator-port", rake_deg=35.0,
                port_area_m2=round(math.pi * 0.006 ** 2, 6),
+               cleanliness_fraction=1.0, fouling_mass_g=0.0,
+               occluded_area_fraction=0.0,
+               service_state="clean-open",
+               service_action="bore-brush-and-solvent-flush",
                blows="toward-the-muzzle-once-the-bore-falls-to-atmosphere",
                load_path="evacuator-ported-into-the-bore")
 
@@ -2865,6 +2902,8 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
                         gun_y + chamber_r * math.sin(ang), zc],
                        "coolant-chamber", material="gun-steel",
                        mass_in_total=False,
+                       solver_condensed_into="turret.outer_barrel",
+                       solver_condensed_mass=False,
                        part_role="barrel-jacket-chamber",
                        fluid="coolant", fluid_volume_l=round(vol_l, 4),
                        station=i, quadrant=qname,
@@ -2926,6 +2965,8 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
                    mass_in_total=False, material="6061t6",
                    youngs_modulus_pa=69.0e9,
                    mass_kg=round(sleeve_vol * 2700.0, 2),
+                   solver_condensed_into="turret.outer_barrel",
+                   solver_condensed_mass=True,
                    part_role="jacket-filler-sleeve",
                    shape="tube", tube_axis=(0.0, 0.0, 1.0),
                    tube_outer_radius_m=round(sleeve_outer_r, 4),
@@ -3779,7 +3820,8 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
             g.edge(f"turret.journal.{tag}.bear.{k}", f"turret.journal.{tag}",
                    f"turret.spine.{_mod}", "single-axis-slider",
                    radius=_tank_half * 0.7, palette="chassis-grey",
-                   free_axis="bore", travel_m=RECOIL_STROKE_M,
+                   free_axis="bore", slide_axis=(0.0, 0.0, 1.0),
+                   travel_m=RECOIL_STROKE_M,
                    bearing_pressure_pa=round(
                        48_000.0 / max(JOURNAL_LENGTH_M, 0.1)
                        / (JOURNAL_LENGTH_M * spine_side_m), 0),
@@ -3805,7 +3847,8 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
         g.edge(f"turret.journal.side.bear.{k}", f"turret.journal.side.{k}",
                f"turret.spine.{_mod}", "single-axis-slider",
                radius=_tank_half * 0.5, palette="chassis-grey",
-               free_axis="bore", travel_m=RECOIL_STROKE_M,
+               free_axis="bore", slide_axis=(0.0, 0.0, 1.0),
+               travel_m=RECOIL_STROKE_M,
                load_path="side-journal-stopping-the-stack-rolling")
     # THE STRUT UP THE CHANNEL. Bottom piece to top piece, through the
     # middle piece, on a slot as long as the stroke.
@@ -3831,8 +3874,66 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
            f"turret.spine.{min(max(int(round((_journal_z - spine_z0) / SPINE_SECTION_M)), 0), spine_modules)}",
            "single-axis-slider", radius=TANK_CHANNEL_M / 2.0,
            palette="chassis-grey", free_axis="bore",
-           travel_m=RECOIL_STROKE_M,
+           slide_axis=(0.0, 0.0, 1.0), travel_m=RECOIL_STROKE_M,
            load_path="the-slot-the-strut-rides-in")
+
+    # TWO REAR STOPS, symmetric about the bore.  The moving strikers are
+    # part of the square tank and the buffers are carried by the closed
+    # journal shoe.  Their 844 mm open gap is the allowed recoil travel;
+    # no force exists before it closes.  At the end of travel the pair
+    # shares the reaction without putting a roll moment into the slide.
+    _stop_z = _journal_z - RECOIL_STROKE_M / 2.0
+    _striker_z = _journal_z + RECOIL_STROKE_M / 2.0
+    for side, sx in (("left", -0.62), ("right", +0.62)):
+        x = sx * _tank_half
+        fixed = f"turret.bump_stop.{side}.buffer"
+        moving = f"turret.bump_stop.{side}.striker"
+        g.assembly = "recoil-gear"
+        g.motion_group = "elevation"
+        g.node(fixed, [x, spine_y, _stop_z], "recoil-bump-stop-buffer",
+               material="polyurethane", mass_in_total=False, mass_kg=2.4,
+               part_role="rear-recoil-bump-stop", recoils=False,
+               half_extent_m=(0.042, 0.042, 0.030))
+        g.edge(f"{fixed}.seat", fixed, "turret.journal.lower",
+               "rigid-distance", radius=0.024, alloy="4340qt",
+               palette="chassis-grey",
+               load_path="rear-stop-buffer-into-the-closed-journal-shoe")
+        g.edge(f"{fixed}.brace", fixed, "turret.journal.upper",
+               "rigid-distance", radius=0.018, alloy="4340qt",
+               palette="chassis-grey",
+               load_path="rear-stop-buffer-braced-across-the-closed-journal-shoe")
+        g.motion_group = "fine"
+        g.node(moving, [x, spine_y, _striker_z], "recoil-stop-striker",
+               material="4340qt", mass_in_total=False, mass_kg=1.8,
+               part_role="rear-recoil-stop-striker", recoils=True,
+               half_extent_m=(0.046, 0.046, 0.024))
+        g.edge(f"{moving}.seat", moving,
+               f"turret.spine.{min(max(int(round((_striker_z - spine_z0) / SPINE_SECTION_M)), 0), spine_modules)}",
+               "rigid-distance", radius=0.026, alloy="4340qt",
+               palette="rollbar-silver",
+               load_path="rear-stop-striker-is-part-of-the-recoiling-tank")
+        g.edge(f"{moving}.brace", moving,
+               f"turret.spine.{min(max(int(round((_striker_z - spine_z0) / SPINE_SECTION_M)) + 1, 0), spine_modules)}",
+               "rigid-distance", radius=0.018, alloy="4340qt",
+               palette="rollbar-silver",
+               load_path="rear-stop-striker-braced-into-the-recoiling-tank")
+        g.edge(f"turret.bump_stop.{side}.contact", fixed, moving,
+               "bump-stop-contact", radius=0.040,
+               palette="actuator-yellow",
+               kind=("bump-stop" if side == "left"
+                     else "equalized-bump-stop-face"),
+               slide_axis=(0.0, 0.0, 1.0),
+               coupled_slide_edges=(
+                   ("turret.bump_stop.left.contact",
+                    "turret.bump_stop.right.contact")
+                   if side == "left" else ()),
+               slide_load_share=((0.5, 0.5) if side == "left" else ()),
+               clearance_m=RECOIL_STROKE_M,
+               maximum_compression_m=0.030,
+               linear_stiffness_n_per_m=12.0e6,
+               cubic_stiffness_n_per_m3=1.2e10,
+               compression_damping_n_s_per_m=90_000.0,
+               load_path="symmetric-rear-stop-at-the-end-of-slide-travel")
 
     # ---- THE TRUNNION, ON THE LOWER SHOE ----
     g.assembly = "trunnion-thrust-seat"
@@ -3844,11 +3945,26 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
            bore_to_pivot_m=round(gun_y - (spine_y - _tank_half - _shoe_t
                                           - 0.06), 4),
            half_extent_m=(_tank_half, 0.060, 0.180))
-    for k in range(3):
-        g.edge(f"turret.trunnion.block_tie.{k}", "turret.trunnion.block",
-               "turret.journal.lower", "rigid-distance", radius=0.038,
-               palette="rollbar-silver",
-               load_path="trunnion-block-into-the-lower-shoe")
+    # These faces touch at the block top/shoe underside.  Three duplicate
+    # centreline beams used to stand in for the joint, tripling stiffness at
+    # one point without creating a bolt spacing or weld lever arm.  Put six
+    # real filler-metal elements along the two outside fillets instead.
+    from fabrication import weld_touching
+    from welding import shop_weld
+    _weld_throat = 0.008
+    _interface_y = spine_y - _tank_half - _shoe_t
+    _toe_pairs = []
+    for sx in (-1.0, 1.0):
+        for dz in (-0.12, 0.0, 0.12):
+            _toe_pairs.append((
+                (sx * _tank_half, _interface_y - _weld_throat, _journal_z + dz),
+                (sx * (_tank_half - _weld_throat), _interface_y,
+                 _journal_z + dz)))
+    weld_touching(
+        g, "turret.trunnion.block_to_lower_shoe",
+        "turret.trunnion.block", "turret.journal.lower", _toe_pairs,
+        throat_m=_weld_throat, quality=shop_weld("4340qt"),
+        restraint=0.85, stress_relieved=True)
     g.edge("turret.trunnion.pin", "turret.trunnion.block", "turret.pitch",
            "pinned-trunnion-mount", radius=0.070, alloy="4340qt",
            palette="rollbar-silver", frame_mount=True,
@@ -3859,19 +3975,24 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
     # Three elements, three bores, one body, and the reaction goes
     # straight into the shoe that is already wrapped around them.
     g.assembly = "recoil-absorber"
+    _recuperator_total_rate = 2.0 * 30934.0 / RECOIL_STROKE_M ** 2
     _absorber = (
         ("spring", "spring-damper", dict(
-            spring_rate_n_per_m=2.0 * 30934.0 / RECOIL_STROKE_M ** 2,
+            spring_rate_n_per_m=_recuperator_total_rate / 3.0,
+            force_components=("spring-recuperator",),
             peak_factor=2.0, alone_takes_full_charge=True,
-            note="passive, always there, and what returns it to battery")),
+            note="one of three equal recuperator springs around the pistons")),
         ("orifice", "oleo-recoil-slide", dict(
             orifice_area_m2=6.2e-4, peak_factor=3.0,
+            force_components=("oil-orifice",),
             alone_takes_full_charge=True,
             note="force with the square of velocity: biggest at the "
                  "start, and it never quite stops the mass on its own")),
         ("magnetorheological", "linear-hydraulic-actuator", dict(
             yield_min_pa=1.0e3, yield_max_pa=6.0e4, gap_m=0.006,
             peak_factor=1.0, controllable=True, coil_watts=22.0,
+            kind="magnetorheological", current_frac=1.0,
+            force_components=("mr-yield",),
             alone_takes_full_charge=True,
             note="the only one that can be trimmed DOWN, so it is what "
                  "flattens the sum of the other two")),
@@ -3904,7 +4025,8 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
                f"turret.absorber.piston.{name}",
                f"turret.spine.{min(1, spine_modules)}", "single-axis-slider",
                radius=ABSORBER_BORE_M / 2.0, palette="chassis-grey",
-               free_axis="bore", travel_m=RECOIL_STROKE_M,
+               free_axis="bore", slide_axis=(0.0, 0.0, 1.0),
+               travel_m=RECOIL_STROKE_M,
                load_path="piston-bearing-in-the-bore-it-runs-in")
         # AND THE ELEMENT: the column of fluid between that piston and
         # the closed end of its own bore in the tank.
@@ -3913,22 +4035,35 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
                radius=ABSORBER_BORE_M / 2.0, palette="actuator-yellow",
                part_role="recoil-absorber-element",
                recoil_stroke_m=RECOIL_STROKE_M,
+               slide_axis=(0.0, 0.0, 1.0),
                piston_area_m2=round(_elem_area, 6),
                working_pressure_pa=2.0e7,
                parallel_with=[f"turret.absorber.{n}" for n, _, _ in _absorber
                               if n != name],
                **attrs)
+        if name != "spring":
+            # One third of the recuperator surrounds each piston. The three
+            # rates sum to the original stored-energy design while their
+            # symmetric placement removes the off-axis spring couple.
+            g.edge(f"turret.absorber.recuperator.{name}",
+                   f"turret.absorber.piston.{name}", "turret.spine.0",
+                   "spring-damper", radius=ABSORBER_BORE_M * 0.42,
+                   palette="actuator-yellow",
+                   part_role="recoil-absorber-recuperator-spring",
+                   recoil_stroke_m=RECOIL_STROKE_M,
+                   slide_axis=(0.0, 0.0, 1.0),
+                   spring_rate_n_per_m=_recuperator_total_rate / 3.0,
+                   force_components=("spring-recuperator",),
+                   parallel_with=["turret.absorber.spring"],
+                   note="equal spring share around each of the three pistons")
 
     g.assembly = "gun-tube"
 
-    g.edge("turret.recoil_slide", "turret.breech", "turret.cradle", "oleo-recoil-slide",
+    g.edge("turret.recoil_slide", "turret.breech", "turret.cradle", "single-axis-slider",
            radius=max(0.020, barrel_radius_m * 0.6), palette="actuator-yellow",
            slide_axis=(0.0, 0.0, 1.0), recoiling_mass_kg=slide_mass_kg,
            recoil_stroke_m=slide_stroke_m,
            piston_bore_m=slide_piston_bore_m,
-           gas_charge_pressure_pa=round(slide["gas_charge_pressure_pa"], 1),
-           gas_volume_m3=slide["gas_volume_m3"],
-           orifice_area_m2=slide["orifice_area_m2"],
            metering_pin=True,
            carries_firing_load=True,
            recoil_velocity_m_s=round(slide["recoil_velocity_m_s"], 3),
@@ -3989,9 +4124,10 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
     # ---- THE THRUST SEAT, AND WHAT PRELOADS IT ----
     # RECOIL IS AXIAL; AIMING IS ANGULAR. They are orthogonal, so there
     # is no need to switch between carrying the shot and being able to
-    # aim -- a SPHERICAL seat can be rigid along the bore and free in
-    # rotation at the same time, and then the fine legs never see the
-    # shot at all.
+    # aim. The spherical seat is between the NON-RECOILING closed journal
+    # shoe and the pitch body: the slide and its three absorbers act first,
+    # then their reaction crosses this seat into the trunnion. Putting the
+    # seat on the moving collar would bypass and lock the recoil slide.
     #
     # The arithmetic is one-sided to the point of being funny. A 20 mm
     # leg's stiffness is its oil column, beta*A/L, which comes to
@@ -4017,25 +4153,23 @@ def build_gimbal_cannon_station(*, bore_mm: float = 40.0, well_half: float = 0.8
     # every joint they cross, which is pointing error the coarse drives
     # cannot control away.
     seat_r = 0.075
-    # THE SEAT IS THE COLLAR SITTING IN THE TRUNNION. It ran from the
-    # platform's hub across the whole breech to the trunnion, which is
-    # neither of the two parts that actually bear on each other. The
-    # collar IS the interface -- that is what a collar is for.
+    # The journal shoe is already tied to the trunnion block. This parallel
+    # seat carries translation while allowing the pitch rotations.
     g.assembly = "trunnion-thrust-seat"
-    g.edge("turret.thrust_seat", "turret.collar", "turret.pitch",
+    g.edge("turret.thrust_seat", "turret.journal.lower", "turret.pitch",
            "spherical-thrust-seat",
            radius=0.055, palette="rollbar-silver",
            seat_radius_m=seat_r, free_rotation=True, carries_firing_load=True,
            axial_stiffness_n_per_m=200e9 * math.pi * seat_r ** 2 / 0.06,
            bearing_stress_pa=round(worst_shot_n / (math.pi * seat_r ** 2), 1),
            load_path="shot-goes-straight-into-the-trunnion-around-the-fine-stage")
-    # the recuperator is what tries to unseat it, so that is what the
-    # preload is measured against
-    recup_area = math.pi * slide_piston_bore_m ** 2 / 4.0
-    recup_n = slide["gas_charge_pressure_pa"] * recup_area * 2.6 ** 1.35
+    # The recuperator's maximum return force is its declared linear rate at
+    # full stroke. Size the seat stacks against that actual element instead
+    # of the removed, duplicate gas-over-oil slide law.
+    recup_n = _recuperator_total_rate * RECOIL_STROKE_M
     preload_total_n = (recup_n + slide_mass_kg * 9.81) * preload_margin
     for k, ang in enumerate((0.0, 2.0943951, 4.1887902)):
-        g.edge(f"turret.seat_preload.{k}", "turret.collar", "turret.pitch",
+        g.edge(f"turret.seat_preload.{k}", "turret.journal.lower", "turret.pitch",
                "belleville-preload-stack", radius=0.038, palette="actuator-yellow",
                preload_n=round(preload_total_n / 3.0, 1),
                stack_rate_n_per_m=1.0e7,

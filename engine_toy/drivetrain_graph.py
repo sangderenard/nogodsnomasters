@@ -308,7 +308,7 @@ def _add_belt_driven_compressor(node, edge, identity: str, position: tuple[float
     return max_torque_nm
 
 
-def build_drivetrain_graph(engine) -> dict[str, Any]:
+def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) -> dict[str, Any]:
     """Lay out exactly one engine's own drivetrain via the real game's
     own _vehicle_powertrain_graph subunit (camshaft, belt-driven
     alternator, engine/clutch/transmission chain, dog-clutch bypass,
@@ -348,7 +348,8 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # non-degenerate center of gravity and inertia distribution can
         # be computed directly off the graph's own node masses/positions
         # instead of one lumped point mass at the crank centerline.
-        component_masses={"engine": engine.mass_kg * ENGINE_CRANK_FLYWHEEL_MASS_FRACTION},
+        component_masses={"engine": (0.0 if engine.kind == "turbine" else
+                                      engine.mass_kg * ENGINE_CRANK_FLYWHEEL_MASS_FRACTION)},
         include_wheel_output=False,
         use_belt_accessories=True,
         peak_torque_nm=engine.peak_torque_nm,
@@ -414,6 +415,14 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     node("powertrain.crank_shaft.rear", [crank_x_max, 0.0, 0.0], "crank-shaft-endpoint")
     edge("powertrain.crank_shaft", "powertrain.crank_shaft.front", "powertrain.crank_shaft.rear",
          "crank-shaft-reference", radius=0.02)
+    # powertrain.engine is the live angular-state node used by
+    # EngineCycleSim; the two shaft-endpoint nodes are its physical ports.
+    # Join that state to the rear output explicitly so the graph itself has
+    # a continuous engine -> clutch -> gearbox path instead of relying on a
+    # reader to know that the coincident crank geometry implied the link.
+    edge("powertrain.crank_shaft_engine_hub", "powertrain.engine",
+         "powertrain.crank_shaft.rear", "rigid-keyed-hub", radius=0.020,
+         power_flow=True)
 
     # A real engine block casting -- the piece that was missing this
     # whole time: with no block volume drawn at all, the only thing
@@ -476,7 +485,8 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # sites' own docstring); the head share stays folded into the
         # one block node rather than fabricating a position for it.
         node("powertrain.engine_block_body", [0.0, 0.0, 0.0],
-             "engine-block-component", mass_in_total=True, mass_kg=block_mass_kg + head_mass_kg,
+             "engine-block-component", mass_in_total=engine.kind != "turbine",
+             mass_kg=0.0 if engine.kind == "turbine" else block_mass_kg + head_mass_kg,
              body_half_extent_m=[block_half_x, block_half_y, block_half_z])
 
     # "powertrain.engine" (the crank's own real node -- kept, it's the
@@ -1167,7 +1177,9 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     elif engine.kind in ("combustion", "turbine"):
         fd = engine.fuel_delivery
         fuel_density = FUEL_DENSITY_KG_M3.get(engine.preferred_fuel_profile, 745.0)
-        tank_capacity_kg = fd.tank_capacity_l * fuel_density / 1000.0
+        supplied = external_fuel_supply or {}
+        reservoirs = tuple(supplied.get("reservoirs") or ({
+            "identity": "fuel.tank", "capacity_l": fd.tank_capacity_l},))
         # a turbine has no carburetor float bowl -- its real fuel
         # delivery point is a pressurized rail feeding the combustor's
         # fuel nozzles, the same "fuel-rail" real hardware class an EFI
@@ -1185,24 +1197,79 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # IS engine-mounted (bolted to the carb/injectors) and stays
         # close, at `front`.
         chassis_remote = (front[0] - 0.35, -0.30, 0.40)
-        tank_pos = (chassis_remote[0], chassis_remote[1], chassis_remote[2])
-        if fd.pump_kind == "mechanical":
-            # a mechanical pump is ENGINE-mounted -- driven off the cam
-            # (a diaphragm pump on the timing-cover flank) or the belt (a
-            # race barrel pump) -- so it sits on the block's front flank,
-            # not out at the chassis with the electric in-tank pump
-            pump_pos = (front[0] - 0.02, front[1] - 0.04, front[2] + engine_geometry.block_half_yz_m(engine) * 1.1)
-        else:
-            pump_pos = (chassis_remote[0] + 0.06, chassis_remote[1] + 0.03, chassis_remote[2] - 0.03)
         rail_pos = (front[0] + 0.03, front[1] + 0.02, front[2])
-        node("fuel.tank", tank_pos, "high-pressure-canister",
-             mass_kg=2.0 + tank_capacity_kg * 0.05, capacity_kg=tank_capacity_kg, chassis_side=True)
-        # chassis_side: the tank always, the pump only when it is the
-        # electric in-tank/inline kind -- a mechanical pump is bolted to
-        # the engine (see pump_pos above) and belongs in its view/crate
-        node("fuel.pump", pump_pos,
-             "electro-mechanical-pump" if fd.pump_kind == "electric" else "mechanical-diaphragm-pump",
-             chassis_side=(fd.pump_kind != "mechanical"))
+        inlet_identity = None
+        if external_fuel_supply:
+            inlet_identity = str(supplied.get(
+                "inlet_identity", "powertrain.external_fuel_in"))
+            node(inlet_identity,
+                 (rail_pos[0], rail_pos[1], rail_pos[2] - 0.08),
+                 "engine-block-port", mass_kg=0.8,
+                 port_kind="external-fuel-inlet",
+                 part_role="engine-external-fuel-intake-port",
+                 accepted_fuel=engine.preferred_fuel_profile,
+                 externally_authored=True,
+                 source_graph_identity=inlet_identity)
+        reservoir_positions = {}
+        for i, reservoir in enumerate(reservoirs):
+            tank_identity = str(reservoir["identity"])
+            capacity_l = float(reservoir["capacity_l"])
+            reservoir_fuel = str(reservoir.get(
+                "fuel", engine.preferred_fuel_profile))
+            reservoir_density = FUEL_DENSITY_KG_M3.get(
+                reservoir_fuel, fuel_density)
+            tank_capacity_kg = capacity_l * reservoir_density / 1000.0
+            tank_pos = (chassis_remote[0], chassis_remote[1],
+                        chassis_remote[2] + i * 0.08)
+            reservoir_positions[tank_identity] = tank_pos
+            node(tank_identity, tank_pos, "fuel-storage-vessel",
+                 mass_kg=float(reservoir.get("tare_mass_kg", 19.0)),
+                 capacity_kg=tank_capacity_kg, fluid_volume_l=capacity_l,
+                 fluid=reservoir_fuel, chassis_side=True,
+                 externally_authored=bool(external_fuel_supply),
+                 source_graph_identity=reservoir.get("source_graph_identity",
+                                                      tank_identity))
+        pump_specs = tuple(supplied.get("pumps") or ())
+        if not pump_specs:
+            pump_specs = ({
+                "identity": str(supplied.get("pump_identity", "fuel.pump")),
+                "pump_kind": str(supplied.get("pump_kind", fd.pump_kind)),
+                "flow_capacity_kg_s": float(supplied.get(
+                    "pump_flow_capacity_kg_s", fd.pump_flow_capacity_kg_s)),
+                "reservoir_identities": tuple(
+                    str(r["identity"]) for r in reservoirs),
+            },)
+        seen_pump_ids = set()
+        normalized_pumps = []
+        for i, pump in enumerate(pump_specs):
+            pump_identity = str(pump["identity"])
+            if pump_identity in seen_pump_ids:
+                raise ValueError(f"duplicate external fuel pump identity: {pump_identity}")
+            seen_pump_ids.add(pump_identity)
+            assigned = pump.get("reservoir_identities")
+            if assigned is None:
+                assigned = (str(pump["reservoir_identity"]),)
+            assigned = tuple(str(identity) for identity in assigned)
+            unknown = set(assigned) - set(reservoir_positions)
+            if unknown:
+                raise ValueError(
+                    f"fuel pump {pump_identity} names unknown reservoirs: {sorted(unknown)}")
+            pump_kind = str(pump.get("pump_kind", "electric"))
+            if pump_kind == "mechanical":
+                pump_pos = (front[0] - 0.02, front[1] - 0.04,
+                            front[2] + engine_geometry.block_half_yz_m(engine) * 1.1)
+            else:
+                source_pos = reservoir_positions[assigned[0]]
+                pump_pos = (source_pos[0] + 0.06, source_pos[1] + 0.03,
+                            source_pos[2] - 0.03)
+            node(pump_identity, pump_pos,
+                 "electro-mechanical-pump" if pump_kind == "electric" else "mechanical-diaphragm-pump",
+                 chassis_side=(pump_kind != "mechanical"),
+                 externally_authored=bool(external_fuel_supply),
+                 source_graph_identity=pump.get("source_graph_identity",
+                                                pump_identity))
+            normalized_pumps.append((pump_identity, assigned, float(pump.get(
+                "flow_capacity_kg_s", fd.pump_flow_capacity_kg_s))))
         # dressing.emit_dressing_graph (already run, above) creates this
         # exact rail/bowl identity itself whenever it finds real
         # injector/float-bowl bosses to hang it off of -- creating it
@@ -1213,12 +1280,28 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
         # into the one dressing already placed and sized.
         if not any(n["identity"] == rail_identity for n in nodes):
             node(rail_identity, rail_pos, "fuel-rail" if rail_identity.endswith("fuel_rail") else "float-bowl")
-        edge("fuel.tank_to_pump", "fuel.tank", "fuel.pump", "fuel-supply-line",
-             radius=max(0.002, fd.line_diameter_mm / 2000.0), circuit_identity="fuel",
-             medium_rate_state="fuel-flow-and-pressure")
-        edge("fuel.pump_to_rail", "fuel.pump", rail_identity, "fuel-supply-line",
-             radius=max(0.002, fd.line_diameter_mm / 2000.0), circuit_identity="fuel",
-             flow_capacity_kg_s=fd.pump_flow_capacity_kg_s, medium_rate_state="fuel-flow-and-pressure")
+        for pump_i, (pump_identity, assigned, flow_capacity) in enumerate(normalized_pumps):
+            for source_i, tank_identity in enumerate(assigned):
+                edge(("fuel.tank_to_pump" if not external_fuel_supply else
+                      f"fuel.external_reservoir_{pump_i}_{source_i}_to_pump"),
+                     tank_identity, pump_identity, "fuel-supply-line",
+                     radius=max(0.002, fd.line_diameter_mm / 2000.0),
+                     circuit_identity="fuel",
+                     medium_rate_state="fuel-flow-and-pressure")
+            pump_target = inlet_identity or rail_identity
+            edge(("fuel.pump_to_rail" if len(normalized_pumps) == 1 else
+                  f"fuel.external_pump_{pump_i}_to_inlet"),
+                 pump_identity, pump_target, "fuel-supply-line",
+                 radius=max(0.002, fd.line_diameter_mm / 2000.0),
+                 circuit_identity="fuel", flow_capacity_kg_s=flow_capacity,
+                 medium_rate_state="fuel-flow-and-pressure")
+        if inlet_identity is not None:
+            edge("fuel.external_inlet_to_rail", inlet_identity, rail_identity,
+                 "fuel-supply-line",
+                 radius=max(0.002, fd.line_diameter_mm / 2000.0),
+                 circuit_identity="fuel",
+                 medium_rate_state="fuel-flow-and-pressure",
+                 installation_boundary="station-hose-to-engine-fuel-system")
     elif engine.kind == "atmospheric":
         if engine.atmospheric_supply_tank_capacity_kg > 0.0:
             # A real on-site generator (gas_works.py) feeds a real
@@ -1627,6 +1710,31 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
     # final real position (the blower case is built around that rotor)
     from engine_parts import emit_universal_parts
     emit_universal_parts(engine, layout, nodes, edges, node, edge)
+    if engine.kind == "turbine":
+        from turbine_parts import emit_module_records
+        made = emit_module_records(engine, node, edge)
+        if made:
+            # The generic gas-path nodes remain the actual flow/shaft ports
+            # stepped by DrivetrainSolver.  Their old primitive bodies are
+            # suppressed because the real module records above now own the
+            # physical package and mesh.
+            superseded_shells = {
+                "powertrain.engine", "powertrain.engine_block_body",
+                "powertrain.oil_pan", "powertrain.inlet_plenum",
+                "powertrain.compressor_impeller",
+                "powertrain.compressor_diffuser", "powertrain.combustor",
+                "powertrain.turbine_ngv", "powertrain.turbine_wheel",
+                "powertrain.power_turbine", "powertrain.exhaust_duct",
+                "powertrain.power_turbine_reduction",
+                "powertrain.accessory_gearbox",
+            }
+            for record in nodes:
+                if record["identity"] in superseded_shells:
+                    record["drawn_by"] = "turbine_parts:module-records"
+                    # The declared 1,134 kg module set owns the package mass.
+                    # These records remain the live solver/port state and must
+                    # not silently double-count their former proxy bodies.
+                    record["mass_in_total"] = False
 
     # the auxiliary plant (plant_parts.py): the compressed-air treatment
     # train, the refrigerant loop's chillers, the hydraulic tank, the
@@ -1875,7 +1983,7 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
              "vent-line", radius=0.003, circuit_identity="gear-oil", material="nylon-airline")
 
 
-    return {"schema": "engine-toy-drivetrain-graph-v1", "identity": f"{engine.identity}/drivetrain",
+    graph = {"schema": "engine-toy-drivetrain-graph-v1", "identity": f"{engine.identity}/drivetrain",
             "cylinder_layout": cylinder_layout,
             # the head's declared interior (engines.CombustionChamber) so a
             # renderer working from the graph alone can cut the real roof
@@ -1884,6 +1992,8 @@ def build_drivetrain_graph(engine) -> dict[str, Any]:
             "nodes": nodes, "edges": edges,
             "propeller_rated_torque_nm": propeller_rated_torque_nm,
             "propeller_rated_omega_rad_s": propeller_rated_omega_rad_s}
+    from fluid_routing import annotate_fluid_routes
+    return annotate_fluid_routes(graph)
 
 
 # Everything past the block's own freewheel (the direct_drive_bypass dog
@@ -2072,6 +2182,8 @@ def _circuit_thermal_capacity(edges: list[dict], node_ids: frozenset[str], node_
 
 
 def _line_length_m(e: dict, node_by_id: dict[str, dict]) -> float:
+    if "route_length_m" in e:
+        return float(e["route_length_m"])
     a = node_by_id.get(e["a"], {}).get("reference_position")
     b = node_by_id.get(e["b"], {}).get("reference_position")
     if a is None or b is None:

@@ -36,6 +36,7 @@ could drift from the original; running the game's own text cannot.
 """
 from __future__ import annotations
 
+import math
 import re
 import sys
 from dataclasses import dataclass, field
@@ -47,6 +48,433 @@ import numpy as np
 _TURING_ROOT = Path(__file__).resolve().parents[1] / "turing"
 if str(_TURING_ROOT) not in sys.path:
     sys.path.insert(0, str(_TURING_ROOT))
+
+
+class GraphJointForces:
+    """Evaluate graph-declared recoil elements and scatter their forces.
+
+    This owns no body state and performs no integration.  It is the shared
+    boundary between constitutive elements and whichever integrator owns the
+    graph's masses.  An element may couple to several guide edges; that is how
+    a recoil equalizer loads both slide carriages without concentrating the
+    whole reaction at the breech node.
+    """
+
+    def __init__(self, document: dict, *, linear_embedded: bool = False):
+        from structure_native import (linear_spring_joints, oleo_force_joints,
+                                      joint_bank_for)
+
+        self.document = document
+        self.linear_embedded = bool(linear_embedded)
+        self.index = {node["identity"]: i
+                      for i, node in enumerate(document["nodes"])}
+        self.edge_by_id = {edge["identity"]: edge
+                           for edge in document["edges"]}
+        self.passive_edges = oleo_force_joints(document)
+        self.linear_edges = linear_spring_joints(document)
+        self.mr_edges = [edge for edge in document["edges"]
+                         if edge.get("kind") == "magnetorheological"]
+        self.bump_stop_edges = [edge for edge in document["edges"]
+                                if edge.get("kind") == "bump-stop"]
+        self.edges = [*self.passive_edges, *self.linear_edges, *self.mr_edges,
+                      *self.bump_stop_edges]
+        self.bank = joint_bank_for(document)
+        self.rest_force = self.bank.step(0.0)[:, -1].copy()
+        self.passive_effective_mass_kg = np.ones(self.bank.n, dtype=float)
+        self.bump_effective_mass_kg = np.ones(len(self.bump_stop_edges),
+                                              dtype=float)
+        self.last_element_force = {
+            edge["identity"]: 0.0 for edge in self.edges}
+        self.last_step_limiter = None
+
+    def _position_forward_stop(self, stage: str, command: float) -> None:
+        """Place an adjustable stop for the requested stage preload.
+
+        The stop reaches its full-forward set position at the stage's normal
+        installed preload, not only at the ram's emergency maximum.  Below
+        that setting it withdraws proportionally so a zero-force command
+        genuinely releases the swing to hang.
+        """
+        for edge in self.bump_stop_edges:
+            if (edge.get("part_role") != "adjustable-forward-preload-stop"
+                    or edge.get("stage") != stage):
+                continue
+            nominal = float(edge["nominal_clearance_m"])
+            release = float(edge.get("release_adjustment_m", 0.0))
+            installed = max(float(edge.get(
+                "installed_preload_command_frac", 0.0)), 1.0e-12)
+            closure = min(1.0, max(0.0, command) / installed)
+            edge["clearance_m"] = nominal - (1.0 - closure) * release
+            edge["preload_command_frac"] = command
+
+    def command_platform_preload(self, fraction: float) -> None:
+        """Command both swing stages as a fraction of each ram's capacity."""
+        command = min(1.0, max(0.0, float(fraction)))
+        stages = set()
+        for edge in self.linear_edges:
+            if edge.get("part_role") != "platform-actuator":
+                continue
+            low = float(edge.get("minimum_preload_n", 0.0))
+            high = float(edge.get("maximum_preload_n",
+                                  edge.get("holding_force_n", low)))
+            edge["commanded_preload_n"] = low + command * (high - low)
+            edge["preload_command_frac"] = command
+            stages.add(str(edge.get("stage")))
+        for stage in stages:
+            self._position_forward_stop(stage, command)
+
+    def command_platform_preload_force(self, force_n: float,
+                                       stage: str | None = None) -> dict[str, float]:
+        """Press selected swing stage(s) into their forward stop in newtons.
+
+        ``force_n`` is the total force across the stage.  It is divided evenly
+        between that stage's parallel hydraulic rams and clamped only by
+        their declared combined capacity.  The returned mapping reports the
+        force actually commanded for each selected stage.
+        """
+        requested = max(0.0, float(force_n))
+        grouped: dict[str, list[dict]] = {}
+        for edge in self.linear_edges:
+            if edge.get("part_role") != "platform-actuator":
+                continue
+            identity = str(edge.get("stage"))
+            if stage is None or identity == stage:
+                grouped.setdefault(identity, []).append(edge)
+        if stage is not None and stage not in grouped:
+            raise KeyError(f"no platform actuators for stage {stage!r}")
+        applied = {}
+        for identity, actuators in grouped.items():
+            capacity = sum(float(edge.get(
+                "maximum_preload_n", edge.get("holding_force_n", 0.0)))
+                           for edge in actuators)
+            total = min(requested, capacity)
+            share = total / len(actuators)
+            for edge in actuators:
+                high = float(edge.get(
+                    "maximum_preload_n", edge.get("holding_force_n", 0.0)))
+                commanded = min(share, high)
+                edge["commanded_preload_n"] = commanded
+                edge["preload_command_frac"] = (
+                    commanded / high if high > 0.0 else 0.0)
+            # Equal rams currently have equal capacities.  Use the achieved
+            # total so this remains correct if a future graph derates one.
+            achieved = sum(float(edge["commanded_preload_n"])
+                           for edge in actuators)
+            fraction = achieved / capacity if capacity > 0.0 else 0.0
+            self._position_forward_stop(identity, fraction)
+            applied[identity] = achieved
+        return applied
+
+    @staticmethod
+    def _stop_penetration(edge: dict, separation: float) -> float:
+        gap = float(edge["clearance_m"])
+        if edge.get("contact_side") == "maximum-separation":
+            return separation - gap
+        return gap - separation
+
+    def _paths(self, edge: dict) -> list[tuple[int, int, float, object]]:
+        coupled = tuple(edge.get("coupled_slide_edges") or ())
+        if not coupled:
+            return [(self.index[edge["a"]], self.index[edge["b"]], 1.0,
+                     edge.get("slide_axis"))]
+        shares = tuple(float(x) for x in
+                       (edge.get("slide_load_share") or ()))
+        if len(shares) != len(coupled) or not np.isclose(sum(shares), 1.0):
+            raise ValueError(
+                f"{edge['identity']}: slide_load_share must sum to one")
+        return [(self.index[self.edge_by_id[name]["a"]],
+                 self.index[self.edge_by_id[name]["b"]], shares[i],
+                 self.edge_by_id[name].get("slide_axis"))
+                for i, name in enumerate(coupled)]
+
+    @staticmethod
+    def _path_axis(position: np.ndarray, ia: int, ib: int,
+                   declared_axis=None) -> np.ndarray:
+        if declared_axis is not None:
+            axis = np.asarray(declared_axis, float)
+            length = float(np.linalg.norm(axis))
+            if length > 1.0e-12:
+                return axis / length
+        axis = position[ib] - position[ia]
+        length = float(np.linalg.norm(axis))
+        return axis / length if length > 1.0e-12 else np.zeros(3)
+
+    def _compression_velocity(self, edge: dict, position: np.ndarray,
+                              velocity: np.ndarray) -> float:
+        # Every coupled guide sees the same ideal slide coordinate.  Average
+        # their measured rates so tiny elastic differences do not make one
+        # carriage dictate the damper command.
+        values = []
+        for ia, ib, _share, declared_axis in self._paths(edge):
+            axis = self._path_axis(position, ia, ib, declared_axis)
+            values.append(-float(axis @ (velocity[ib] - velocity[ia])))
+        return float(np.mean(values)) if values else 0.0
+
+    def _load_passive_velocities(self, position: np.ndarray,
+                                 velocity: np.ndarray) -> None:
+        for i, edge in enumerate(self.passive_edges):
+            self.bank.arrays["velocity_m_s"][i] = \
+                self._compression_velocity(edge, position, velocity)
+
+    def coupled_step_size(self, maximum_dt: float, positions,
+                          velocities) -> float:
+        """Travel-limited interval shared by joints and their owning bodies."""
+        position = np.asarray(positions, float).reshape(len(self.index), 3)
+        velocity = np.asarray(velocities, float).reshape(len(self.index), 3)
+        self._load_passive_velocities(position, velocity)
+        _count, h = self.bank.coupled_substep_plan(
+            float(maximum_dt), self.passive_effective_mass_kg)
+        count = max(1, int(math.ceil(float(maximum_dt) / max(float(h), 1e-30))))
+        self.last_step_limiter = None
+        if self.bank.n:
+            from structure_native import STEP_OF_STROKE
+            a = self.bank.arrays
+            travel_count = np.ceil(
+                np.abs(a["velocity_m_s"]) * float(maximum_dt)
+                / (np.maximum(a["stroke_m"], 1.0e-6)
+                   * STEP_OF_STROKE))
+            gas_rate, damping_rate = self.bank.coupled_rate_components(
+                self.passive_effective_mass_kg)
+            gas_count = np.ceil(float(maximum_dt) * gas_rate * 4.0)
+            damping_count = np.ceil(float(maximum_dt) * damping_rate * 4.0)
+            requirements = np.vstack((travel_count, gas_count,
+                                      damping_count))
+            kind_i, joint_i = np.unravel_index(
+                int(np.argmax(requirements)), requirements.shape)
+            kinds = ("travel", "gas-gradient", "orifice-gradient")
+            self.last_step_limiter = {
+                "identity": self.passive_edges[int(joint_i)]["identity"],
+                "kind": kinds[int(kind_i)],
+                "required_substeps": int(requirements[kind_i, joint_i]),
+                "velocity_m_s": float(a["velocity_m_s"][joint_i]),
+                "effective_mass_kg": float(
+                    self.passive_effective_mass_kg[joint_i]),
+            }
+        for edge, mass in zip(self.bump_stop_edges,
+                              self.bump_effective_mass_kg):
+            coordinate, coordinate_rate = self._stop_coordinate(
+                edge, position, velocity)
+            penetration = max(0.0, self._stop_penetration(
+                edge, coordinate))
+            if penetration <= 0.0:
+                continue
+            tangent = (float(edge.get("linear_stiffness_n_per_m", 0.0))
+                       + 3.0 * float(edge.get(
+                           "cubic_stiffness_n_per_m3", 0.0))
+                       * penetration ** 2)
+            mean_closing = -coordinate_rate
+            if edge.get("contact_side") == "maximum-separation":
+                mean_closing = coordinate_rate
+            damping = (float(edge.get("compression_damping_n_s_per_m", 0.0))
+                       if mean_closing > 0.0 else 0.0)
+            rate = math.sqrt(max(tangent, 0.0) / max(mass, 1e-6)) \
+                + damping / max(mass, 1e-6)
+            if math.isfinite(rate):
+                # Contact is the sharpest law in the graph. Sixteen force/
+                # body exchanges per local contact time constant preserve the
+                # progressive impact without force clipping or restitution
+                # tuning.
+                bump_count = math.ceil(float(maximum_dt) * rate * 16.0)
+                if bump_count > count:
+                    self.last_step_limiter = {
+                        "identity": edge["identity"],
+                        "kind": "bump-contact-gradient",
+                        "required_substeps": int(bump_count),
+                        "velocity_m_s": float(coordinate_rate),
+                        "effective_mass_kg": float(mass),
+                    }
+                count = max(count, bump_count)
+        return float(maximum_dt) / count
+
+    def configure_coupled_mass(self, nodal_mass, fixed_nodes=()) -> None:
+        """Set the reduced endpoint mass seen by each banked joint."""
+        mass = np.asarray(nodal_mass, float).reshape(len(self.index), -1)[:, :3]
+        fixed = set(fixed_nodes)
+        def reduced_mass(edge):
+            inverse_mass = 0.0
+            for ia, ib, share, _axis in self._paths(edge):
+                a_name = self.document["nodes"][ia]["identity"]
+                b_name = self.document["nodes"][ib]["identity"]
+                if a_name not in fixed:
+                    inverse_mass += share * share / max(float(np.mean(mass[ia])), 1.0e-6)
+                if b_name not in fixed:
+                    inverse_mass += share * share / max(float(np.mean(mass[ib])), 1.0e-6)
+            return 1.0 / max(inverse_mass, 1.0e-12)
+
+        self.passive_effective_mass_kg = np.asarray(
+            [reduced_mass(edge) for edge in self.passive_edges], dtype=float)
+        self.bump_effective_mass_kg = np.asarray(
+            [reduced_mass(edge) for edge in self.bump_stop_edges], dtype=float)
+
+    def _scatter(self, nodal: np.ndarray, edge: dict, force: float,
+                 position: np.ndarray) -> None:
+        paths = self._paths(edge)
+        signs = tuple(float(x) for x in
+                      (edge.get("coupled_motion_sign") or ()))
+        for path_i, (ia, ib, share, declared_axis) in enumerate(paths):
+            axis = self._path_axis(position, ia, ib, declared_axis)
+            sign = signs[path_i] if len(signs) == len(paths) else 1.0
+            reaction = axis * (force * share * sign)
+            nodal[ia] -= reaction
+            nodal[ib] += reaction
+
+    def _stop_coordinate(self, edge: dict, position: np.ndarray,
+                         velocity: np.ndarray) -> tuple[float, float]:
+        """Signed common travel of every face in an equalized stop."""
+        paths = self._paths(edge)
+        refs = tuple(float(x) for x in
+                     (edge.get("coupled_reference_separation_m") or ()))
+        signs = tuple(float(x) for x in
+                      (edge.get("coupled_motion_sign") or ()))
+        coordinate = []
+        coordinate_rate = []
+        for i, (ia, ib, _share, declared_axis) in enumerate(paths):
+            axis = self._path_axis(position, ia, ib, declared_axis)
+            separation = float(axis @ (position[ib] - position[ia]))
+            rate = float(axis @ (velocity[ib] - velocity[ia]))
+            reference = refs[i] if len(refs) == len(paths) else 0.0
+            sign = signs[i] if len(signs) == len(paths) else 1.0
+            coordinate.append(sign * (separation - reference))
+            coordinate_rate.append(sign * rate)
+        return float(np.mean(coordinate)), float(np.mean(coordinate_rate))
+
+    def _linear_spring_force(self, edge: dict, position: np.ndarray,
+                             velocity: np.ndarray) -> float:
+        """Complete force from a graph-declared linear spring/damper."""
+        paths = self._paths(edge)
+        if not paths:
+            return 0.0
+        compression = []
+        for ia, ib, _share, declared_axis in paths:
+            axis = self._path_axis(position, ia, ib, declared_axis)
+            separation = float(axis @ (position[ib] - position[ia]))
+            rest = float(edge.get("commanded_rest_length_m",
+                                  edge["rest_length"]))
+            compression.append(rest - separation)
+        compression_m = float(np.mean(compression))
+        compression_velocity = self._compression_velocity(
+            edge, position, velocity)
+        rate = float(edge.get(
+            "stiffness_n_per_m",
+            edge.get("spring_rate_n_per_m",
+                     edge.get("stack_rate_n_per_m", 0.0))))
+        common_damping = float(edge.get("linear_damping_n_s_per_m", 0.0))
+        if compression_velocity >= 0.0:
+            damping = float(edge.get("compression_damping_n_s_per_m",
+                                     common_damping))
+        else:
+            damping = float(edge.get("rebound_damping_n_s_per_m",
+                                     common_damping))
+        preload = float(edge.get(
+            "commanded_preload_n",
+            edge.get("preload_force_n",
+                     edge.get("spring_preload_n",
+                              edge.get("preload_n", 0.0)))))
+        force = (preload + rate * compression_m
+                 + damping * compression_velocity)
+        if edge.get("tension_only"):
+            return min(0.0, force)
+        return force
+
+    def _linear_damping_force(self, edge: dict, position: np.ndarray,
+                              velocity: np.ndarray) -> float:
+        compression_velocity = self._compression_velocity(
+            edge, position, velocity)
+        common = float(edge.get("linear_damping_n_s_per_m", 0.0))
+        damping = float(edge.get(
+            "compression_damping_n_s_per_m" if compression_velocity >= 0.0
+            else "rebound_damping_n_s_per_m", common))
+        return damping * compression_velocity
+
+    @staticmethod
+    def _mr_force(edge: dict, compression_velocity: float) -> float:
+        if abs(compression_velocity) <= 1.0e-12:
+            return 0.0
+        area = float(edge["piston_area_m2"])
+        gap = max(float(edge["gap_m"]), 1.0e-9)
+        active = float(edge.get("active_length_m", 0.060))
+        current = min(1.0, max(0.0, float(edge.get("current_frac", 0.0))))
+        tau_lo = float(edge.get("yield_min_pa", 1.0e3))
+        tau_hi = float(edge.get("yield_max_pa", 6.0e4))
+        tau = tau_lo + (tau_hi - tau_lo) * current
+        yield_force = 2.0 * tau * active / gap * area
+        viscosity = float(edge.get("plastic_viscosity_pa_s", 0.28))
+        flow = area * abs(compression_velocity)
+        dp = (12.0 * viscosity * active * flow
+              / (math.pi * 0.12 * gap ** 3))
+        magnitude = yield_force + dp * area
+        return math.copysign(magnitude, compression_velocity)
+
+    def _bump_stop_force(self, edge: dict, position: np.ndarray,
+                         velocity: np.ndarray) -> float:
+        """Unilateral progressive force after the physical gap closes."""
+        coordinate, coordinate_rate = self._stop_coordinate(
+            edge, position, velocity)
+        penetration = self._stop_penetration(edge, coordinate)
+        # A declared-open contact assembled from decimal node coordinates
+        # can differ from its declared clearance by a few ulps.  That is not
+        # physical penetration and must not manufacture a nanonewton contact.
+        gap = float(edge["clearance_m"])
+        if penetration <= max(1.0e-12, abs(gap) * 1.0e-12):
+            return 0.0
+        closing_speed = max(0.0, -coordinate_rate)
+        direction = 1.0
+        if edge.get("contact_side") == "maximum-separation":
+            closing_speed = max(0.0, coordinate_rate)
+            direction = -1.0
+        linear = float(edge.get("linear_stiffness_n_per_m", 0.0))
+        cubic = float(edge.get("cubic_stiffness_n_per_m3", 0.0))
+        damping = float(edge.get("compression_damping_n_s_per_m", 0.0))
+        return direction * (linear * penetration + cubic * penetration ** 3
+                            + damping * closing_speed)
+
+    def evaluate(self, dt: float, positions, velocities, *, coupled=False) -> np.ndarray:
+        """Return balanced nodal forces for the current graph state."""
+        position = np.asarray(positions, float).reshape(len(self.index), 3)
+        velocity = np.asarray(velocities, float).reshape(len(self.index), 3)
+        nodal = np.zeros_like(position)
+
+        self._load_passive_velocities(position, velocity)
+        advanced = (self.bank.step_coupled(float(dt)) if coupled
+                    else self.bank.step(float(dt)))
+        passive = advanced[:, -1] - self.rest_force
+        if not np.isfinite(passive).all():
+            bad = int(np.flatnonzero(~np.isfinite(passive))[0])
+            raise FloatingPointError(
+                f"{self.passive_edges[bad]['identity']}: nonfinite joint force")
+        for edge, force in zip(self.passive_edges, passive):
+            value = float(force)
+            self.last_element_force[edge["identity"]] = value
+            self._scatter(nodal, edge, value, position)
+
+        for edge in self.linear_edges:
+            force = self._linear_spring_force(edge, position, velocity)
+            self.last_element_force[edge["identity"]] = force
+            # LiveStructure's frame matrix contains this linear spring's
+            # stiffness and its static solve contains the installed preload.
+            # Only directional damping remains an explicit velocity law.
+            if self.linear_embedded:
+                installed = float(edge.get(
+                    "preload_force_n",
+                    edge.get("spring_preload_n",
+                             edge.get("preload_n", 0.0))))
+                commanded = float(edge.get("commanded_preload_n", installed))
+                applied = (self._linear_damping_force(edge, position, velocity)
+                           + commanded - installed)
+            else:
+                applied = force
+            self._scatter(nodal, edge, applied, position)
+
+        for edge in self.mr_edges:
+            speed = self._compression_velocity(edge, position, velocity)
+            force = self._mr_force(edge, speed)
+            self.last_element_force[edge["identity"]] = force
+            self._scatter(nodal, edge, force, position)
+        for edge in self.bump_stop_edges:
+            force = self._bump_stop_force(edge, position, velocity)
+            self.last_element_force[edge["identity"]] = force
+            self._scatter(nodal, edge, force, position)
+        return nodal
 
 
 @lru_cache(maxsize=1)

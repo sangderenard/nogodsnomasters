@@ -197,7 +197,8 @@ def bank_source() -> str:
 #: is being worked and answers with a force.
 JOINT_ARRAYS = ("velocity_m_s", "piston_area_m2", "gas_volume_m3",
                 "charge_pressure_pa", "polytropic_n", "orifice_area_m2",
-                "oil_density_kg_m3", "stroke_m", "volume_floor_frac")
+                "oil_density_kg_m3", "stroke_m", "volume_floor_frac",
+                "spring_scale", "damping_scale")
 #: the only thing a joint carries between ticks is where it is along
 #: its own travel
 JOINT_STATE = ("compression",)
@@ -231,7 +232,22 @@ def joint_bank_source() -> str:
     kinematics rather than dynamics. Force out, velocity in.
     """
     import symbolic_parts as sp_parts
+    import sympy
     equations, _sym = sp_parts.symbolic_oleo_strut_equations()
+    spring_scale = sympy.Symbol("spring_scale", real=True)
+    damping_scale = sympy.Symbol("damping_scale", real=True)
+    rhs = {str(eq.lhs): eq.rhs for eq in equations}
+    equations = tuple(
+        sympy.Eq(eq.lhs,
+                 rhs["spring_force_n"] * spring_scale
+                 if str(eq.lhs) == "spring_force_n" else
+                 rhs["damping_force_n"] * damping_scale
+                 if str(eq.lhs) == "damping_force_n" else
+                 (rhs["spring_force_n"] * spring_scale
+                  + rhs["damping_force_n"] * damping_scale)
+                 if str(eq.lhs) == "total_force_n" else eq.rhs,
+                 evaluate=False)
+        for eq in equations)
     return print_bank(
         tuple(equations), name="joint_bank_run", arrays=JOINT_ARRAYS,
         state=JOINT_STATE, out=JOINT_OUT,
@@ -283,11 +299,71 @@ class JointBank(_BankSchedule):
                 count = max(count, math.ceil(need))
         return count, dt / max(count, 1)
 
+    def coupled_rate_components(self, effective_mass_kg
+                                ) -> tuple[np.ndarray, np.ndarray]:
+        """Natural and velocity-gradient rates behind coupled scheduling."""
+        if not self.n:
+            empty = np.zeros(0, dtype=float)
+            return empty, empty
+        mass = np.maximum(np.asarray(effective_mass_kg, float), 1.0e-6)
+        a = self.arrays
+        area = np.maximum(a["piston_area_m2"], 1.0e-12)
+        volume0 = np.maximum(a["gas_volume_m3"], 1.0e-12)
+        volume = np.maximum(volume0 - area * self.compression,
+                            a["volume_floor_frac"] * volume0)
+        pressure = (a["charge_pressure_pa"]
+                    * (volume0 / volume) ** a["polytropic_n"])
+        gas_k = (a["spring_scale"] * a["polytropic_n"] * pressure
+                 * area * area / volume)
+        orifice = np.maximum(a["orifice_area_m2"], 1.0e-12)
+        quadratic = (a["damping_scale"] * a["oil_density_kg_m3"] / 2.0
+                     * (area / orifice) ** 2 * area)
+        damping_slope = 2.0 * quadratic * np.abs(a["velocity_m_s"])
+        return (np.sqrt(np.maximum(gas_k, 0.0) / mass),
+                damping_slope / mass)
+
+    def coupled_substep_plan(self, dt_s: float,
+                             effective_mass_kg) -> tuple[int, float]:
+        """Bound travel and the actual nonlinear force gradients.
+
+        The body owner supplies the reduced mass seen along each joint.  The
+        gas spring contributes ``sqrt(k/m)`` and the quadratic orifice
+        contributes ``dF/dv / m``.  Limiting the explicit exchange by those
+        rates prevents the force/body ping-pong that a travel-only bound
+        cannot see, without clipping force, velocity, stroke, or energy.
+        """
+        dt = float(dt_s)
+        count, _h = self.substep_plan(dt)
+        if not self.n or dt <= 0.0:
+            return count, dt / max(count, 1)
+        gas_rate, damping_rate = self.coupled_rate_components(
+            effective_mass_kg)
+        rate = np.maximum(gas_rate, damping_rate)
+        finite = rate[np.isfinite(rate)]
+        if finite.size:
+            # Four exchanges per fastest local time constant leaves a wide
+            # margin inside the explicit force-coupling stability boundary.
+            count = max(count, math.ceil(dt * float(np.max(finite)) * 4.0))
+        return count, dt / max(count, 1)
+
     def step(self, dt_s: float, n_sub: int = 1):
         count, h = self.substep_plan(dt_s, n_sub)
         arrays = [self.arrays[k] for k in JOINT_ARRAYS]
         for _ in range(count):
             self._fn(self.n, 1, h, *arrays, self.compression, self.out)
+        return self.out.reshape(self.n, len(JOINT_OUT))
+
+    def step_coupled(self, dt_s: float):
+        """Advance once because the owning body solver chose this ``dt``.
+
+        Repeating the constitutive law while holding body velocity fixed does
+        not couple a stiff damper to its mass.  LiveStructure therefore asks
+        ``substep_plan`` for a safe interval, advances the joint once, and
+        advances every beam/rigid coordinate over that same interval before
+        asking again.
+        """
+        arrays = [self.arrays[k] for k in JOINT_ARRAYS]
+        self._fn(self.n, 1, float(dt_s), *arrays, self.compression, self.out)
         return self.out.reshape(self.n, len(JOINT_OUT))
 
     def force_on(self, identity: str) -> float:
@@ -316,6 +392,58 @@ def travelling_joints(document: dict) -> list:
     return out
 
 
+def force_joints(document: dict) -> list:
+    """The travelling edges governed by this bank's oleo law.
+
+    Travel alone does not declare a constitutive law.  A rail slider and a
+    direct-drive lockup travel too, but treating either as a gas-over-oil
+    strut invents a spring that is absent from the graph.  The constraint is
+    the graph's declaration: this bank owns only spring-dampers and explicit
+    oleo recoil slides.  Commanded hydraulic actuators remain owned by their
+    actuator engine.
+    """
+    from joints import constraint_of
+    owned = {"spring-damper", "oleo-recoil-slide",
+             "belleville-preload-stack"}
+    out = []
+    for edge in travelling_joints(document):
+        token = edge.get("constraint_token")
+        constraint = (constraint_of(token).key if token is not None
+                      else edge.get("constraint"))
+        if (constraint in owned
+                or (constraint == "linear-hydraulic-actuator"
+                    and edge.get("part_role") == "platform-actuator")):
+            out.append(edge)
+    return out
+
+
+def linear_spring_joints(document: dict) -> list:
+    """Spring/dampers whose graph declaration is the complete law.
+
+    A plain structural spring/damper declares a rate and linear damping but
+    has no piston area.  It must not be assigned the pneumatic/orifice law:
+    doing so invents both a piston and a quadratic damper.  Spring-dampers
+    that *do* declare piston geometry remain in the oleo bank (for example
+    the recoil recuperator and the adaptive platform dampers).
+    """
+    return [edge for edge in force_joints(document)
+            if (edge.get("constraint") == "belleville-preload-stack"
+                or edge.get("constraint") == "chain-winch-hoist"
+                or edge.get("part_role") == "platform-actuator"
+                or (edge.get("constraint") == "spring-damper"
+                    and (float(edge.get("piston_area_m2", 0.0)) <= 0.0
+                         or "linear_damping_n_s_per_m" in edge
+                         or set(edge.get("force_components") or ()) ==
+                         {"spring-recuperator"})))]
+
+
+def oleo_force_joints(document: dict) -> list:
+    """Force joints that genuinely declare pneumatic/orifice hardware."""
+    linear_ids = {edge["identity"] for edge in linear_spring_joints(document)}
+    return [edge for edge in force_joints(document)
+            if edge["identity"] not in linear_ids]
+
+
 def joint_bank_for(document: dict, *, oil_density_kg_m3: float = 870.0,
                    polytropic_n: float = 1.35,
                    volume_floor_frac: float = 0.03) -> "JointBank":
@@ -335,14 +463,16 @@ def joint_bank_for(document: dict, *, oil_density_kg_m3: float = 870.0,
     edge already carries name one gas spring and this is it.
     """
     from actuators import _area
-    joints = travelling_joints(document)
+    joints = oleo_force_joints(document)
     bank = JointBank(len(joints))
     a = bank.arrays
     for i, e in enumerate(joints):
         area = float(e.get("piston_area_m2", 0.0))
         if area <= 0.0:
             area = _area(float(e.get("bore_m", 0.0))) or math.pi * 0.05 ** 2
-        stroke = float(e.get("stroke_m", 0.0) or e.get("travel_m", 0.0) or 0.2)
+        stroke = float(e.get("stroke_m", 0.0)
+                       or e.get("recoil_stroke_m", 0.0)
+                       or e.get("travel_m", 0.0) or 0.2)
         preload = float(e.get("spring_preload_n", 0.0)
                         or e.get("preload_n", 0.0))
         rate = float(e.get("spring_rate_n_per_m", 0.0))
@@ -364,6 +494,11 @@ def joint_bank_for(document: dict, *, oil_density_kg_m3: float = 870.0,
         a["oil_density_kg_m3"][i] = oil_density_kg_m3
         a["stroke_m"][i] = stroke
         a["volume_floor_frac"][i] = volume_floor_frac
+        components = set(e.get("force_components") or ())
+        a["spring_scale"][i] = 0.0 if components == {"oil-orifice"} else 1.0
+        a["damping_scale"][i] = (
+            0.0 if components in ({"pneumatic-recuperator"},
+                                  {"spring-recuperator"}) else 1.0)
     bank.identities = [e["identity"] for e in joints]
     return bank
 
@@ -391,6 +526,7 @@ def native_bank():
     """
     import time
     import warnings
+    from compile_contract import contract
     from src.compiler.fortran_c_shell import lower_ast_source_to_ssa
     from src.compiler.ssa_llvm_backend import (
         emit_ssa_function_to_llvm, compile_artifact,
@@ -408,7 +544,8 @@ def native_bank():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         module, _o, _e = lower_ast_source_to_ssa(
-            src, "beam_bank_run", name="engine_toy_structure")
+            src, "beam_bank_run", name="engine_toy_structure",
+            extraction_contract=contract())
     fn = module.functions[qualified]
     artifact = emit_ssa_function_to_llvm(module, qualified)
     if artifact.shortfalls:

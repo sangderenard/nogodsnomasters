@@ -133,6 +133,92 @@ class GunRig:
     #: trajectories. This is the cheap correct one until then.
     _shot_cache: dict = field(default_factory=dict, repr=False)
 
+    def ballistics_parameters(self, *, charge_kg: float = 0.040,
+                              web_m: float = 2.7e-4,
+                              twist_cal: float = 30.0,
+                              interference_m: float = 50e-6,
+                              dt: float = 1.0e-6) -> dict:
+        """The installed gun/load boundary consumed by both shot runners."""
+        b = self.barrel()
+        length_m = float(b["drum_length_m"])
+        bore_m = self.bore_mm / 1000.0
+        area = math.pi * (bore_m / 2.0) ** 2
+        recoiling = (float(b.get("mass_kg", 0.0))
+                     + float(self.liner().get("mass_kg", 0.0)))
+        return dict(
+            dt_s=dt, bore_area_m2=area, chamber_volume_m3=4.8e-5,
+            shot_mass_kg=0.130, charge_mass_kg=charge_kg,
+            impetus_j_per_kg=1.1e6, covolume_m3_per_kg=1.0e-3,
+            propellant_density_kg_m3=1620.0, gamma=1.25,
+            burn_rate_coeff=6.4e-10, grain_chi=1.0, grain_lambda=0.0,
+            grain_web_m=web_m, shot_start_pressure_pa=3.5e7,
+            barrel_length_m=length_m,
+            twist_calibres_per_turn=twist_cal,
+            band_interference_m=interference_m,
+            bore_diameter_m=bore_m, primer_gas_kg=3.5e-4,
+            recoiling_mass_kg=max(recoiling, 1.0),
+            gas_port_travel_m=1.0e9, gas_port_fraction=0.0)
+
+    def recoil_force_profile(self, *, structural_interval_s: float = 5.0e-5,
+                             dt: float = 1.0e-6,
+                             limit: int = 20_000) -> dict:
+        """Breech force history from the existing compiled combustion law.
+
+        The interior law runs at its native microsecond step.  Consecutive
+        samples are accumulated into impulse-preserving structural intervals;
+        this reduces exchanges with the full beam solve without replacing the
+        pressure curve by a guessed pulse.  Sum(force * duration) is exactly
+        the impulse produced by the sampled breech-pressure history.
+        """
+        import interior_ballistics as ib
+        step, _names = ib.native_step()
+        kw = self.ballistics_parameters(dt=dt)
+        state = {"travel_m": 0.0, "velocity_m_s": 0.0,
+                 "burnt_fraction": 0.0, "recoil_velocity_m_s": 0.0,
+                 "harvested_gas_kg": 0.0, "wall_heat_j": 0.0}
+        segments = []
+        interval_impulse = 0.0
+        interval_time = 0.0
+        peak = 0.0
+        last = None
+        for _ in range(int(limit)):
+            last = step(**kw, **state)
+            force_n = (float(last["breech_pressure_pa"])
+                       * float(kw["bore_area_m2"]))
+            peak = max(peak, force_n)
+            interval_impulse += force_n * dt
+            interval_time += dt
+            state = {
+                "travel_m": last["travel_next_m"],
+                "velocity_m_s": last["velocity_next_m_s"],
+                "burnt_fraction": last["burnt_fraction_next"],
+                "recoil_velocity_m_s": last["recoil_velocity_next_m_s"],
+                "harvested_gas_kg": last["harvested_gas_next_kg"],
+                "wall_heat_j": last["wall_heat_next_j"],
+            }
+            done = last["at_muzzle"] > 0.5
+            if interval_time + 1.0e-15 >= structural_interval_s or done:
+                segments.append((interval_time,
+                                 interval_impulse / interval_time))
+                interval_impulse = 0.0
+                interval_time = 0.0
+            if done:
+                break
+        if last is None or last["at_muzzle"] <= 0.5:
+            raise RuntimeError("interior ballistics did not reach the muzzle")
+        return {
+            "segments": tuple(segments),
+            "duration_s": sum(h for h, _force in segments),
+            "impulse_n_s": sum(h * force for h, force in segments),
+            "peak_force_n": peak,
+            "muzzle_m_s": float(state["velocity_m_s"]),
+            "recoil_velocity_m_s": float(state["recoil_velocity_m_s"]),
+            "recoiling_mass_kg": float(kw["recoiling_mass_kg"]),
+            "shot_mass_kg": float(kw["shot_mass_kg"]),
+            "bore_diameter_m": float(kw["bore_diameter_m"]),
+            "wall_heat_j": float(state["wall_heat_j"]),
+        }
+
     def fire_one(self, *, charge_kg: float = 0.040, web_m: float = 2.7e-4,
                  twist_cal: float = 30.0, interference_m: float = 50e-6,
                  dt: float = 1.0e-6, vary: bool = True) -> dict:
@@ -163,23 +249,9 @@ class GunRig:
         # around it -- 700 ms a shot. `native_shot` compiles the loop
         # too: 8.8 ms, same answer to the digit.
         run, _ = ib.native_shot()
-        b = self.barrel()
-        L = float(b["drum_length_m"])
-        bore_m = self.bore_mm / 1000.0
-        area = math.pi * (bore_m / 2.0) ** 2
-        recoiling = (float(b.get("mass_kg", 0.0))
-                     + float(self.liner().get("mass_kg", 0.0)))
-        kw = dict(dt_s=dt, bore_area_m2=area, chamber_volume_m3=4.8e-5,
-                  shot_mass_kg=0.130, charge_mass_kg=charge_kg,
-                  impetus_j_per_kg=1.1e6, covolume_m3_per_kg=1.0e-3,
-                  propellant_density_kg_m3=1620.0, gamma=1.25,
-                  burn_rate_coeff=6.4e-10, grain_chi=1.0, grain_lambda=0.0,
-                  grain_web_m=web_m, shot_start_pressure_pa=3.5e7,
-                  barrel_length_m=L, twist_calibres_per_turn=twist_cal,
-                  band_interference_m=interference_m, bore_diameter_m=bore_m,
-                  primer_gas_kg=3.5e-4,
-                  recoiling_mass_kg=max(recoiling, 1.0),
-                  gas_port_travel_m=1.0e9, gas_port_fraction=0.0)
+        kw = self.ballistics_parameters(
+            charge_kg=charge_kg, web_m=web_m, twist_cal=twist_cal,
+            interference_m=interference_m, dt=dt)
         res = run(20000, **kw)
         st = res
         r = res

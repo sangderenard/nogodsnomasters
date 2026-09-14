@@ -37,12 +37,14 @@ from __future__ import annotations
 
 import math
 import sys
+from copy import deepcopy
+from functools import lru_cache
 
 import numpy as np
 
 from turret_production import ProductionGraph
 from sled import (PlatformStage, TwoStagePlatform, emit_platform_stage,
-                  describe, UP, FORWARD)
+                  emit_platform_deck_contacts, describe, UP, FORWARD)
 
 # ---- THE DECK IS THE DRUM'S TOP. These are the drum's own numbers. ----
 DECK_R = 1.588          # the boxed drum's outer radius
@@ -50,9 +52,14 @@ DECK_Y = 0.340          # its height plus the deck plate
 
 ARCH_X = 0.950          # how far out each arch stands
 ARCH_FOOT_Z = 1.150     # feet fore and aft -- r = 1.49 m, on the deck
-ARCH_RISE = 2.600       # crown above the deck
+ARCH_RISE = 1.800       # normal crown above the deck
+ARCH_EXTREME_LIFT_M = 1.200  # hydraulic crown rise for near-vertical fire
+ARCH_HAUNCH_RISE_M = 0.550
+ARCH_LIFT_BASE_RISE_M = 1.050
+ARCH_CROWN_SHOULDER_RISE_M = 1.620
 PIN_Z = 0.780           # where the pins sit on the arch, fore and aft
 PIN_DROP = 0.220        # pins below the crown
+GUN_TRUNNION_CLEARANCE_M = 0.420
 #: how far in the shoulders sit from the feet. 1.0 is a straight
 #: leg; less leans the leg inboard, over the swept volume.
 #: 1.0 = a straight leg. The 0.62 lean this started with was my own
@@ -109,6 +116,202 @@ def _node_at(g, ident):
     raise KeyError(ident)
 
 STATIONS = (0.30, 0.50, 0.70, 0.90)
+
+
+PRODUCTION_GUN_ASSEMBLIES = frozenset({
+    "gun-gimbal", "breech", "gun-tube", "under-barrel-spine",
+    "bore-evacuator", "muzzle-reference", "barrel-cooling", "cradle",
+    # Keep the old basket feet as attachment hardpoints, but not its upper
+    # twitch plate or six fine-aim actuators. They explicitly declare that
+    # they carry no firing load; the arch platform's trunnion standards and
+    # elevation anchors below are the installed gun support here.
+    "fine-rig-base",
+    "recoil-journal", "recoil-absorber", "trunnion-thrust-seat",
+    "recoil-gear", "fabricated-shaped-strap", "fabricated-weld",
+})
+
+
+@lru_cache(maxsize=4)
+def _production_gun_records(bore_mm: float = 20.0):
+    """The existing production gun, selected intact at its mount boundary.
+
+    This is intentionally extraction, not a second gun model. The square
+    recoil tank/journal, original absorbers, barrel, washers and coolant
+    circuit remain the records authored by ``turret_production``.
+    """
+    import turret_production as tp
+
+    source = tp.balanced_station(bore_mm=float(bore_mm))
+    keep = {node["identity"] for node in source.nodes
+            if node.get("assembly") in PRODUCTION_GUN_ASSEMBLIES}
+    nodes = tuple(deepcopy(node) for node in source.nodes
+                  if node["identity"] in keep)
+    edges = tuple(deepcopy(edge) for edge in source.edges
+                  if edge["a"] in keep and edge["b"] in keep)
+    volumes = tuple(deepcopy(volume) for volume in source.clear_volumes
+                    if volume.get("owner") in keep)
+    return nodes, edges, volumes
+
+
+def _mount_production_gun(g, lower_platform, platform, dangling, gun,
+                          bore_mm: float = 20.0):
+    """Bolt the former production gun, unchanged, to this gun platform."""
+    source_nodes, source_edges, source_volumes = \
+        _production_gun_records(float(bore_mm))
+    source_base = np.asarray(
+        [node["reference_position"] for node in source_nodes
+         if node["identity"].startswith("fine.base.")], float)
+    target = np.mean(np.asarray([
+        _node_at(g, platform["corners"][tag])
+        for tag in ("aft.a", "fwd.a", "aft.b", "fwd.b")], float), axis=0)
+    source_centre = source_base.mean(axis=0)
+    base_shift = target - source_centre
+
+    # The six fine.base feet stay registered to the arch-carried platform.
+    # Everything above those feet is the gun and its mount. Move that whole
+    # installed assembly until its actual mass centroid lies halfway between
+    # the two-stage platform's full-forward and full-aft positions. This is
+    # deliberately not a barrel-only visual offset: journal, dampers, cradle,
+    # trunnion and their load paths all move with it.
+    fixed_feet = {node["identity"] for node in source_nodes
+                  if node["identity"].startswith("fine.base.")}
+    moving_nodes = [node for node in source_nodes
+                    if node["identity"] not in fixed_feet
+                    and float(node.get("mass_kg", 0.0)) > 0.0]
+    moving_mass = sum(float(node.get("mass_kg", 0.0))
+                      for node in moving_nodes)
+    if moving_mass <= 0.0:
+        raise ValueError("production gun mount has no moving mass to balance")
+    moving_cg = sum(
+        float(node.get("mass_kg", 0.0))
+        * np.asarray(node["reference_position"], float)
+        for node in moving_nodes) / moving_mass
+    travel_midpoint = target + 0.5 * (dangling.swept + gun.swept)
+    balance_shift = np.zeros(3)
+    balance_shift[2] = travel_midpoint[2] - (moving_cg + base_shift)[2]
+    source_pitch = next(np.asarray(node["reference_position"], float)
+                        for node in source_nodes
+                        if node["identity"] == "turret.pitch")
+    balance_shift[1] = (target[1] + GUN_TRUNNION_CLEARANCE_M
+                        - (source_pitch + base_shift)[1])
+    moved_ids = {node["identity"] for node in source_nodes
+                 if node["identity"] not in fixed_feet}
+
+    for original in source_nodes:
+        node = deepcopy(original)
+        shift = base_shift + (balance_shift
+                              if node["identity"] in moved_ids else 0.0)
+        node["reference_position"] = [
+            float(v) for v in np.asarray(node["reference_position"], float)
+            + shift]
+        if node["identity"] in moved_ids:
+            node["gun_platform_balance_shift_m"] = float(balance_shift[2])
+        g.nodes.append(node)
+    for original in source_edges:
+        edge = deepcopy(original)
+        # A member joining a retained foot to the translated upper mount is
+        # fabricated in the new installed pose. Internal gun dimensions do
+        # not change, but these support members need their honest new length
+        # or the initial state would contain metres of false pre-strain.
+        if ((edge["a"] in moved_ids) != (edge["b"] in moved_ids)):
+            positions = {node["identity"]: np.asarray(
+                node["reference_position"], float) for node in g.nodes}
+            edge["rest_length"] = float(np.linalg.norm(
+                positions[edge["b"]] - positions[edge["a"]]))
+            edge["refabricated_for_balanced_mount"] = True
+        g.edges.append(edge)
+    for original in source_volumes:
+        volume = deepcopy(original)
+        volume_shift = (base_shift + balance_shift
+                        if volume.get("owner") in moved_ids else base_shift)
+        volume["min"] = tuple(float(v) for v in
+                              np.asarray(volume["min"], float) + volume_shift)
+        volume["max"] = tuple(float(v) for v in
+                              np.asarray(volume["max"], float) + volume_shift)
+        g.clear_volumes.append(volume)
+
+    # Only the interface is new: the former gun's six fine-rig base pads
+    # bolt to the nearest corners of the arch-carried platform, and the
+    # trunnion standards rise from all four corners. Everything above those
+    # bolts is the original production graph record.
+    target_pos = {tag: np.asarray(_node_at(g, platform["corners"][tag]), float)
+                  for tag in ("aft.a", "fwd.a", "aft.b", "fwd.b")}
+    node_by_id = {node["identity"]: np.asarray(node["reference_position"], float)
+                  for node in g.nodes}
+    g.assembly = "production-gun-platform-interface"
+    g.motion_group = "recoil"
+    base_ids = [node["identity"] for node in source_nodes
+                if node["identity"].startswith("fine.base.")]
+    for i, base in enumerate(base_ids):
+        nearest = min(target_pos, key=lambda tag: float(np.linalg.norm(
+            node_by_id[base][[0, 2]] - target_pos[tag][[0, 2]])))
+        g.edge(f"arch.gun_mount.fine_base.{i}",
+               platform["corners"][nearest], base, "rigid-distance",
+               radius=0.045, alloy="4340qt", palette="rollbar-silver",
+               beam_solvable=True,
+               load_path="former-fine-rig-base-bolted-to-arch-gun-platform")
+    for tag in ("aft.a", "fwd.a", "aft.b", "fwd.b"):
+        g.edge(f"arch.gun_mount.trunnion_standard.{tag}",
+               platform["corners"][tag], "turret.pitch", "rigid-distance",
+               radius=0.220, alloy="4340qt", palette="chassis-grey",
+               beam_solvable=True, balanced_mount=True,
+               provisional_overbuilt_test_support=True,
+               load_path="overbuilt-platform-to-trunnion-test-standard")
+    for side, tag in (("a", "aft.a"), ("b", "aft.b")):
+        g.edge(f"arch.gun_mount.elevation_anchor.{side}",
+               platform["corners"][tag], "turret.elevation_anchor",
+               "rigid-distance", radius=0.180, alloy="4340qt",
+               palette="chassis-grey", beam_solvable=True,
+               balanced_mount=True, provisional_overbuilt_test_support=True,
+               load_path="overbuilt-platform-to-elevation-anchor-test-brace")
+
+    # Preserve the gun's declared downward case-ejection column. The upper
+    # platform is a moment frame without its crossing diagonals; the lower
+    # platform is open at the front where the chute passes. Those members
+    # cannot coexist with the complete gun and pretending otherwise was the
+    # exact interference the production gun's own clear-volume check found.
+    ejection_crossings = {
+        "dangling.deck.fwd.a-fwd.b",
+        "gun.brace.aft.a-fwd.b",
+        "gun.brace.fwd.a-aft.b",
+    }
+    g.edges[:] = [edge for edge in g.edges
+                  if edge["identity"] not in ejection_crossings]
+
+    # The selectable holes belong to the real platform links as metadata;
+    # they are not extra bodies or a second set of structural members.
+    for made in (lower_platform, platform):
+        stage = made["stage"]
+        for tag in ("aft.a", "fwd.a", "aft.b", "fwd.b"):
+            link = next(edge for edge in g.edges
+                        if edge["identity"] == f"{stage.identity}.link.{tag}")
+            link["attachment_stations"] = [
+                {"fraction": float(frac),
+                 "moment_arm_m": round(stage.link_m * frac, 4)}
+                for frac in STATIONS]
+
+    document = g.as_document()
+    gun.carries_kg = round(sum(float(node.get("mass_kg", 0.0))
+                               for node in document["nodes"]
+                               if node["identity"] in
+                               {n["identity"] for n in source_nodes}), 1)
+    dangling.carries_kg = round(gun.carries_kg + sum(
+        float(node.get("mass_kg", 0.0)) for node in document["nodes"]
+        if node["identity"].startswith("gun.")), 1)
+    result = TwoStagePlatform(
+        identity="arch-carried-production-gun", arch_span_m=2.0 * ARCH_X,
+        dangling=dangling, gun=gun, preload_forward_n=40_000.0,
+        slide_travel_m=0.844, slide_spring_n_per_m=SLIDE_SPRING_N_PER_M,
+        slide_preload_n=SLIDE_PRELOAD_N,
+        slide_piston_area_m2=SLIDE_PISTON_AREA_M2)
+    platform["production_gun"] = True
+    platform["bore_mm"] = float(bore_mm)
+    platform["gun_balance_shift_m"] = float(balance_shift[2])
+    platform["gun_vertical_shift_m"] = float(balance_shift[1])
+    platform["installed_trunnion_clearance_m"] = GUN_TRUNNION_CLEARANCE_M
+    platform["gun_travel_midpoint_m"] = tuple(float(v)
+                                                for v in travel_midpoint)
+    return g, result, lower_platform, platform
 
 
 PALETTE = {
@@ -187,39 +390,111 @@ def build(fold: float = 0.0, g=None, deck_y: float | None = None,
                            palette="chassis-grey", beam_solvable=True,
                            part_role="arch-foot-bolt",
                            load_path="the-arch-standing-on-the-drum-plate")
-            g.node(f"arch.shoulder.{side}.{fz}",
-                   [sx * ARCH_X, crown_y, z * ARCH_SHOULDER_FRAC],
+            direction = 1.0 if z > 0.0 else -1.0
+            haunch = f"arch.haunch.{side}.{fz}"
+            lift_base = f"arch.lift_base.{side}.{fz}"
+            g.node(haunch,
+                   [sx * ARCH_X, deck_y + ARCH_HAUNCH_RISE_M,
+                    direction * 0.98],
                    "load-bearing-structure", material="4340qt",
-                   mass_in_total=False, mass_kg=96.0,
-                   part_role="arch-shoulder", rigid=True,
+                   mass_in_total=False, mass_kg=72.0,
+                   part_role="arch-haunch", rigid=True,
                    half_extent_m=(0.11, 0.10, 0.11))
-            g.edge(f"arch.leg.{side}.{fz}", f"arch.foot.{side}.{fz}",
-                   f"arch.shoulder.{side}.{fz}", "rigid-distance",
-                   radius=0.072, alloy="4340qt", palette="rollbar-silver",
-                   rigid=True, beam_solvable=True,
-                   load_path="the-arch-leg-standing-on-the-deck")
-        g.edge(f"arch.crown.{side}", f"arch.shoulder.{side}.f",
-               f"arch.shoulder.{side}.r", "rigid-distance", radius=0.078,
-               alloy="4340qt", palette="rollbar-silver", rigid=True,
-               beam_solvable=True, load_path="the-arch-crown")
+            g.node(lift_base,
+                   [sx * ARCH_X, deck_y + ARCH_LIFT_BASE_RISE_M,
+                    direction * PIN_Z],
+                   "load-bearing-structure", material="4340qt",
+                   mass_in_total=False, mass_kg=88.0,
+                   part_role="arch-hydraulic-lift-base", rigid=True,
+                   half_extent_m=(0.13, 0.12, 0.13))
+            g.node(f"arch.shoulder.{side}.{fz}",
+                   [sx * ARCH_X, deck_y + ARCH_CROWN_SHOULDER_RISE_M,
+                    direction * PIN_Z],
+                   "load-bearing-structure", material="4340qt",
+                   motion_group="arch-crown-lift",
+                   mass_in_total=False, mass_kg=96.0,
+                   part_role="arch-moving-crown-shoulder", rigid=True,
+                   maximum_vertical_travel_m=ARCH_EXTREME_LIFT_M,
+                   half_extent_m=(0.14, 0.13, 0.14))
+            g.edge(f"arch.leg.lower.{side}.{fz}",
+                   f"arch.foot.{side}.{fz}", haunch, "rigid-distance",
+                   radius=0.110, alloy="4340qt", palette="rollbar-silver",
+                   beam_solvable=True,
+                   load_path="deep-lower-arch-leg-standing-on-the-deck")
+            g.edge(f"arch.leg.haunch.{side}.{fz}", haunch, lift_base,
+                   "rigid-distance", radius=0.105, alloy="4340qt",
+                   palette="rollbar-silver", beam_solvable=True,
+                   load_path="second-segment-forming-the-deep-arch-haunch")
+            installed_riser_m = (ARCH_CROWN_SHOULDER_RISE_M
+                                  - ARCH_LIFT_BASE_RISE_M)
+            g.edge(f"arch.crown_lift.{side}.{fz}", lift_base,
+                   f"arch.shoulder.{side}.{fz}",
+                   "linear-hydraulic-actuator", radius=0.105,
+                   alloy="4340qt", palette="actuator-yellow",
+                   beam_solvable=True, part_role="arch-crown-lift-actuator",
+                   bore_m=0.180, rod_m=0.120,
+                   closed_length_m=installed_riser_m,
+                   commanded_rest_length_m=installed_riser_m,
+                   stroke_m=ARCH_EXTREME_LIFT_M,
+                   travel_m=ARCH_EXTREME_LIFT_M,
+                   actuator_extension_m=0.0,
+                   actuator_state="normal-height-retracted",
+                   lifts_for="extreme-vertical-gun-elevation",
+                   load_path="hydraulic-column-raising-the-complete-arch-crown")
+            g.edge(f"arch.crown_lock.{side}.{fz}", lift_base,
+                   f"arch.shoulder.{side}.{fz}", "direct-drive-lockup",
+                   radius=0.095, alloy="4340qt", palette="rollbar-silver",
+                   beam_solvable=True, in_view=False,
+                   part_role="arch-crown-positive-height-lock",
+                   lock_engaged=True, unlocks_for="crown-height-change",
+                   maximum_lock_travel_m=ARCH_EXTREME_LIFT_M,
+                   load_path="positive-telescopic-lock-carrying-crown-load")
+        apex = f"arch.crown.{side}.apex"
+        g.node(apex, [sx * ARCH_X, crown_y, 0.0],
+               "load-bearing-structure", material="4340qt",
+               motion_group="arch-crown-lift", mass_in_total=False,
+               mass_kg=110.0, part_role="arch-crown-apex", rigid=True,
+               maximum_vertical_travel_m=ARCH_EXTREME_LIFT_M,
+               half_extent_m=(0.15, 0.13, 0.15))
+        for fz in ("f", "r"):
+            g.edge(f"arch.crown.{side}.{fz}",
+                   f"arch.shoulder.{side}.{fz}", apex,
+                   "rigid-distance", radius=0.115, alloy="4340qt",
+                   palette="rollbar-silver", beam_solvable=True,
+                   load_path="deep-peaked-arch-crown-segment")
+        g.edge(f"arch.haunch.tie.{side}",
+               f"arch.haunch.{side}.f", f"arch.haunch.{side}.r",
+               "rigid-distance", radius=0.085, alloy="4340qt",
+               palette="rollbar-silver", beam_solvable=True,
+               load_path="deep-arch-haunch-longitudinal-tie")
         # THE PINS. Two per arch, fore and aft, under the crown.
         for fz, z in (("f", +PIN_Z), ("r", -PIN_Z)):
             g.node(f"arch.pin.{side}.{fz}",
-                   [sx * ARCH_X, crown_y - PIN_DROP, z],
+                   [sx * ARCH_X,
+                    deck_y + ARCH_CROWN_SHOULDER_RISE_M - PIN_DROP, z],
                    "chassis-load-node", material="4340qt",
+                   motion_group="arch-crown-lift",
                    mass_in_total=False, mass_kg=18.0,
-                   part_role="arch-pin", rigid=True,
-                   half_extent_m=(0.07, 0.06, 0.07))
+                   part_role="arch-pin", rigid=True, pin_level=1,
+                   shape="drum", drum_axis=(1.0, 0.0, 0.0),
+                   drum_radius_m=0.055, drum_length_m=0.180,
+                   half_extent_m=(0.090, 0.055, 0.055))
             g.edge(f"arch.pin_boss.{side}.{fz}", f"arch.pin.{side}.{fz}",
                    f"arch.shoulder.{side}.{fz}",
                    "rigid-distance", radius=0.046, alloy="4340qt",
-                   rigid=True, beam_solvable=False, palette="rollbar-silver",
+                   beam_solvable=True, palette="rollbar-silver",
                    load_path="the-pin-hung-off-the-arch")
+    g.edge("arch.crown.apex_tie", "arch.crown.a.apex",
+           "arch.crown.b.apex", "rigid-distance", radius=0.095,
+           alloy="4340qt", palette="rollbar-silver", beam_solvable=True,
+           part_role="moving-crown-cross-tie",
+           rises_with="arch-crown-lift",
+           load_path="the-two-moving-arch-crowns-braced-as-one")
     # the two arches tied together so they are one rigid portal
     for fz in (("f", "r") if ARCH_TIE else ()):
         g.edge(f"arch.tie.{fz}", f"arch.shoulder.a.{fz}",
                f"arch.shoulder.b.{fz}", "rigid-distance", radius=0.060,
-               alloy="4340qt", palette="rollbar-silver", rigid=True,
+               alloy="4340qt", palette="rollbar-silver",
                beam_solvable=True, load_path="the-two-arches-tied-across")
 
     # ---- STAGE ONE: the dangling platform, off the four arch pins ----
@@ -227,8 +502,12 @@ def build(fold: float = 0.0, g=None, deck_y: float | None = None,
         identity="dangling", link_m=0.950, rises=-1.0,
         anchors=("arch.pin.a.r", "arch.pin.a.f",
                  "arch.pin.b.r", "arch.pin.b.f"),
-        rest_angle_deg=0.0 - 42.0 * fold, travel_deg=42.0,
+        # Installed eight degrees forward of dead-hang. The packing rams'
+        # declared preload holds this working side; gravity still supplies
+        # the large-angle return instead of a fictitious giant spring.
+        rest_angle_deg=8.0 - 50.0 * fold, travel_deg=50.0,
         inboard_m=0.0, carries_kg=0.0,
+        pin_radius_m=0.055, pin_length_m=0.180,
         # GRAVITY IS THE RECUPERATOR, so the spring is not one. Both
         # stages rest at the bottom of their own travel and gravity
         # returns them to battery on its own. A spring stiff enough to
@@ -248,9 +527,82 @@ def build(fold: float = 0.0, g=None, deck_y: float | None = None,
         anchors=d["anchors_for_next"],
         rest_angle_deg=68.0 - 52.0 * fold, travel_deg=52.0,
         inboard_m=0.260, carries_kg=0.0, preload_n=12_000.0,
+        pin_radius_m=0.040, pin_length_m=0.120,
+        link_radius_m=0.045,
         spring_rate_n_per_m=18_000.0, damping_n_s_per_m=90_000.0)
     u = emit_platform_stage(g, gun, motion_group="recoil",
                             assembly="gun-platform")
+    emit_platform_deck_contacts(g, d, u)
+
+    # The gun is not redrawn here. Mount the existing coherent production
+    # gun -- square recoil tank/journal, original actuators and coolant-
+    # jacketed barrel included -- on the platform just emitted above.
+    return _mount_production_gun(g, d, u, dangling, gun, bore_mm=20.0)
+
+
+def arch_height_document(document: dict, lift_m: float) -> dict:
+    """Restage the real crown cylinders and everything they carry.
+
+    This produces a physical pose for a reference/atlas solve.  It is not a
+    render offset: the four lift-column and positive-lock lengths are changed
+    to the installed height, while every crown, platform and gun body moves
+    together. Runtime motion can later interpolate between validated atlas
+    poses while the HCU owns unlocking, oil flow and relocking.
+    """
+    lift = float(lift_m)
+    if not 0.0 <= lift <= ARCH_EXTREME_LIFT_M:
+        raise ValueError(
+            f"arch crown lift must be in [0, {ARCH_EXTREME_LIFT_M}] m")
+    posed = deepcopy(document)
+    moved = set()
+    for node in posed["nodes"]:
+        identity = str(node["identity"])
+        assembly = str(node.get("assembly", ""))
+        carries_crown = (
+            node.get("motion_group") == "arch-crown-lift"
+            or identity.startswith(("dangling.", "gun.", "fine.base."))
+            or assembly in PRODUCTION_GUN_ASSEMBLIES)
+        if not carries_crown:
+            continue
+        node["reference_position"][1] += lift
+        node["arch_crown_lift_m"] = lift
+        moved.add(identity)
+
+    positions = {node["identity"]: np.asarray(node["reference_position"], float)
+                 for node in posed["nodes"]}
+    changed = []
+    for edge in posed["edges"]:
+        if (edge["a"] in moved) == (edge["b"] in moved):
+            continue
+        installed = float(np.linalg.norm(positions[edge["b"]]
+                                         - positions[edge["a"]]))
+        edge["rest_length"] = installed
+        if edge.get("part_role") == "arch-crown-lift-actuator":
+            edge["commanded_rest_length_m"] = installed
+            edge["actuator_extension_m"] = lift
+            edge["actuator_state"] = ("normal-height-retracted" if lift == 0.0
+                                      else "high-angle-extended")
+        elif edge.get("part_role") == "arch-crown-positive-height-lock":
+            edge["lock_engaged"] = True
+            edge["locked_height_m"] = lift
+        changed.append(edge["identity"])
+    expected = {f"arch.crown_{kind}.{side}.{end}"
+                for kind in ("lift", "lock")
+                for side in ("a", "b") for end in ("f", "r")}
+    if set(changed) != expected:
+        raise ValueError(
+            "arch crown pose crosses undeclared members: "
+            f"{sorted(set(changed) ^ expected)}")
+    posed.pop("_graph_columns", None)
+    posed["arch_crown_state"] = {
+        "lift_m": lift,
+        "fraction": lift / ARCH_EXTREME_LIFT_M,
+        "actuators": sorted(identity for identity in changed
+                            if ".crown_lift." in identity),
+        "positive_locks": sorted(identity for identity in changed
+                                 if ".crown_lock." in identity),
+    }
+    return posed
 
     # =================================================================
     #  THE MOUNT: high adjustment, trunnion, and the gun balanced on it
@@ -431,63 +783,166 @@ def build(fold: float = 0.0, g=None, deck_y: float | None = None,
     #     slide, and the whole shot goes into the structure. Both slide
     #     members here run fore and aft on the bore line, so the
     #     freedom released is the one the gun recoils along.
-    tz = float(trunnion @ FORWARD)
-    rz = float(rear @ FORWARD)
-    for tag, z, holds in (("fwd", tz + RAIL_STANDOFF_M, "weapon.tube.2"),
-                          ("aft", rz - RAIL_STANDOFF_M, "weapon.breech")):
-        g.node(f"mount.rail.{tag}", (0.0, bore_y, z),
+    # TWO PHYSICAL WAYS AND FOUR SHOES.  The earlier graph drew two abstract
+    # slider edges through the bore centre.  They released the right degree
+    # of freedom, but there was no carriage one could point at.  These rails
+    # sit below and to either side of the tube; rigid shoe brackets attach
+    # them to the gun, and the cross-bars are the equalizer that prevents one
+    # absorber from twisting the breech around a single guide.
+    slide_axis = tuple(float(v) for v in FORWARD)
+    rail_x, rail_y = 0.22, bore_y - 0.22
+    moving_z = {"aft": BREECH_Z - 0.18, "fwd": 1.75}
+    fixed_z = {tag: z - RAIL_STANDOFF_M for tag, z in moving_z.items()}
+    slide_edges = []
+    for side, x in (("a", -rail_x), ("b", rail_x)):
+        for tag, holds in (("aft", "weapon.breech"),
+                           ("fwd", "weapon.tube.2")):
+            rail = f"mount.rail.{side}.{tag}"
+            shoe = f"weapon.slide.shoe.{side}.{tag}"
+            g.node(rail, (x, rail_y, fixed_z[tag]),
+                   "load-bearing-structure", material="4340qt",
+                   mass_in_total=False, mass_kg=42.0,
+                   part_role="recoil-rail-bearing",
+                   half_extent_m=(0.075, 0.060, 0.10))
+            g.node(shoe, (x, rail_y, moving_z[tag]),
+                   "load-bearing-structure", material="4340qt",
+                   mass_in_total=False, mass_kg=18.0,
+                   part_role="recoil-slide-shoe", recoils=True,
+                   half_extent_m=(0.085, 0.070, 0.12))
+            g.edge(f"mount.rail_seat.{side}.{tag}", rail, "mount.cradle",
+                   "rigid-distance", radius=0.036, alloy="4340qt",
+                   palette="chassis-grey", beam_solvable=True,
+                   load_path="the-cradle-carrying-one-recoil-way")
+            guide = f"weapon.slide.{side}.{tag}"
+            g.edge(guide, rail, shoe, "single-axis-slider",
+                   radius=0.046, alloy="4340qt", palette="chassis-grey",
+                   part_role="recoil-slide-guide", free_axis="bore",
+                   slide_axis=slide_axis, travel_m=SLIDE_TRAVEL_M,
+                   load_path="one-shoe-running-on-one-physical-way")
+            slide_edges.append(guide)
+            g.edge(f"weapon.slide_bracket.{side}.{tag}", shoe, holds,
+                   "rigid-distance", radius=0.034, alloy="4340qt",
+                   palette="rollbar-silver", beam_solvable=True,
+                   load_path="the-slide-shoe-bolted-to-the-gun")
+        g.edge(f"mount.rail_run.{side}", f"mount.rail.{side}.aft",
+               f"mount.rail.{side}.fwd", "rigid-distance", radius=0.048,
+               alloy="4340qt", palette="chassis-grey", beam_solvable=True,
+               load_path="one-continuous-recoil-way")
+    for tag in ("aft", "fwd"):
+        g.edge(f"weapon.slide_crosshead.{tag}",
+               f"weapon.slide.shoe.a.{tag}",
+               f"weapon.slide.shoe.b.{tag}", "rigid-distance",
+               radius=0.042, alloy="4340qt", palette="rollbar-silver",
+               beam_solvable=True,
+               load_path="the-crosshead-sharing-load-between-both-ways")
+    # THE PRODUCTION GUN'S TRIPLE-REDUNDANT RECOIL SYSTEM.  These are
+    # parallel force paths across one slide, not three sequential stages:
+    # the pneumatic recuperator reacts immediately and returns to battery,
+    # the passive oil circuit dissipates velocity-squared energy, and the
+    # MR circuit supplies controllable yield force even near zero velocity.
+    # The declaration mirrors turret_production's real gun absorber.
+    absorber_ids = ["weapon.absorber.pneumatic", "weapon.absorber.oil",
+                    "weapon.absorber.magnetorheological"]
+    # Three separate bores in one compact pack beneath the breech.  Each
+    # end is one STRAIGHT CROSSHEAD spanning the two ways.  The former
+    # triangular manifold had a third diagonal attachment through the
+    # centre; it balanced algebraically but was physically asymmetric and
+    # impossible to read in the mesh.  Here the outer ends attach to the
+    # left and right ways symmetrically, and the centre MR cylinder loads
+    # the crosshead between them.
+    names = ("pneumatic", "oil", "magnetorheological")
+    offsets = {"pneumatic": (-0.14, rail_y - 0.16),
+               "magnetorheological": (0.0, rail_y - 0.16),
+               "oil": (0.14, rail_y - 0.16)}
+    reaction_z = moving_z["aft"] - SLIDE_TRAVEL_M - 0.08
+    for name in names:
+        x, y = offsets[name]
+        g.node(f"mount.absorber.reaction.{name}", (x, y, reaction_z),
                "load-bearing-structure", material="4340qt",
-               mass_in_total=False, mass_kg=95.0,
-               part_role="recoil-rail", travel_m=SLIDE_TRAVEL_M,
-               on_the_bore_line=True, half_extent_m=(0.20, 0.12, 0.10))
-        g.edge(f"mount.rail_seat.{tag}", f"mount.rail.{tag}", "mount.cradle",
-               "rigid-distance", radius=0.058, alloy="4340qt",
-               palette="chassis-grey", beam_solvable=True,
-               load_path="the-rail-carried-by-the-cradle")
-        g.edge(f"weapon.slide.{tag}", f"mount.rail.{tag}", holds,
-               "single-axis-slider", radius=0.052, alloy="4340qt",
-               palette="chassis-grey", part_role="recoil-slide",
-               free_axis="bore", travel_m=SLIDE_TRAVEL_M,
-               load_path="the-gun-running-fore-and-aft-in-its-cradle")
-    g.edge("mount.rail_run", "mount.rail.fwd", "mount.rail.aft",
-           "rigid-distance", radius=0.050, alloy="4340qt",
-           palette="chassis-grey", beam_solvable=True,
-           load_path="the-recoil-rail-itself")
-    # the absorber, beside the aft slide and on the same axis, so the
-    # force it makes is the force along the bore
-    g.edge("weapon.absorber", "mount.rail.aft", "weapon.breech",
-           "spring-damper", radius=0.066, alloy="4340qt",
-           palette="actuator-yellow", part_role="recoil-absorber",
-           stroke_m=SLIDE_TRAVEL_M, piston_area_m2=SLIDE_PISTON_AREA_M2,
+               mass_in_total=False, mass_kg=9.0,
+               part_role="recoil-absorber-fixed-clevis", element=name,
+               half_extent_m=(0.060, 0.060, 0.070))
+        g.node(f"weapon.absorber.head.{name}", (x, y, moving_z["aft"]),
+               "load-bearing-structure", material="4340qt",
+               mass_in_total=False, mass_kg=9.0, recoils=True,
+               part_role="recoil-absorber-moving-clevis", element=name,
+               half_extent_m=(0.065, 0.065, 0.075))
+    crosshead_order = ("pneumatic", "magnetorheological", "oil")
+    for side, (left, right) in enumerate(zip(crosshead_order,
+                                              crosshead_order[1:])):
+        g.edge(f"mount.absorber.reaction_ring.{side}",
+               f"mount.absorber.reaction.{left}",
+               f"mount.absorber.reaction.{right}", "rigid-distance",
+               radius=0.026, alloy="4340qt", palette="rollbar-silver",
+               load_path="the-straight-fixed-crosshead-between-both-ways")
+        g.edge(f"weapon.absorber.moving_ring.{side}",
+               f"weapon.absorber.head.{left}",
+               f"weapon.absorber.head.{right}", "rigid-distance",
+               radius=0.026, alloy="4340qt", palette="rollbar-silver",
+               load_path="the-straight-moving-crosshead-between-both-shoes")
+    for name, anchor in (("pneumatic", "mount.rail.a.aft"),
+                         ("oil", "mount.rail.b.aft")):
+        g.edge(f"mount.absorber.anchor.{name}",
+               f"mount.absorber.reaction.{name}",
+               anchor, "rigid-distance",
+               radius=0.030, alloy="4340qt", palette="rollbar-silver",
+               load_path="the-absorber-reaction-ring-into-the-two-ways")
+    for name, anchor in (("pneumatic", "weapon.slide.shoe.a.aft"),
+                         ("oil", "weapon.slide.shoe.b.aft")):
+        g.edge(f"weapon.absorber.equalizer.{name}",
+               f"weapon.absorber.head.{name}",
+               anchor, "rigid-distance",
+               radius=0.030, alloy="4340qt", palette="rollbar-silver",
+               load_path="the-absorber-moving-ring-into-the-slide-crosshead")
+
+    common = dict(radius=0.052, alloy="4340qt", palette="actuator-yellow",
+                  part_role="recoil-absorber-element",
+                  stroke_m=SLIDE_TRAVEL_M,
+                  piston_area_m2=SLIDE_PISTON_AREA_M2,
+                  parallel_with=absorber_ids,
+                  alone_takes_full_charge=True)
+    g.edge(absorber_ids[0], "mount.absorber.reaction.pneumatic",
+           "weapon.absorber.head.pneumatic",
+           "spring-damper", **common,
+           force_components=("pneumatic-recuperator",),
            spring_rate_n_per_m=SLIDE_SPRING_N_PER_M,
-           spring_preload_n=SLIDE_PRELOAD_N, controllable_damping=True,
-           set_per_shot=True,
-           load_path="the-existing-absorber-between-gun-and-cradle")
+           spring_preload_n=SLIDE_PRELOAD_N,
+           load_path="passive-pneumatic-recuperator-on-the-recoil-slide")
+    g.edge(absorber_ids[1], "mount.absorber.reaction.oil",
+           "weapon.absorber.head.oil",
+           "oleo-recoil-slide", **common,
+           force_components=("oil-orifice",),
+           orifice_area_m2=SLIDE_PISTON_AREA_M2 * 0.06,
+           charge_pressure_pa=1.0, gas_volume_m3=1.0,
+           load_path="passive-oil-brake-on-the-recoil-slide")
+    g.edge(absorber_ids[2], "mount.absorber.reaction.magnetorheological",
+           "weapon.absorber.head.magnetorheological",
+           "linear-hydraulic-actuator", **common,
+           kind="magnetorheological", force_components=("mr-yield",),
+           gap_m=0.0012, active_length_m=0.060,
+           yield_min_pa=1.0e3, yield_max_pa=6.0e4,
+           plastic_viscosity_pa_s=0.28, coil_watts_max=22.0,
+           current_frac=1.0,
+           load_path="controllable-mr-brake-on-the-recoil-slide")
 
     # ---- THE ATTACHMENT STATIONS, a row of holes on every link ----
-    g.assembly = "stations"
-    pos = {n["identity"]: np.asarray(n["reference_position"], float)
-           for n in g.nodes}
+    # A hole is not another body and the two halves of the link are not
+    # extra members.  The former representation added a mass node at every
+    # hole and two rigid boss edges back to the link ends.  Besides drawing
+    # dozens of two-part elbows whenever a marker missed an articulation
+    # update, those duplicate members falsely stiffened the mechanism.
+    # Keep the selectable stations on the one physical link as metadata.
     for made in (d, u):
         st = made["stage"]
         for tag in ("aft.a", "fwd.a", "aft.b", "fwd.b"):
-            p, c = pos[made["pins"][tag]], pos[made["corners"][tag]]
-            arm_len = float(np.linalg.norm(c - p))
-            for si, frac in enumerate(STATIONS):
-                ident = f"station.{st.identity}.{tag}.{si}"
-                g.node(ident, tuple(float(v) for v in p + (c - p) * frac),
-                       "chassis-load-node", material="4340qt",
-                       mass_in_total=False, mass_kg=2.4,
-                       part_role="absorber-attachment-station",
-                       stage=st.identity, corner=tag, fraction=frac,
-                       moment_arm_m=round(arm_len * frac, 4),
-                       half_extent_m=(0.035, 0.035, 0.035))
-                for end, other in (("pin", made["pins"][tag]),
-                                   ("corner", made["corners"][tag])):
-                    g.edge(f"{ident}.boss.{end}", ident, other,
-                           "rigid-distance", radius=0.018, rigid=True,
-                           beam_solvable=False, palette="rollbar-silver",
-                           load_path="a-hole-in-the-link-is-the-link")
+            identity = f"{st.identity}.link.{tag}"
+            link = next(edge for edge in g.edges
+                        if edge["identity"] == identity)
+            link["attachment_stations"] = [
+                {"fraction": float(frac),
+                 "moment_arm_m": round(st.link_m * frac, 4)}
+                for frac in STATIONS
+            ]
 
     # ---- WHAT EACH STAGE ACTUALLY CARRIES, read off the graph ----
     # `carries_kg` decides how much of the shot gravity takes back, so
@@ -746,10 +1201,10 @@ def elevation(plat, path: str = "sled_elevation.png"):
 
 def station_table(document: dict, recoil_j: float, stroke_m: float) -> list:
     seen = {}
-    for x in document["nodes"]:
-        if (x.get("part_role") == "absorber-attachment-station"
-                and x.get("stage") == "gun" and x.get("corner") == "fwd.a"):
-            seen[x["fraction"]] = x["moment_arm_m"]
+    link = next((edge for edge in document["edges"]
+                 if edge["identity"] == "gun.link.fwd.a"), None)
+    for station in (link or {}).get("attachment_stations", ()):
+        seen[station["fraction"]] = station["moment_arm_m"]
     out = [f"  ATTACHMENT STATIONS on a gun-platform link "
            f"(absorbing {recoil_j / 1000:.0f} kJ)",
            "    hole   arm       stroke seen    mean force needed"]

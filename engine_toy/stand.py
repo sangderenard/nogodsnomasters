@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+import copy
 
 import numpy as np
 
@@ -60,8 +61,11 @@ class Stand:
     bay_depth_m: float = 2.20
     #: the top of the stand, which is where the drum's floor sits
     deck_y: float = 0.000
-    #: how far the legs stand the whole site off the ground
-    lift_m: float = 1.600
+    #: clear occupied height of the bottom-floor office/machine room while
+    #: planted.  This is not trailer clearance and is never counted twice.
+    lower_room_clear_height_m: float = 2.400
+    #: additional space opened beneath the bottom floor for a trailer.
+    trailer_clearance_m: float = 1.800
     #: How far the outer legs lean outward from vertical. THIS IS NOT
     #: STYLING. A raked leg does two things a vertical one cannot: its
     #: pad lands further out than the frame it hangs from, which widens
@@ -80,6 +84,10 @@ class Stand:
     #: its length. Low is a long lever and a gentle force; high is a
     #: short one and a hard shove, and it has to clear the frame.
     deploy_lug_frac: float = 0.42
+    #: The angle cylinder bears on the upper part of the long corner leg,
+    #: measured from its frame pivot.  It stays at this station as the leg
+    #: telescopes below it.
+    deploy_lug_from_pivot_m: float = 1.60
     #: where the deploy ram's other end is anchored, inboard of the
     #: pivot and above the deck
     deploy_anchor_in_m: float = 0.55
@@ -102,12 +110,43 @@ class Stand:
     @property
     def reach_m(self) -> float:
         """How much further out a raked pad lands than its own leg top."""
-        return self.lift_m * math.tan(math.radians(self.leg_rake_deg))
+        return self.lower_room_clear_height_m * math.tan(math.radians(self.leg_rake_deg))
 
     @property
     def leg_length_m(self) -> float:
         """A raked leg is longer than the height it lifts."""
-        return self.lift_m / math.cos(math.radians(self.leg_rake_deg))
+        return self.lower_room_clear_height_m / math.cos(math.radians(self.leg_rake_deg))
+
+    @property
+    def service_lift_stroke_m(self) -> float:
+        """Travel above the planted pose available for trailer loading.
+
+        In the planted pose an inner jack is CLOSED at the lower-room clear
+        height while an
+        outer jack is fully extended and raked.  Straightening that outer
+        jack makes its closed length vertical; re-extending it then reaches
+        the same raised height as an inner jack on this stroke.
+        """
+        return self.trailer_clearance_m
+
+    @property
+    def rake_extension_m(self) -> float:
+        """Extra brace length consumed solely by the planted rake."""
+        return self.leg_length_m - self.lower_room_clear_height_m
+
+    @property
+    def raised_frame_y(self) -> float:
+        return self.deck_y + self.service_lift_stroke_m
+
+    @property
+    def raised_raked_leg_length_m(self) -> float:
+        """Corner-leg pin length while firing raised at the same rake."""
+        vertical = self.lower_room_clear_height_m + self.service_lift_stroke_m
+        return vertical / math.cos(math.radians(self.leg_rake_deg))
+
+    @property
+    def corner_leg_stroke_m(self) -> float:
+        return self.raised_raked_leg_length_m - self.lower_room_clear_height_m
 
     @property
     def stations(self) -> tuple:
@@ -173,7 +212,7 @@ class Stand:
         top = np.array([x, self.deck_y, z], float)
         anchor = top + inward * self.deploy_anchor_in_m \
             + UP * self.deploy_anchor_up_m
-        reach = self.leg_length_m * self.deploy_lug_frac
+        reach = self.deploy_lug_from_pivot_m
         stowed = top + self.leg_axis(self.leg_stow_deg, rx, rz) * reach
         deployed = top + self.leg_axis(self.leg_rake_deg, rx, rz) * reach
         stroke = abs(float(np.linalg.norm(deployed - anchor))
@@ -203,7 +242,8 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
     structure and a worse machine."""
     g.motion_group, g.assembly = motion_group, assembly
     h, y = stand.half, stand.deck_y
-    made = {"corners": {}, "bays": {}, "legs": {}}
+    made = {"corners": {}, "bays": {}, "lower_room": {},
+            "lower_bays": {}, "floor_plate": {}, "legs": {}}
 
     # ---- THE WORK AREA: four posts and the ring beam round them ----
     ring = (("fr", +h, +h), ("fl", -h, +h), ("rl", -h, -h), ("rr", +h, -h))
@@ -228,6 +268,134 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
                radius=0.034, alloy=stand.material, palette="chassis-grey",
                part_role="work-area-brace", beam_solvable=True,
                load_path="the-work-area-kept-square-without-closing-it")
+
+    # ---- THE LOWER FLOOR: an open room, not imaginary clearance ----
+    # These are distinct from the outrigger pads even where their reference
+    # coordinates coincide in the planted pose.  The room floor rides with
+    # the stand; it is not another set of ground supports.
+    lower_y = y - stand.lower_room_clear_height_m
+    for tag, x, z in ring:
+        ident = f"{stand.identity}.lower_room.{tag}"
+        g.node(ident, (x, lower_y, z), "chassis-load-node",
+               material=stand.material, mass_in_total=False, mass_kg=34.0,
+               part_role="lower-room-frame-corner", in_view=True,
+               half_extent_m=(0.08, 0.08, 0.08))
+        made["lower_room"][tag] = ident
+        g.edge(f"{stand.identity}.lower_room.hanger.{tag}",
+               made["corners"][tag], ident, "rigid-distance",
+               radius=0.090, alloy="hy80", palette="chassis-grey",
+               beam_solvable=True, part_role="lower-room-frame-hanger",
+               always_down=True, not_ground_support=True,
+               load_path="primary-corner-column-carrying-the-stiffened-"
+                         "lower-floor-into-the-main-leg-head")
+    for end, a, b in (("front", "fl", "fr"), ("rear", "rl", "rr")):
+        g.edge(f"{stand.identity}.lower_room.cross.{end}",
+               made["lower_room"][a], made["lower_room"][b],
+               "rigid-distance", radius=0.045, alloy=stand.material,
+               palette="chassis-grey", beam_solvable=True,
+               part_role="lower-room-end-crossmember",
+               load_path="end-crossmember-under-the-open-lower-work-room")
+    for side, a, b in (("port", "fl", "rl"),
+                       ("starboard", "fr", "rr")):
+        g.edge(f"{stand.identity}.lower_room.rail.{side}",
+               made["lower_room"][a], made["lower_room"][b],
+               "rigid-distance", radius=0.040, alloy=stand.material,
+               palette="chassis-grey", beam_solvable=True,
+               part_role="lower-room-side-rail",
+               load_path="side-rail-supporting-the-tank-service-floor")
+
+    # A real bolting surface.  Its strip grid carries local tank, bottle and
+    # work loads; four corner bolts transfer them to the hanging lower frame.
+    from surfaces import Plate, emit_plate
+    floor_thickness_m = 0.020
+    # Stop at the inner faces of the four corner/casing blocks.  A plate
+    # drawn to their centre lines lies under the outrigger feet in plan and
+    # visually/physically turns the ground pad into part of the floor.  The
+    # plate belongs between the casings; the telescoping foot remains below
+    # and outside it.
+    floor_edge_inset_m = 0.20
+    floor_half = h - floor_edge_inset_m
+    floor = Plate(
+        identity=f"{stand.identity}.lower_room.floor",
+        corner=(-floor_half, lower_y + floor_thickness_m / 2.0,
+                -floor_half),
+        span_u=(2.0 * floor_half, 0.0, 0.0),
+        span_v=(0.0, 0.0, 2.0 * floor_half),
+        thickness_m=floor_thickness_m, nu=4, nv=4,
+        material="steel-plate", alloy="hy80",
+        attributes={"surface_role": "tank-service-floor-plate",
+                    "edge_inset_m": floor_edge_inset_m,
+                    "does_not_underlay_outrigger_feet": True,
+                    "structural_role": "welded-shear-diaphragm-and-ballast"})
+    made["floor_plate"] = emit_plate(
+        g, floor, motion_group=motion_group, assembly=assembly)
+    floor_corners = {(0, 0): "rl", (0, 4): "fl",
+                     (4, 0): "rr", (4, 4): "fr"}
+    for key, tag in floor_corners.items():
+        g.edge(f"{stand.identity}.lower_room.floor_weld.{tag}",
+               made["floor_plate"]["nodes"][key], made["lower_room"][tag],
+               "rigid-distance", radius=0.024, alloy="hy80",
+               palette="chassis-grey", beam_solvable=True,
+               part_role="tank-service-floor-perimeter-weld",
+               fastening="continuous-fillet-weld",
+               weld_face="inside-face-of-outrigger-casing-corner",
+               load_path="floor-edge-welded-to-the-bottom-inside-face-of-"
+                         "the-outrigger-casing-not-under-the-foot")
+    made["floor_surface_y_m"] = lower_y + floor_thickness_m
+
+    # THE FLOOR'S PRIMARY STRUCTURE.  Two deep longitudinal girders lie in
+    # the bore/fore-aft direction beneath the gun.  Five transverse
+    # diaphragms tie them to the room perimeter, so the plate participates as
+    # a welded shear diaphragm and useful low ballast instead of pretending a
+    # flat plate alone is a gun foundation.
+    from milspec import WeldedISection
+    spine = WeldedISection(0.420, 0.240, 0.018, 0.026, "hy80",
+                           "fabricated HY-80 420x240 floor spine")
+    cross = WeldedISection(0.300, 0.200, 0.014, 0.020, "hy80",
+                           "fabricated HY-80 300x200 diaphragm")
+
+    def shaped(section):
+        return dict(
+            section_shape="welded-i", section_up=(0.0, 1.0, 0.0),
+            section_depth_m=section.depth_m,
+            section_flange_width_m=section.flange_width_m,
+            section_web_thickness_m=section.web_thickness_m,
+            section_flange_thickness_m=section.flange_thickness_m,
+            section_properties=section.graph_properties())
+
+    # Plate grid rows i=1 and i=3 are x=-0.75,+0.75 m for the standard
+    # 3.0 m clear floor. Segmentation at every crossmember makes each weld
+    # intersection a real graph node rather than two beams passing through.
+    made["floor_longitudinal_girders"] = []
+    for side, i in (("port", 1), ("starboard", 3)):
+        for j in range(4):
+            ident = f"{stand.identity}.lower_room.spine.{side}.{j}"
+            g.edge(ident, made["floor_plate"]["nodes"][(i, j)],
+                   made["floor_plate"]["nodes"][(i, j + 1)],
+                   "rigid-distance", radius=spine.flange_width_m / 2.0,
+                   alloy=spine.material, palette="chassis-grey",
+                   beam_solvable=True, part_role="grand-floor-longitudinal",
+                   load_path="one-of-two-deep-long-axis-girders-under-the-gun",
+                   **shaped(spine))
+            made["floor_longitudinal_girders"].append(ident)
+    made["floor_crossmembers"] = []
+    for j in range(5):
+        for i in range(4):
+            ident = f"{stand.identity}.lower_room.diaphragm.{j}.{i}"
+            g.edge(ident, made["floor_plate"]["nodes"][(i, j)],
+                   made["floor_plate"]["nodes"][(i + 1, j)],
+                   "rigid-distance", radius=cross.flange_width_m / 2.0,
+                   alloy=cross.material, palette="chassis-grey",
+                   beam_solvable=True, part_role="stout-floor-crossmember",
+                   load_path="transverse-diaphragm-sharing-drum-and-ballast-load",
+                   **shaped(cross))
+            made["floor_crossmembers"].append(ident)
+    made["floor_spine_column_nodes"] = {
+        "fl": made["floor_plate"]["nodes"][(1, 3)],
+        "fr": made["floor_plate"]["nodes"][(3, 3)],
+        "rl": made["floor_plate"]["nodes"][(1, 1)],
+        "rr": made["floor_plate"]["nodes"][(3, 1)],
+    }
 
     # ---- THE TWO ENGINE BAYS, one on each short end ----
     bz = stand.bay_depth_m / 2.0
@@ -270,6 +438,47 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
                    part_role="engine-bay-tie",
                    load_path="the-bay-carried-by-the-work-area-frame")
 
+        # The engine can be chain-lowered through this matching open frame.
+        # Four light, permanently vertical hangers carry the lower frame from
+        # the bay above.  They deliberately terminate on neither outrigger
+        # pads nor corner pivots, so they cannot become surrogate firing legs.
+        lower_pts = {}
+        for tag, upper in pts.items():
+            p = next(n["reference_position"] for n in g.nodes
+                     if n["identity"] == upper)
+            ident = f"{stand.identity}.lower_bay.{side}.{tag}"
+            g.node(ident, (p[0], lower_y, p[2]), "chassis-load-node",
+                   material="a36", mass_in_total=False, mass_kg=18.0,
+                   part_role="engine-lowering-frame-corner", bay=side,
+                   half_extent_m=(0.07, 0.07, 0.07))
+            lower_pts[tag] = ident
+            g.edge(f"{stand.identity}.lower_bay.hanger.{side}.{tag}",
+                   upper, ident, "rigid-distance", radius=0.024,
+                   alloy="a36", palette="chassis-grey", beam_solvable=True,
+                   part_role="engine-lowering-frame-hanger", bay=side,
+                   always_down=True, not_ground_support=True,
+                   load_path="light-vertical-hanger-carrying-the-lowering-"
+                             "frame-from-the-engine-bay-above")
+        made["lower_bays"][side] = lower_pts
+        for end, a, b in (("front", "if", "of"),
+                          ("rear", "ir", "or")):
+            g.edge(f"{stand.identity}.lower_bay.cross.{side}.{end}",
+                   lower_pts[a], lower_pts[b], "rigid-distance",
+                   radius=0.040, alloy=stand.material,
+                   palette="chassis-grey", beam_solvable=True,
+                   part_role="engine-lowering-end-crossmember", bay=side,
+                   load_path="end-crossmember-around-the-open-engine-"
+                             "lowering-space")
+        for rail, a, b in (("inner", "if", "ir"),
+                           ("outer", "of", "or")):
+            g.edge(f"{stand.identity}.lower_bay.rail.{side}.{rail}",
+                   lower_pts[a], lower_pts[b], "rigid-distance",
+                   radius=0.034, alloy=stand.material,
+                   palette="chassis-grey", beam_solvable=True,
+                   part_role="engine-lowering-side-rail", bay=side,
+                   load_path="side-rail-closing-the-lowering-frame-without-"
+                             "crossing-its-opening")
+
     # ---- THE LEGS: they lift the site, engines included ----
     g.assembly = "outriggers"
     for tag, x, z, rx, rz, role in stand.stations:
@@ -293,7 +502,8 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
                        beam_solvable=True,
                        load_path="the-pivot-the-leg-swings-on")
         axis = stand.leg_axis(stand.leg_rake_deg if braced else 0.0, rx, rz)
-        length = stand.leg_length_m if braced else stand.lift_m
+        length = (stand.leg_length_m if braced
+                  else stand.lower_room_clear_height_m)
         foot = np.array([x, y, z], float) + axis * length
         pad = f"{stand.identity}.leg.{tag}.pad"
         g.node(pad, tuple(float(v) for v in foot), "load-bearing-structure",
@@ -301,18 +511,85 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
                part_role="outrigger-pad", fixed_to="world",
                stands_on="the-ground", leg_role=role,
                half_extent_m=(0.20, 0.06, 0.20))
-        g.edge(f"{stand.identity}.leg.{tag}", top, pad,
-               "linear-hydraulic-actuator", radius=0.070,
+        leg_identity = f"{stand.identity}.leg.{tag}"
+        initial_extension = stand.rake_extension_m if braced else 0.0
+        g.edge(leg_identity, top, pad,
+               "linear-hydraulic-actuator", radius=0.100 if braced else 0.085,
                alloy="4340qt", palette="actuator-yellow",
                part_role="outrigger-leg", leg_role=role,
-               bore_m=0.100, rod_m=0.060,
-               stroke_m=round(length, 4), travel_m=round(length, 4),
+               support_name=tag,
+               bore_m=0.160 if braced else 0.140,
+               rod_m=0.100 if braced else 0.090,
+               stages=3 if braced else 2,
+               closed_length_m=round(stand.lower_room_clear_height_m, 4),
+               stroke_m=round(stand.corner_leg_stroke_m if braced
+                              else stand.service_lift_stroke_m, 4),
+               travel_m=round(stand.corner_leg_stroke_m if braced
+                              else stand.service_lift_stroke_m, 4),
+               actuator_extension_m=round(
+                   initial_extension, 4),
+               # Runtime coupling uses this as the zero of pumped travel;
+               # retain full precision so the planted outer legs do not
+               # begin with a fabricated oil-column penetration.
+               initial_actuator_extension_m=float(initial_extension),
+               slide_axis=tuple(float(v) for v in axis),
+               rake_stage_stroke_m=round(stand.rake_extension_m, 4) if braced else 0.0,
+               rake_stage_extension_frac=1.0 if braced else 0.0,
+               service_stage_stroke_m=round(stand.service_lift_stroke_m, 4),
+               service_stage_extension_frac=0.0,
+               actuator_state=("rake-stage-fully-extended-service-stage-retracted"
+                               if braced else "fully-retracted"),
                rake_deg=(stand.leg_rake_deg if braced else 0.0),
                piston_area_m2=math.pi * 0.100 ** 2 / 4.0,
                lifts="the-whole-site-work-area-and-both-engines",
                load_path=("the-leg-bracing-the-shot-into-the-ground"
                           if braced else
                           "the-leg-under-the-turret-carrying-it"))
+        # The actuator engine owns pressure, valve flow and piston volume;
+        # the beam engine owns the bodies.  These paired unilateral oil-
+        # column contacts are their physical boundary.  Their common travel
+        # coordinate is updated from LinearActuator.position_m at runtime,
+        # so a pressurised rod cannot move farther than the volume actually
+        # pumped into it (or cavitate behind that volume in the other
+        # direction).  They are not arbitrary stabilisers or a locked beam.
+        # The finite stiffness is the bulk compliance of the trapped oil,
+        # hose and cylinder barrel.
+        reference_length = float(np.linalg.norm(foot - np.array([x, y, z])))
+        oil_column = dict(
+            kind="bump-stop", in_view=False,
+            structural_participation=False, beam_solvable=False,
+            part_role="outrigger-hydraulic-volume-boundary",
+            support_name=tag, coupled_slide_edges=(leg_identity,),
+            slide_load_share=(1.0,),
+            coupled_reference_separation_m=(reference_length,),
+            coupled_motion_sign=(1.0,),
+            slide_axis=tuple(float(v) for v in axis),
+            clearance_m=0.0,
+            linear_stiffness_n_per_m=2.5e8,
+            cubic_stiffness_n_per_m3=2.0e12,
+            compression_damping_n_s_per_m=7.5e5,
+            hydraulic_position_offset_m=0.0,
+            physical_law="trapped-oil-volume-and-bulk-compliance")
+        g.edge(f"{leg_identity}.oil_column.retract", top, pad,
+               "bump-stop-contact", contact_side="minimum-separation",
+               **oil_column)
+        g.edge(f"{leg_identity}.oil_column.extend", top, pad,
+               "bump-stop-contact", contact_side="maximum-separation",
+               **oil_column)
+        # The pilot-operated cylinder holds position hydraulically, but the
+        # firing state also closes a positive telescopic collar.  The collar
+        # is inside the visible jack, so this parallel load path is hidden;
+        # it is what lets the beam solve carry the gun wrench instead of
+        # pretending the positioning cylinder's free stroke is a beam.
+        g.edge(f"{stand.identity}.leg.{tag}.firing_lock", top, pad,
+               "direct-drive-lockup", radius=0.075 if braced else 0.060,
+               alloy="4340qt", palette="rollbar-silver",
+               beam_solvable=True, in_view=False,
+               part_role="outrigger-positive-length-lock",
+               support_name=tag, lock_engaged=True,
+               lock_type="double-shear-telescopic-collar",
+               active_states=("planted", "raised-firing"),
+               load_path="positive-column-lock-carries-firing-wrench")
         made["legs"][tag] = (top, pad)
 
         # ---- THE DEPLOY RAM: what makes the leg leave its stow ----
@@ -336,7 +613,8 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
         g.node(lug, tuple(float(v) for v in deployed), "chassis-load-node",
                material="4340qt", mass_in_total=False, mass_kg=16.0,
                part_role="outrigger-deploy-lug",
-               at_fraction=stand.deploy_lug_frac,
+               solver_condensed_into=top, solver_condensed_mass=True,
+               at_distance_from_pivot_m=stand.deploy_lug_from_pivot_m,
                half_extent_m=(0.07, 0.07, 0.07))
         g.node(anc, tuple(float(v) for v in anchor), "chassis-load-node",
                material=stand.material, mass_in_total=False, mass_kg=22.0,
@@ -345,11 +623,13 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
         g.edge(f"{stand.identity}.deploy_lug.{tag}", lug, top,
                "rigid-distance", radius=0.034, rigid=True,
                beam_solvable=False, alloy="4340qt",
+               structural_participation=False,
                palette="rollbar-silver",
                load_path="the-lug-is-part-of-the-leg")
         g.edge(f"{stand.identity}.deploy_lug_foot.{tag}", lug, pad,
                "rigid-distance", radius=0.034, rigid=True,
                beam_solvable=False, alloy="4340qt",
+               structural_participation=False,
                palette="rollbar-silver",
                load_path="the-lug-is-part-of-the-leg")
         g.edge(f"{stand.identity}.deploy_anchor.{tag}", anc, top,
@@ -360,11 +640,14 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
                "linear-hydraulic-actuator", radius=0.048,
                alloy="4340qt", palette="actuator-yellow",
                part_role="outrigger-deploy-ram", leg_role=role,
-               bore_m=0.080, rod_m=0.050,
+               bore_m=0.100, rod_m=0.060,
                stroke_m=round(stroke, 4), travel_m=round(stroke, 4),
                piston_area_m2=math.pi * 0.080 ** 2 / 4.0,
                swings_from_deg=stand.leg_stow_deg,
                swings_to_deg=stand.leg_rake_deg,
+               actuator_extension_m=round(stroke, 4),
+               actuator_extension_frac=1.0,
+               actuator_state="fully-extended-planted",
                load_path="the-ram-that-swings-the-leg-out-as-it-extends")
     g.assembly = assembly
     return made
@@ -400,8 +683,82 @@ def outrigger_set(stand: Stand, carried_kg: float):
     whole site's mass -- the turret, the stand, AND both engines --
     because that is what the legs actually stand up."""
     from outriggers import OutriggerSet
+    names = tuple(tag for tag, *_rest in stand.stations)
+    strokes = {tag: (stand.corner_leg_stroke_m if role == "brace"
+                     else stand.service_lift_stroke_m)
+               for tag, _x, _z, _rx, _rz, role in stand.stations}
+    initial = {tag: (stand.rake_extension_m if role == "brace" else 0.0)
+               for tag, _x, _z, _rx, _rz, role in stand.stations}
     return OutriggerSet(machine_mass_kg=float(carried_kg),
-                        stroke_m=stand.lift_m, stages=1)
+                        stroke_m=stand.service_lift_stroke_m, stages=1,
+                        leg_names=names, leg_strokes_m=strokes,
+                        leg_bores_m={tag: (0.160 if role == "brace" else 0.140)
+                                     for tag, _x, _z, _rx, _rz, role
+                                     in stand.stations},
+                        leg_rods_m={tag: (0.100 if role == "brace" else 0.090)
+                                   for tag, _x, _z, _rx, _rz, role
+                                   in stand.stations},
+                        leg_stages={tag: (3 if role == "brace" else 2)
+                                    for tag, _x, _z, _rx, _rz, role
+                                    in stand.stations},
+                        leg_closed_lengths_m={tag: stand.lower_room_clear_height_m
+                                              for tag in names},
+                        initial_extensions_m=initial)
+
+
+def raised_firing_document(document: dict, stand: Stand) -> dict:
+    """Return the same whole graph in its high, wide firing configuration.
+
+    The complete station rises by the trailer-clearance stroke.  Ground pads
+    do not move.  Inner pillars therefore grow vertically; corner legs remain
+    at their firing rake and telescope to the ground further out.  No body is
+    omitted and no support is pinned somewhere it was not already attached.
+    """
+    out = copy.deepcopy(document)
+    by_id = {node["identity"]: node for node in out["nodes"]}
+    pad_ids = {node["identity"] for node in out["nodes"]
+               if node.get("part_role") == "outrigger-pad"}
+    rise = float(stand.trailer_clearance_m)
+    for node in out["nodes"]:
+        if node["identity"] not in pad_ids:
+            node["reference_position"][1] += rise
+        node["stand_configuration"] = "raised-firing"
+
+    station_by_tag = {tag: (x, z, rx, rz, role)
+                      for tag, x, z, rx, rz, role in stand.stations}
+    for tag, (_x, _z, rx, rz, role) in station_by_tag.items():
+        if role != "brace":
+            continue
+        top = np.asarray(by_id[f"{stand.identity}.leg.{tag}.top"][
+            "reference_position"], float)
+        axis = stand.leg_axis(stand.leg_rake_deg, rx, rz)
+        pad = top + axis * stand.raised_raked_leg_length_m
+        by_id[f"{stand.identity}.leg.{tag}.pad"]["reference_position"] = [
+            float(v) for v in pad]
+        lug = top + axis * stand.deploy_lug_from_pivot_m
+        by_id[f"{stand.identity}.leg.{tag}.lug"]["reference_position"] = [
+            float(v) for v in lug]
+
+    position = {identity: np.asarray(node["reference_position"], float)
+                for identity, node in by_id.items()}
+    for edge in out["edges"]:
+        edge["rest_length"] = float(np.linalg.norm(
+            position[edge["b"]] - position[edge["a"]]))
+        if edge.get("part_role") == "outrigger-leg":
+            edge["actuator_extension_m"] = (
+                stand.corner_leg_stroke_m
+                if ".outer." in edge["identity"] else stand.trailer_clearance_m)
+            edge["service_stage_extension_frac"] = 1.0
+            edge["actuator_state"] = "fully-extended-raised-firing"
+    out["stand_configuration"] = {
+        "name": "raised-firing", "rise_m": rise,
+        "lower_room_clear_height_m": stand.lower_room_clear_height_m,
+        "clearance_beneath_lower_floor_m": stand.trailer_clearance_m,
+        "deck_height_above_ground_m": (stand.lower_room_clear_height_m
+                                         + stand.trailer_clearance_m),
+        "corner_rake_deg": stand.leg_rake_deg,
+    }
+    return out
 
 
 def describe(stand: Stand, carried_kg: float) -> list:
@@ -415,14 +772,19 @@ def describe(stand: Stand, carried_kg: float) -> list:
         f" directly under the turret",
         f"  engine bays     2, one each side, {stand.bay_length_m:.2f} m"
         f" out by {stand.bay_depth_m:.2f} m deep",
-        f"  lift            {stand.lift_m * 1000:.0f} mm -- the work area"
-        f" and both engines stand at that height",
+        f"  lower room      {stand.lower_room_clear_height_m * 1000:.0f} mm clear"
+        f" in the planted/retracted state",
         f"  legs            {legs}: 4 raked"
         f" {stand.leg_rake_deg:.0f} deg outward at the corners,"
         f" 4 upright under the work area",
         f"  deploy rams     4, one a raked leg: they swing it from"
         f" {stand.leg_stow_deg:.0f} deg stowed to"
         f" {stand.leg_rake_deg:.0f} deg braced as the leg extends",
+        f"  current state   inner lifters fully retracted at"
+        f" {stand.lower_room_clear_height_m * 1000:.0f} mm closed length; angled legs fully"
+        f" extended at {stand.leg_length_m * 1000:.0f} mm",
+        f"  service lift    {stand.service_lift_stroke_m * 1000:.0f} mm above"
+        f" planted height for trailer insertion",
         f"  rake buys       {stand.reach_m * 1000:.0f} mm of reach a pad,"
         f" so the fore-aft footprint is"
         f" +-{stand.braced_half_z:.2f} m at the ground"

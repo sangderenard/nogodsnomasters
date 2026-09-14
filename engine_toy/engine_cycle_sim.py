@@ -98,6 +98,9 @@ from damage_state import (
 import numpy as _np
 from gas_works import _steam_properties
 from fuel_network import (FuelNetworkRuntime, SupplyTick, charge_energy_factor, intake_flashback_risk)
+from hole_emitters import HoleEmitterField
+from burst import BurstField
+from ordnance import OrdnanceField
 import engine_geometry
 import wear as wear_module
 BURN_WINDOW_DEG = 50.0  # no longer used to SHAPE the torque pulse -- see _burned_frac
@@ -730,11 +733,20 @@ DYNO_PULL_INERTIA_KG_M2_PER_NM = 0.15
 @dataclass
 class EngineCycleSim:
     engine: Engine
+    # None uses whatever installation fuel system the engine specification
+    # explicitly carries.  A station/vehicle supplies its own real reservoir
+    # records here so the engine compiler does not invent an onboard tank.
+    external_fuel_supply: dict | None = None
     throttle: float = 0.0
     brake_load_nm: float = 0.0
     clutch_frac: float = 1.0   # 0=pedal floored/disengaged, 1=fully released/locked -- ClutchPort.engagement
     gear_index: int = 0        # 0=neutral (every engine starts in N), negative=reverse, 1..N=forward gear (engine.transmission.gear_ratios)
     electrical_load_frac: float = 0.30
+    # A load commanded by another graph controller (PTO pump, service
+    # generator, etc.) is known before rpm sags.  This channel informs the
+    # ECU's existing idle-load feedforward; the actual reaction torque still
+    # enters through the drivetrain, so the load is not applied twice.
+    known_accessory_shaft_load_w: float = 0.0
     fuel_choice: str | None = None   # None -> engine.preferred_fuel_profile
     rev_limiter_enabled: bool = True  # off = watch what it's actually there to prevent
     anti_lag_enabled: bool = False    # turbo + forced_induction.anti_lag_capable only
@@ -773,6 +785,13 @@ class EngineCycleSim:
     state: EngineCycleState = field(default_factory=EngineCycleState)
     pending_events: list[IgnitionEvent] = field(default_factory=list)
     pending_backfires: list[BackfireEvent] = field(default_factory=list)
+    # Persistent effect subsystems are declared members of the managed
+    # object, not dynamically typed attributes.  Besides documenting the
+    # actual lifetime boundary, these concrete identities let whole-program
+    # lowering pursue each subsystem's authored ``step`` implementation.
+    hole_emitters: HoleEmitterField = field(init=False, repr=False)
+    bursts: BurstField = field(init=False, repr=False)
+    ordnance: OrdnanceField = field(init=False, repr=False)
     # A real on-site fuel-gas generator (gas_works.GasGenerator) or
     # boiler (gas_works.Boiler) feeding this engine's real gasholder
     # tank instead of an unlimited piped main -- None (default) keeps
@@ -796,8 +815,6 @@ class EngineCycleSim:
         self._antilag_cooldown = 0.0
         self._firing_angle_deg: dict[int, float] = {}
         self._slot_of_cyl: dict[int, int] = {}
-        from hole_emitters import HoleEmitterField
-        from burst import BurstField
         self.hole_emitters = HoleEmitterField()
         # the emitters do not own fluid state: they ask the sim for the
         # real pressure and the real contents, and hand back every gram
@@ -822,7 +839,6 @@ class EngineCycleSim:
         self.cascade_log: list[str] = []
         self._cascade_depth = 0
         # ordnance.py: placed charges and their fuzes
-        from ordnance import OrdnanceField
         from fire import FireField
         from fittings import FittingField
         from plant import AuxiliaryPlantRuntime
@@ -967,7 +983,8 @@ class EngineCycleSim:
             and getattr(self.engine, "bmep_rated_fuel", None) != spec.fluid else 1.0)
         self._flashback_accum = 0.0
         self._last_net_tick: SupplyTick | None = None
-        graph = build_drivetrain_graph(self.engine)
+        graph = build_drivetrain_graph(
+            self.engine, external_fuel_supply=self.external_fuel_supply)
         dyno_node = next(n for n in graph["nodes"] if n["identity"] == "dyno_absorber")
         self._dyno_mass_kg = dyno_node["mass_kg"]
         self._dyno_inertia_kg_m2 = dyno_node["inertia_kg_m2"]
@@ -2785,7 +2802,9 @@ class EngineCycleSim:
                 self.standalone_idle.reset()
                 map_target = self.ecu.idle_map_target(
                     eng, self.state.rpm,
-                    self.state.ac_compressor_load_w + self.electrical.reading.alternator_shaft_load_w, dt,
+                    self.state.ac_compressor_load_w
+                    + self.electrical.reading.alternator_shaft_load_w
+                    + self.known_accessory_shaft_load_w, dt,
                     coupled_inertia_kg_m2=self._idle_coupled_inertia_kg_m2())
         else:
             self.ecu.release_map_governor()
@@ -3100,7 +3119,9 @@ class EngineCycleSim:
             if self.throttle < 0.08:
                 target_fuel_frac = self.ecu.idle_fuel_quantity(
                     eng, self.state.rpm,
-                    self.state.ac_compressor_load_w + self.electrical.reading.alternator_shaft_load_w, dt,
+                    self.state.ac_compressor_load_w
+                    + self.electrical.reading.alternator_shaft_load_w
+                    + self.known_accessory_shaft_load_w, dt,
                     coupled_inertia_kg_m2=self._idle_coupled_inertia_kg_m2())
             else:
                 self.ecu.release_fuel_governor()
@@ -4093,6 +4114,12 @@ class EngineCycleSim:
             load_gg_nm = output_load_nm / reduction
             turb.step(sub_dt, self.throttle, load_torque_nm=load_gg_nm,
                       starter_assist_torque_nm=starter_assist_gg_nm)
+            # Turbines have no crank, but their gas-generator shaft still
+            # has a real angular position.  Keep it on the existing public
+            # phase channel so baked rotor geometry is driven by the cycle
+            # solve instead of remaining frozen at frame zero.
+            self._total_crank_deg += (
+                turb.omega_rad_s * 180.0 / math.pi * sub_dt)
             # NOT snapped to zero below some display rpm threshold -- the
             # only real mechanical floor this rotor has is that it can't
             # spin backward (a compressor/turbine wheel doesn't run in
@@ -4111,6 +4138,7 @@ class EngineCycleSim:
             self._load_omega = max(0.0, self._load_omega + domega_load)
 
         self.state.rpm = self._omega / RPM_TO_RAD_S
+        self.state.crank_angle_deg = self._total_crank_deg % 360.0
         self.state.dyno_rpm = self._load_omega / RPM_TO_RAD_S
         self.state.dyno_absorbed_kw = self.brake_load_nm * self._load_omega / 1000.0
         self.state.dyno_kinetic_energy_j = 0.5 * self._dyno_inertia_kg_m2 * self._load_omega * self._load_omega

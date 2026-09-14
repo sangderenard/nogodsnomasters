@@ -171,6 +171,8 @@ def emit_annulus(g, ring: Annulus, *, motion_group: str | None = None,
     g.node(f"{ring.identity}.disc", tuple(float(v) for v in ring.centre),
            "load-bearing-structure", material=ring.material,
            mass_in_total=False, mass_kg=0.01,
+           solver_condensed_into=f"{ring.identity}.station.0",
+           solver_condensed_mass=False,
            part_role="annulus-disc", annulus=ring.identity,
            shape="annulus", annulus_axis=tuple(float(v) for v in ring.axis),
            inner_radius_m=ring.inner_radius_m,
@@ -203,6 +205,7 @@ def emit_annulus(g, ring: Annulus, *, motion_group: str | None = None,
         g.node(rim, ring._ring_point(i, ring.outer_radius_m),
                "structural-mount-port", material=ring.rim_material,
                wrench_point=True, surface_of=ring.identity,
+               solver_condensed_into=mid, solver_condensed_mass=False,
                mass_in_total=False, mass_kg=0.4,
                part_role="annulus-rim", surface="outer", in_view=False,
                half_extent_m=(0.03, ring.thickness_m / 2.0, 0.03))
@@ -211,6 +214,7 @@ def emit_annulus(g, ring: Annulus, *, motion_group: str | None = None,
         g.edge(f"{ring.identity}.disc_tie.{i}", f"{ring.identity}.disc",
                mean[i], "rigid-distance", radius=0.008, rigid=True,
                beam_solvable=False, in_view=False, palette="rollbar-silver",
+               structural_participation=False,
                load_path="the-drawn-disc-riding-with-its-own-beam-model")
     for i in range(ring.segments):
         j = (i + 1) % ring.segments
@@ -279,16 +283,46 @@ def emit_plate(g, plate: Plate, *, motion_group: str | None = None,
     dv = float(np.linalg.norm(plate.span_v)) / plate.nv
     su = rectangular_section(dv, plate.thickness_m)
     sv = rectangular_section(du, plate.thickness_m)
+    plate_normal = np.cross(np.asarray(plate.span_u, float),
+                            np.asarray(plate.span_v, float))
+    plate_normal /= max(float(np.linalg.norm(plate_normal)), 1.0e-12)
+    u_hat = np.asarray(plate.span_u, float)
+    u_hat /= max(float(np.linalg.norm(u_hat)), 1.0e-12)
+    v_hat = np.asarray(plate.span_v, float)
+    v_hat /= max(float(np.linalg.norm(v_hat)), 1.0e-12)
+    section_up = tuple(float(v) for v in plate_normal)
     per = plate.mass_kg / ((plate.nu + 1) * (plate.nv + 1))
     ids = {}
     for i in range(plate.nu + 1):
         for j in range(plate.nv + 1):
             ident = f"{plate.identity}.node.{i}.{j}"
+            # A grid station is a structural point, not the centre of a
+            # full-size visual tile.  Giving every station du/2,dv/2 extents
+            # made the boundary stations overhang the authored plate by half
+            # a cell -- commonly several decimetres.  Boundary stations own
+            # only the inward half-cell, shifted inward; interior stations
+            # own the centered cell between their neighbours.  Their union
+            # is therefore exactly [corner, corner + span_u + span_v].
+            hu = du / 4.0 if i in (0, plate.nu) else du / 2.0
+            hv = dv / 4.0 if j in (0, plate.nv) else dv / 2.0
+            ou = du / 4.0 if i == 0 else (-du / 4.0
+                                          if i == plate.nu else 0.0)
+            ov = dv / 4.0 if j == 0 else (-dv / 4.0
+                                          if j == plate.nv else 0.0)
+            render_offset = u_hat * ou + v_hat * ov
             g.node(ident, plate.point(i, j), "load-bearing-structure",
                    material=plate.material, mass_in_total=False,
                    mass_kg=round(per, 2), part_role="plate-station",
                    plate=plate.identity, thickness_m=plate.thickness_m,
-                   half_extent_m=(du / 2.0, plate.thickness_m / 2.0, dv / 2.0),
+                   shape="plate-cell",
+                   plate_cell_axes=(tuple(float(x) for x in u_hat),
+                                    tuple(float(x) for x in v_hat),
+                                    tuple(float(x) for x in plate_normal)),
+                   plate_cell_half_extent_m=(hu, hv,
+                                             plate.thickness_m / 2.0),
+                   render_center_offset_m=tuple(float(x)
+                                                for x in render_offset),
+                   half_extent_m=(hu, plate.thickness_m / 2.0, hv),
                    **plate.attributes)
             ids[(i, j)] = ident
     for i in range(plate.nu + 1):
@@ -300,6 +334,15 @@ def emit_plate(g, plate: Plate, *, motion_group: str | None = None,
                        wall_m=plate.thickness_m / 2.0, alloy=plate.alloy,
                        palette="chassis-grey", beam_solvable=True,
                        section="plate-strip", plate=plate.identity,
+                       section_up=section_up,
+                       section_properties={
+                           "section_area_m2": su["area_m2"],
+                           "second_moment_m4": su["second_moment_out_m4"],
+                           "second_moment_y_m4": su["second_moment_out_m4"],
+                           "second_moment_z_m4": su["second_moment_in_m4"],
+                           "torsion_constant_m4": su["torsion_constant_m4"],
+                           "section_outer_y_m": su["width_m"] / 2.0,
+                           "section_outer_z_m": su["thickness_m"] / 2.0},
                        load_path="plate-strip-carrying-across-its-width")
             if j < plate.nv:
                 g.edge(f"{plate.identity}.v.{i}.{j}", ids[(i, j)],
@@ -308,6 +351,15 @@ def emit_plate(g, plate: Plate, *, motion_group: str | None = None,
                        wall_m=plate.thickness_m / 2.0, alloy=plate.alloy,
                        palette="chassis-grey", beam_solvable=True,
                        section="plate-strip", plate=plate.identity,
+                       section_up=section_up,
+                       section_properties={
+                           "section_area_m2": sv["area_m2"],
+                           "second_moment_m4": sv["second_moment_out_m4"],
+                           "second_moment_y_m4": sv["second_moment_out_m4"],
+                           "second_moment_z_m4": sv["second_moment_in_m4"],
+                           "torsion_constant_m4": sv["torsion_constant_m4"],
+                           "section_outer_y_m": sv["width_m"] / 2.0,
+                           "section_outer_z_m": sv["thickness_m"] / 2.0},
                        load_path="plate-strip-carrying-along-its-length")
     # ---- THE SEAM ----
     edges = {"u0": [(0, j) for j in range(plate.nv + 1)],
@@ -885,6 +937,8 @@ def emit_boxed_ring(g, box: BoxedRing, *, motion_group: str | None = None,
             g.node(rid, tuple(float(x) for x in _unit_pos(k, _donut_dy)),
                    "electric-machine" if tag == "mag" else "fluid-motor",
                    material=mat, mass_in_total=False, mass_kg=round(mass, 1),
+                   structural_participation=False,
+                   solver_condensed_into=ident, solver_condensed_mass=True,
                    part_role=f"donut-rotor-{tag}", boxed_ring=box.identity,
                    on_unit=ident, outer_radius_m=round(r_o, 4),
                    inner_radius_m=round(r_i, 4),
@@ -989,6 +1043,8 @@ def emit_boxed_ring(g, box: BoxedRing, *, motion_group: str | None = None,
         _air_a, _air_w = _slot(_air_q, _v_air)
         g.node(hub, tuple(float(x) for x in _unit_pos(k, _carrier_dy)),
                "manifold",
+               structural_participation=False,
+               solver_condensed_into=saddle, solver_condensed_mass=True,
                ports=[
                    {"name": "oil-supply", "circuit": "hydraulic",
                     "fluid": _oil.key, "slot_width_m": round(_oil_w, 5),

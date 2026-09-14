@@ -51,6 +51,26 @@ def _band_material_ids():
     return ids
 
 
+def material_ids_for_colour_mode(base_material_ids, triangle_indices,
+                                 member_owner, utilisation, bands,
+                                 band_material_ids, mode: str):
+    """Select authored assembly colours or live yield-utilisation bands."""
+    material_ids = np.array(base_material_ids, copy=True)
+    if mode == "assembly":
+        return material_ids
+    if mode != "yield":
+        raise ValueError(f"unknown structural colour mode {mode!r}")
+    triangles = np.asarray(triangle_indices, dtype=np.int64)
+    if triangles.size:
+        owner = np.asarray(member_owner, dtype=np.int64)
+        util = np.asarray(utilisation, dtype=float)
+        band = np.searchsorted(np.asarray(bands, dtype=float), util)
+        palette = np.asarray(band_material_ids, dtype=np.int64)
+        material_ids[triangles] = palette[np.minimum(
+            band[owner], len(palette) - 1)]
+    return material_ids
+
+
 class Trial:
     """A baked view of one machine, and the shot driven through it."""
 

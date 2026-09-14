@@ -43,6 +43,7 @@ _native_parts = None
 
 def _build_native() -> None:
     global _native_ready, _native_parts
+    from compile_contract import contract
     from src.compiler.fortran_c_shell import lower_ast_source_to_ssa
     from src.compiler.ssa_llvm_backend import (
         emit_ssa_function_to_llvm,
@@ -53,7 +54,8 @@ def _build_native() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         module, _outputs, _exports = lower_ast_source_to_ssa(
-            _LEAKY_INTEGRATOR_SOURCE, "leaky_integrator", name="engine_toy_audio"
+            _LEAKY_INTEGRATOR_SOURCE, "leaky_integrator", name="engine_toy_audio",
+            extraction_contract=contract(),
         )
     qualified = "engine_toy_audio__leaky_integrator"
     function = module.functions[qualified]

@@ -5,7 +5,9 @@ the production compiler's `_vehicle_powertrain_graph` subunit
 
 Two kinds of shape come out of one graph, and they are NOT equally real:
 
-  - Every edge becomes a real tube -- real node positions
+  - Every edge becomes its declared real section -- a tube by default,
+    or the web and two flanges of a section-authored welded I member --
+    using real node positions
     (`reference_position`, straight from the game's own `node()` closure)
     and a real radius (the edge's own `radius` attribute when the real
     subunit declared one, else the same 0.012m default the real `edge()`
@@ -54,6 +56,206 @@ THERMAL_GROUP_RANGE_K = {
     "exhaust": (293.15, 1200.0),  # ambient .. genuinely hot exhaust gas
     "intake": (293.15, 450.0),    # ambient .. heavily boosted charge
 }
+
+
+def _join_geometry(parts):
+    live = [(v, n) for v, n in parts if len(v)]
+    if not live:
+        return np.zeros((0, 3)), np.zeros((0, 3))
+    return np.concatenate([p[0] for p in live]), np.concatenate([p[1] for p in live])
+
+
+def _section_frame(start, end, section_up) -> np.ndarray:
+    """Rows are the authored section's local x/y/z axes."""
+    x = _normalized3(np.asarray(end, float) - np.asarray(start, float))
+    z = np.asarray(section_up, float)
+    z = z - float(z @ x) * x
+    if np.linalg.norm(z) <= 1.0e-10:
+        raise ValueError("section_up must not be parallel to shaped member")
+    z = _normalized3(z)
+    y = _normalized3(np.cross(z, x))
+    z = _normalized3(np.cross(x, y))
+    return np.vstack((x, y, z))
+
+
+def _oriented_box(center, half_extent, frame):
+    vertices, normals = cuboid_mesh((0.0, 0.0, 0.0), half_extent)
+    return vertices @ frame + np.asarray(center, float), normals @ frame
+
+
+def _plate_cell_mesh(node: dict):
+    """Exact visual cell belonging to one structural plate station.
+
+    Surface emitters keep their wrench nodes on grid intersections.  The
+    render centre may be offset inward at a sheet boundary so the collection
+    of cells terminates on the declared plate edge instead of overhanging it.
+    """
+    axes = np.asarray(node["plate_cell_axes"], dtype=np.float64)
+    centre = (np.asarray(node["reference_position"], dtype=np.float64)
+              + np.asarray(node.get("render_center_offset_m", (0, 0, 0)),
+                           dtype=np.float64))
+    half = np.asarray(node["plate_cell_half_extent_m"], dtype=np.float64)
+    return _oriented_box(centre, half, axes)
+
+
+def _plate_cell_wireframe(node: dict):
+    axes = np.asarray(node["plate_cell_axes"], dtype=np.float64)
+    centre = (np.asarray(node["reference_position"], dtype=np.float64)
+              + np.asarray(node.get("render_center_offset_m", (0, 0, 0)),
+                           dtype=np.float64))
+    half = np.asarray(node["plate_cell_half_extent_m"], dtype=np.float64)
+    return [(np.asarray(a) @ axes + centre,
+             np.asarray(b) @ axes + centre)
+            for a, b in cuboid_wireframe((0.0, 0.0, 0.0), half)]
+
+
+def _welded_i_mesh(start, end, edge):
+    """Three welded plates, rendered in the same axes the solver uses."""
+    start, end = np.asarray(start, float), np.asarray(end, float)
+    frame = _section_frame(start, end, edge.get("section_up", (0.0, 1.0, 0.0)))
+    centre = (start + end) / 2.0
+    length = float(np.linalg.norm(end - start))
+    depth = float(edge["section_depth_m"])
+    width = float(edge["section_flange_width_m"])
+    web = float(edge["section_web_thickness_m"])
+    flange = float(edge["section_flange_thickness_m"])
+    web_depth = depth - 2.0 * flange
+    pieces = [_oriented_box(centre, (length / 2.0, web / 2.0,
+                                     web_depth / 2.0), frame)]
+    for sign in (-1.0, 1.0):
+        local_offset = np.array((0.0, 0.0,
+                                 sign * (depth / 2.0 - flange / 2.0)))
+        pieces.append(_oriented_box(centre + local_offset @ frame,
+                                    (length / 2.0, width / 2.0, flange / 2.0),
+                                    frame))
+    return _join_geometry(pieces)
+
+
+def _flat_strap_mesh(start, end, edge):
+    """A bent strap segment as plate, in the solver's authored axes."""
+    start, end = np.asarray(start, float), np.asarray(end, float)
+    frame = _section_frame(start, end, edge.get("section_up", (0.0, 0.0, 1.0)))
+    centre = (start + end) / 2.0
+    length = float(np.linalg.norm(end - start))
+    return _oriented_box(
+        centre,
+        (length / 2.0, float(edge["section_thickness_m"]) / 2.0,
+         float(edge["section_width_m"]) / 2.0), frame)
+
+
+def _agt1500_module_geometry(node: dict) -> tuple[np.ndarray, np.ndarray]:
+    """Procedural casing for one real AGT1500 module record."""
+    from mesh_primitives import capped_tube_mesh, frustum_mesh, ring_mesh
+    c = np.asarray(node["reference_position"], float)
+    hx, hy, hz = (float(v) for v in node["body_half_extent_m"])
+    axis = np.array([1.0, 0.0, 0.0])
+    role = str(node.get("part_role", ""))
+    left, right = c - axis * hx, c + axis * hx
+    radius = min(hy, hz)
+    if role == "air-inlet":
+        return frustum_mesh(left, right, radius * 0.96, radius * 0.68,
+                            sides=28)
+    if role == "compressor":
+        pieces = [frustum_mesh(left, right, radius * 0.92,
+                               radius * 0.68, sides=32)]
+        for fraction in np.linspace(0.08, 0.92, int(node.get("stages", 6)) + 1):
+            p = left + (right - left) * fraction
+            pieces.append(ring_mesh(p, axis, radius * (0.93 - 0.20 * fraction),
+                                    radius * (0.78 - 0.18 * fraction),
+                                    hx * 0.035, segments=28))
+        return _join_geometry(pieces)
+    if role == "heat-exchanger":
+        pieces = [capped_tube_mesh(left, right, radius, sides=36)]
+        # Concentric ceramic matrix bands plus radial separators make the
+        # twin rotary recuperators readable as heat-exchanger drums.
+        for rr in np.linspace(radius * 0.18, radius * 0.88, 6):
+            pieces.append(ring_mesh(right + axis * 0.002, axis,
+                                    rr + radius * 0.018,
+                                    max(0.0, rr - radius * 0.018),
+                                    hx * 0.025, segments=36))
+        for angle in np.linspace(0.0, 2.0 * np.pi, 12, endpoint=False):
+            radial = np.array([0.0, math.cos(angle), math.sin(angle)])
+            pieces.append(tube_mesh(right + radial * radius * 0.10,
+                                    right + radial * radius * 0.92,
+                                    radius * 0.012, sides=6))
+        return _join_geometry(pieces)
+    if role == "combustor":
+        pieces = [capped_tube_mesh(left, right, radius, sides=32),
+                  ring_mesh(left - axis * 0.002, axis, radius * 0.92,
+                            radius * 0.48, hx * 0.06, segments=32),
+                  ring_mesh(right + axis * 0.002, axis, radius * 0.84,
+                            radius * 0.42, hx * 0.06, segments=32)]
+        return _join_geometry(pieces)
+    if role == "turbine-stage":
+        return _join_geometry([
+            capped_tube_mesh(left, right, radius, sides=32),
+            ring_mesh(left, axis, radius * 0.88, radius * 0.52,
+                      hx * 0.08, segments=32),
+            ring_mesh(right, axis, radius * 0.84, radius * 0.48,
+                      hx * 0.08, segments=32)])
+    if role == "exhaust":
+        bend = c + np.array([hx * 0.15, hy * 0.55, 0.0])
+        return _join_geometry([
+            frustum_mesh(left, bend, radius * 0.62, radius * 0.86, sides=28),
+            frustum_mesh(bend, right + np.array([0.0, hy * 0.45, 0.0]),
+                         radius * 0.86, radius, sides=28)])
+    if role == "gearbox":
+        pieces = [cuboid_mesh(c, (hx, hy, hz))]
+        for dx, rr in ((-hx * 0.55, min(hy, hz) * 0.40),
+                       (hx * 0.50, min(hy, hz) * 0.30)):
+            p = c + axis * dx
+            pieces.append(capped_tube_mesh(p - axis * hx * 0.12,
+                                           p + axis * hx * 0.12,
+                                           rr, sides=24))
+        return _join_geometry(pieces)
+    if role == "lubrication":
+        return capped_tube_mesh(left, right, radius, sides=24)
+    return cuboid_mesh(c, (hx, hy, hz))
+
+
+def build_agt1500_moving_parts(graph: dict, crank_angle_deg: float) -> list[SolidPart]:
+    """Rotor hardware carried by the real AGT1500 module nodes."""
+    if not str(graph.get("identity", "")).startswith("agt1500-abrams-turbine/"):
+        return []
+    parts = []
+    phase = math.radians(float(crank_angle_deg))
+    for node in graph["nodes"]:
+        if node.get("of_engine") != "agt1500-abrams-turbine":
+            continue
+        role = node.get("part_role")
+        if role not in {"compressor", "turbine-stage", "heat-exchanger"}:
+            continue
+        c = np.asarray(node["reference_position"], float)
+        hx, hy, hz = (float(v) for v in node["body_half_extent_m"])
+        radius = min(hy, hz)
+        pieces = []
+        speed = 0.035 if role == "heat-exchanger" else (1.0 if role == "compressor" else 0.72)
+        rotor_phase = phase * speed
+        if role == "compressor":
+            stages, blades = int(node.get("stages", 6)), 10
+        elif role == "turbine-stage":
+            stages, blades = int(node.get("stages", 2)), 12
+        else:
+            stages, blades = 1, 12
+        for stage in range(stages):
+            x = c[0] + (stage - (stages - 1) / 2.0) * (2.0 * hx * 0.72 / max(stages, 1))
+            hub = np.array([x, c[1], c[2]])
+            pieces.append(tube_mesh(hub - np.array([hx * 0.06, 0.0, 0.0]),
+                                    hub + np.array([hx * 0.06, 0.0, 0.0]),
+                                    radius * 0.20, sides=16))
+            for blade in range(blades):
+                a = rotor_phase + 2.0 * math.pi * blade / blades + stage * 0.17
+                radial = np.array([0.0, math.cos(a), math.sin(a)])
+                pieces.append(tube_mesh(hub + radial * radius * 0.18,
+                                        hub + radial * radius * 0.78,
+                                        radius * 0.025, sides=5))
+        vertices, normals = _join_geometry(pieces)
+        name = node["identity"].replace(".", "_")
+        parts.append(SolidPart(
+            vertices=vertices, normals=normals,
+            thermal_group=node.get("thermal_group"),
+            name=f"node_{name}_rotor", declared_material="steel-shaft"))
+    return parts
 
 
 def _node_position_lookup(nodes: list[dict[str, Any]]) -> dict[str, np.ndarray]:
@@ -136,6 +338,26 @@ def _body_half_extent(node: dict[str, Any]) -> np.ndarray:
     return np.array([scale, scale, scale])
 
 
+def _edge_points(a: np.ndarray, b: np.ndarray, edge: dict) -> list[np.ndarray]:
+    return [np.asarray(a, dtype=np.float64),
+            *(np.asarray(p, dtype=np.float64) for p in edge.get("waypoints", ())),
+            np.asarray(b, dtype=np.float64)]
+
+
+def _edge_tube_mesh(a: np.ndarray, b: np.ndarray, edge: dict,
+                    radius: float, sides: int) -> tuple[np.ndarray, np.ndarray]:
+    """One named edge may be several physical pipe/hose segments."""
+    pieces = []
+    points = _edge_points(a, b, edge)
+    for p, q in zip(points, points[1:]):
+        if not np.allclose(p, q):
+            pieces.append(tube_mesh(p, q, radius, sides=sides))
+    if not pieces:
+        return np.zeros((0, 3), dtype=np.float32), np.zeros((0, 3), dtype=np.float32)
+    return (np.concatenate([v for v, _n in pieces]),
+            np.concatenate([n for _v, n in pieces]))
+
+
 def build_drivetrain_mesh(graph: dict[str, Any]) -> list[tuple[np.ndarray, np.ndarray, str]]:
     """Returns a list of (vertices, normals, part_name) triangle-soup
     parts: one tube per edge, one placeholder box per node."""
@@ -154,13 +376,22 @@ def build_drivetrain_mesh(graph: dict[str, Any]) -> list[tuple[np.ndarray, np.nd
             # emitters draw the flung oil itself); the edge stays as the
             # circuit's declaration only
             continue
-        radius = float(edge.get("radius", DEFAULT_TUBE_RADIUS_M))
-        sides = 6 if edge.get("routing") == "relaxed-multi-segment-harness" else 10
-        vertices, normals = tube_mesh(a, b, radius, sides=sides)
+        if edge.get("section_shape") == "welded-i":
+            vertices, normals = _welded_i_mesh(a, b, edge)
+        elif edge.get("section_shape") == "flat-strap":
+            vertices, normals = _flat_strap_mesh(a, b, edge)
+        else:
+            radius = float(edge.get("radius", DEFAULT_TUBE_RADIUS_M))
+            if edge.get("fluid_route_class") == "trivial":
+                radius *= 0.24
+            sides = 6 if edge.get("routing") == "relaxed-multi-segment-harness" else 10
+            vertices, normals = _edge_tube_mesh(a, b, edge, radius, sides)
         name = edge["identity"].replace("/", "_").replace(".", "_")
         parts.append((vertices, normals, f"edge_{name}"))
 
     for node in graph["nodes"]:
+        if node.get("render_primitive") is False:
+            continue
         if node["kind"] == "powertrain-mount":
             continue  # a mount is an attachment point, not a body -- no box to draw
         if node["kind"] == "engine-block-port":
@@ -174,8 +405,11 @@ def build_drivetrain_mesh(graph: dict[str, Any]) -> list[tuple[np.ndarray, np.nd
             # location.
             continue
         center = np.array(node["reference_position"], dtype=np.float64)
-        half_extent = _body_half_extent(node)
-        vertices, normals = cuboid_mesh(center, half_extent)
+        if node.get("shape") == "plate-cell":
+            vertices, normals = _plate_cell_mesh(node)
+        else:
+            half_extent = _body_half_extent(node)
+            vertices, normals = cuboid_mesh(center, half_extent)
         name = node["identity"].replace("/", "_").replace(".", "_")
         parts.append((vertices, normals, f"node_{name}"))
 
@@ -329,9 +563,16 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         b = positions.get(edge["b"])
         if a is None or b is None or np.allclose(a, b):
             continue
-        radius = float(edge.get("radius", DEFAULT_TUBE_RADIUS_M))
-        sides = 6 if edge.get("routing") == "relaxed-multi-segment-harness" else 8
-        vertices, normals = tube_mesh(a, b, radius, sides=sides)
+        if edge.get("section_shape") == "welded-i":
+            vertices, normals = _welded_i_mesh(a, b, edge)
+        elif edge.get("section_shape") == "flat-strap":
+            vertices, normals = _flat_strap_mesh(a, b, edge)
+        else:
+            radius = float(edge.get("radius", DEFAULT_TUBE_RADIUS_M))
+            if edge.get("fluid_route_class") == "trivial":
+                radius *= 0.24
+            sides = 6 if edge.get("routing") == "relaxed-multi-segment-harness" else 8
+            vertices, normals = _edge_tube_mesh(a, b, edge, radius, sides)
         group = _thermal_group_for(edge.get("circuit_identity"), edge["identity"])
         name = edge["identity"].replace("/", "_").replace(".", "_")
         parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
@@ -347,6 +588,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
                                              chamber=_chamber_from_graph(graph)))
 
     for node in graph["nodes"]:
+        if node.get("render_primitive") is False:
+            continue
         if node["kind"] == "engine-block-port":
             # a real port is already drawn as a stub by the cylinder
             # layout above
@@ -376,6 +619,25 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         # "this is a ring" at all and quietly drew every machine part as
         # a box. A part that knows what shape it is should just say so.
         shape = node.get("shape")
+        if shape == "plate-cell":
+            vertices, normals = _plate_cell_mesh(node)
+            group = _thermal_group_for(None, node["identity"])
+            name = node["identity"].replace("/", "_").replace(".", "_")
+            parts.append(SolidPart(
+                vertices=vertices, normals=normals, thermal_group=group,
+                name=f"node_{name}",
+                declared_material=node.get("material")))
+            continue
+        if (node.get("of_engine") == "agt1500-abrams-turbine"
+                and str(shape).startswith("agt1500-")):
+            vertices, normals = _agt1500_module_geometry(node)
+            name = node["identity"].replace("/", "_").replace(".", "_")
+            parts.append(SolidPart(
+                vertices=vertices, normals=normals,
+                thermal_group=node.get("thermal_group"),
+                name=f"node_{name}",
+                declared_material=node.get("material")))
+            continue
         if shape == "ring":
             from mesh_primitives import ring_mesh
             ax = np.array(node.get("ring_axis", (0.0, 1.0, 0.0)), dtype=np.float64)
@@ -455,6 +717,7 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
                                name=f"node_{name}", declared_material=node.get("material")))
 
     parts.extend(build_intake_bung_parts(graph))
+    parts.extend(build_agt1500_moving_parts(graph, crank_angle_deg))
     return parts
 
 
@@ -493,18 +756,29 @@ def build_drivetrain_wireframe(graph: dict[str, Any]) -> list[WireframePart]:
         if a is None or b is None or np.allclose(a, b):
             continue
         radius = float(edge.get("radius", DEFAULT_TUBE_RADIUS_M))
+        if edge.get("fluid_route_class") == "trivial":
+            radius *= 0.24
         sides = 6 if edge.get("routing") == "relaxed-multi-segment-harness" else 8
-        segments = tube_wireframe(a, b, radius, sides=sides)
+        segments = []
+        points = _edge_points(a, b, edge)
+        for p, q in zip(points, points[1:]):
+            if not np.allclose(p, q):
+                segments.extend(tube_wireframe(p, q, radius, sides=sides))
         group = _thermal_group_for(edge.get("circuit_identity"), edge["identity"])
         name = edge["identity"].replace("/", "_").replace(".", "_")
         parts.append(WireframePart(segments=segments, thermal_group=group, name=f"edge_{name}"))
 
     for node in graph["nodes"]:
+        if node.get("render_primitive") is False:
+            continue
         if node["kind"] == "powertrain-mount" or node["kind"] == "engine-block-port":
             continue
         center = np.array(node["reference_position"], dtype=np.float64)
-        half_extent = _body_half_extent(node)
-        segments = cuboid_wireframe(center, half_extent)
+        if node.get("shape") == "plate-cell":
+            segments = _plate_cell_wireframe(node)
+        else:
+            half_extent = _body_half_extent(node)
+            segments = cuboid_wireframe(center, half_extent)
         group = _thermal_group_for(None, node["identity"])
         name = node["identity"].replace("/", "_").replace(".", "_")
         parts.append(WireframePart(segments=segments, thermal_group=group, name=f"node_{name}"))

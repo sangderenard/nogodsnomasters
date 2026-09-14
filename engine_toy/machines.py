@@ -79,6 +79,14 @@ class MachinePart:
     # incremental update run every tick drifts and cannot be run twice
     # for the same state.
     base_position: tuple | None = None
+    # Non-engine machines use the same explicit boundary as engine
+    # castings: a port says what may cross the body boundary and where.
+    # These are assembly_ports.PartPort records, kept as objects until
+    # build_graph serialises the machine document.
+    ports: list = field(default_factory=list)
+    temperature_k: float = 293.15
+    thermal_capacity_j_k: float = 0.0
+    attributes: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -154,6 +162,9 @@ class Machine:
                  "body_half_extent_m": [float(v) for v in p.half_extent_m],
                  "mass_kg": float(p.mass_kg), "mass_in_total": True,
                  "material": p.material,
+                 "temperature_k": float(p.temperature_k),
+                 "thermal_capacity_j_k": float(
+                     p.thermal_capacity_j_k or p.mass_kg * 500.0),
                  # declared, so the view keeps it without anyone having
                  # to add "scissor arm" to a list of engine keywords
                  "in_view": True}
@@ -164,6 +175,21 @@ class Machine:
                 n["capacity_kg"] = float(p.capacity_kg)
             if p.part_role:
                 n["part_role"] = p.part_role
+            n.update(p.attributes)
+            if p.ports:
+                n["ports"] = [{
+                    "identity": port.identity,
+                    "part": port.part,
+                    "kind": port.kind,
+                    "position": [float(v) for v in port.position],
+                    "direction": [float(v) for v in port.direction],
+                    "radius_m": float(port.radius_m),
+                    "mating": bool(port.mating),
+                    "connected_to": port.connected_to,
+                    "fluid": port.fluid,
+                    "joint": port.joint,
+                    "joint_axis": port.joint_axis,
+                } for port in p.ports]
             nodes.append(n)
         edges = [{"identity": l.identity, "a": l.a, "b": l.b,
                   "constraint": l.constraint, "radius": float(l.radius),

@@ -81,6 +81,10 @@ class OutriggerLeg:
     def extension_m(self) -> float:
         return self.cylinder.position_m
 
+    @property
+    def physical_length_m(self) -> float:
+        return self.cylinder.physical_length_m
+
 
 @dataclass
 class OutriggerSet:
@@ -107,6 +111,12 @@ class OutriggerSet:
     #: THE PLUMBING, which was free until now. See hydraulic_losses.
     losses: CircuitLosses = None
     leg_names: tuple = CORNERS
+    leg_strokes_m: dict = field(default_factory=dict)
+    leg_closed_lengths_m: dict = field(default_factory=dict)
+    initial_extensions_m: dict = field(default_factory=dict)
+    leg_bores_m: dict = field(default_factory=dict)
+    leg_rods_m: dict = field(default_factory=dict)
+    leg_stages: dict = field(default_factory=dict)
     legs: dict = field(default_factory=dict)
     elapsed_s: float = field(default=0.0, init=False)
     electrical_w: float = field(default=0.0, init=False)
@@ -140,27 +150,35 @@ class OutriggerSet:
                 relief_pressure_pa=35.0e6, reservoir_l=120.0, oil_l=105.0,
                 accumulator_l=4.0, accumulator_precharge_pa=12.0e6)
         for name in self.leg_names:
+            stroke = float(self.leg_strokes_m.get(name, self.stroke_m))
+            bore = float(self.leg_bores_m.get(name, self.bore_m))
+            rod = float(self.leg_rods_m.get(name, self.rod_m))
+            stages = max(1, int(self.leg_stages.get(name, self.stages)))
             self.legs[name] = OutriggerLeg(
                 identity=f"outrigger.{name}",
                 cylinder=LinearActuator(
                     identity=f"outrigger.jack.{name}",
-                    bore_m=self.bore_m, rod_m=self.rod_m,
-                    stroke_m=self.stroke_m,
-                    stages=max(1, int(self.stages)),
+                    bore_m=bore, rod_m=rod,
+                    stroke_m=stroke,
+                    closed_length_m=float(self.leg_closed_lengths_m.get(name, 0.0)),
+                    stages=stages,
                     # DECLARE IT TELESCOPIC. `force_at` steps the force
                     # DOWN as each narrower stage takes over, which is
                     # the real and frequently surprising behaviour of a
                     # telescopic ram -- and it never ran, because the
                     # kind was left at its default.
-                    kind="telescopic" if self.stages > 1 else "double-acting",
+                    kind="telescopic" if stages > 1 else "double-acting",
                     mounting="flange-rigid",
                     rated_pressure_pa=35.0e6),
                 share_kg=self.machine_mass_kg / max(len(self.leg_names), 1),
                 pad_area_m2=self.pad_area_m2,
                 ground_bearing_pa=self.ground_bearing_pa)
+            self.legs[name].cylinder.position_m = max(
+                0.0, min(stroke, float(self.initial_extensions_m.get(name, 0.0))))
 
     # ------------------------------------------------------------------
-    def step(self, dt: float, command: float = 1.0) -> dict:
+    def step(self, dt: float, command: float | dict = 1.0, supply=None,
+             loads_n: dict | None = None) -> dict:
         """One tick of raising (or lowering) the machine.
 
         The four legs are asked for at once and SHARE ONE PUMP, so the
@@ -170,9 +188,15 @@ class OutriggerSet:
         # what the pump is asked for, and against what pressure
         demand = 0.0
         need_p = ATM_PA
-        for leg in self.legs.values():
+        commands = ({name: float(command.get(name, 0.0)) for name in self.legs}
+                    if isinstance(command, dict) else
+                    {name: float(command) for name in self.legs})
+        loads_n = loads_n or {}
+        for name, leg in self.legs.items():
             a = leg.cylinder
-            q = abs(command) * a.area_extend_m2 * 0.06 * 60_000.0
+            cmd = commands[name]
+            area = a.area_extend_m2 if cmd >= 0.0 else a.area_retract_m2
+            q = abs(cmd) * area * 0.06 * 60_000.0
             demand += q
             # BREAKAWAY, NOT RUNNING FRICTION. A cylinder at rest has to
             # be broken loose before it will move, and that takes
@@ -183,7 +207,7 @@ class OutriggerSet:
             # truth was that the pressure command was too low.
             moving = abs(getattr(a, "velocity_m_s", 0.0)) > 1e-4
             r = self.losses.pump_pressure_for(
-                load_n=leg.load_n,
+                load_n=float(loads_n.get(name, leg.load_n)),
                 piston_area_m2=a.area_extend_m2,
                 annulus_area_m2=a.area_retract_m2,
                 flow_l_min=q,
@@ -193,15 +217,30 @@ class OutriggerSet:
                 holding=True)
             leg.last_pressure = r
             need_p = max(need_p, r["at_pump_pa"])
-        out = self.hpu.step(dt, demand, need_p)
-        self.electrical_w = self.losses.electrical_w(
+        # A station installation supplies this through its engine-driven
+        # powerplant pump.  The self-contained HPU remains the bench/default
+        # path for standalone machines.
+        out = (supply(demand, need_p) if supply is not None
+               else self.hpu.step(dt, demand, need_p))
+        self.electrical_w = (float(out.get("shaft_load_w", 0.0))
+                             if supply is not None else self.losses.electrical_w(
             pump_pressure_pa=out["pressure_pa"],
-            flow_l_min=max(out["delivered_l_min"], demand * 0.0))
-        share = out["delivered_l_min"] / max(len(self.legs), 1)
+            flow_l_min=max(out["delivered_l_min"], demand * 0.0)))
+        total_weight = sum(abs(v) for v in commands.values())
         state = {}
         for name, leg in self.legs.items():
-            r = leg.cylinder.step(dt, out["pressure_pa"], share, command,
-                                  leg.load_n)
+            cmd = commands[name]
+            share = (out["delivered_l_min"] * abs(cmd) / total_weight
+                     if total_weight > 0.0 else 0.0)
+            load_n = float(loads_n.get(name, leg.load_n))
+            # ``share`` is already the valve-metered flow (demand above is
+            # proportional to abs(cmd)).  LinearActuator accepts supply
+            # capacity plus spool command, so handing it ``cmd`` again would
+            # square the command and throttle a quarter-spool request to a
+            # sixteenth.  Preserve direction here; do not meter twice.
+            direction = 1.0 if cmd > 0.0 else (-1.0 if cmd < 0.0 else 0.0)
+            r = leg.cylinder.step(dt, out["pressure_pa"], share, direction,
+                                  load_n)
             leg.on_ground = leg.cylinder.position_m > 1e-4
             state[name] = {
                 "extension_m": leg.cylinder.position_m,
@@ -218,7 +257,10 @@ class OutriggerSet:
                 "demand_l_min": demand,
                 "elapsed_s": self.elapsed_s,
                 "extension_m": min(l.cylinder.position_m
-                                   for l in self.legs.values())}
+                                   for l in self.legs.values()),
+                "extension_frac": min(
+                    l.cylinder.position_m / max(l.cylinder.stroke_m, 1e-9)
+                    for l in self.legs.values())}
 
     # ------------------------------------------------------------------
     def raise_fully(self, *, dt: float = 0.05, limit_s: float = 600.0) -> dict:
@@ -229,12 +271,12 @@ class OutriggerSet:
         while self.elapsed_s < limit_s:
             log = self.step(dt, 1.0)
             now = log["extension_m"]
-            if now >= self.stroke_m - 1e-6:
+            if log["extension_frac"] >= 1.0 - 1e-6:
                 break
             if abs(now - last) < 1e-9 and self.elapsed_s > 1.0:
                 break                      # stalled: it cannot lift this
             last = now
-        return {**log, "stalled": log["extension_m"] < self.stroke_m - 1e-4}
+        return {**log, "stalled": log["extension_frac"] < 1.0 - 1e-4}
 
     def describe(self, log: dict) -> list[str]:
         legs = log["legs"]

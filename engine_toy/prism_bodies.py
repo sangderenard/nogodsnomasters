@@ -252,6 +252,11 @@ def emit_prism(g, prism: Prism, ports: dict[str, PrismPort], *,
                # the surface, not at the body's centre of mass.
                wrench_point=True,
                surface_of=prism.identity,
+               # A surface wrench point is not another little body.  It
+               # follows this prism rigidly at its actual offset while all
+               # attached members continue to apply force and moment there.
+               solver_condensed_into=prism.identity,
+               solver_condensed_mass=False,
                face=port.face, surface=port.surface,
                outward=[float(v) for v in _unit(port.direction)],
                **{"half_extent_m": (0.022, 0.022, 0.022),

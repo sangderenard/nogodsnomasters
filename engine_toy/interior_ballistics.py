@@ -698,6 +698,7 @@ def native_shot():
     """The compiled whole-shot integrator."""
     import hashlib, warnings, time
     import numpy as np
+    from compile_contract import contract
     from src.compiler.fortran_c_shell import lower_ast_source_to_ssa
     from src.compiler.ssa_llvm_backend import (
         emit_ssa_function_to_llvm, compile_artifact, prepare_artifact_execution)
@@ -721,7 +722,8 @@ def native_shot():
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         module, _o, _e = lower_ast_source_to_ssa(
-            src, "ballistics_run", name="engine_toy_ballistics")
+            src, "ballistics_run", name="engine_toy_ballistics",
+            extraction_contract=contract())
     qualified = "engine_toy_ballistics__ballistics_run"
     fn = module.functions[qualified]
     artifact = emit_ssa_function_to_llvm(module, qualified)

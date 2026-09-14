@@ -74,6 +74,8 @@ class Projectile:
     live: bool = True
     outcome: str = ""
     target: object = None            # what it was fired at, for the report
+    mass_kg: float = 0.0
+    diameter_m: float = 0.0
 
     @property
     def speed_m_s(self) -> float:
@@ -127,9 +129,16 @@ class ProjectileField:
         from symbolic_parts import trajectory_batch_step
         return trajectory_batch_step()
 
+    def warm(self) -> None:
+        """Build/import the generated wide law before a UI starts."""
+        self._batch_step()
+
     # ------------------------------------------------------------------
     def fire(self, *, muzzle, direction, calibre: str, target=None,
-             dispersion_mrad: float = 0.6, rng=None) -> Projectile:
+             dispersion_mrad: float = 0.6, rng=None,
+             muzzle_speed_m_s: float | None = None,
+             mass_kg: float | None = None,
+             diameter_m: float | None = None) -> Projectile:
         """Emit a round from the muzzle, along the bore.
 
         DISPERSION IS APPLIED TO THE LAUNCH DIRECTION, which is where it
@@ -156,8 +165,14 @@ class ProjectileField:
         muzzle = np.asarray(muzzle, dtype=float)
         shot = Projectile(identity=f"round-{len(self.rounds) + len(self.spent) + 1:04d}",
                           calibre=calibre, position=muzzle.copy(),
-                          velocity=d * c.muzzle_m_s, origin=muzzle.copy(),
-                          fired_at_s=self.elapsed_s, target=target)
+                          velocity=d * (c.muzzle_m_s if muzzle_speed_m_s is None
+                                        else float(muzzle_speed_m_s)),
+                          origin=muzzle.copy(), fired_at_s=self.elapsed_s,
+                          target=target,
+                          mass_kg=(float(c.mass_kg) if mass_kg is None
+                                   else float(mass_kg)),
+                          diameter_m=(float(c.diameter_m) if diameter_m is None
+                                      else float(diameter_m)))
         self.rounds.append(shot)
         return shot
 
@@ -200,8 +215,10 @@ class ProjectileField:
         }
         params = {
             "dt": AT.tensor([self.ballistic_dt_s] * n),
-            "mass_kg": AT.tensor([float(c.mass_kg) for c in cals]),
-            "diameter_m": AT.tensor([float(c.diameter_m) for c in cals]),
+            "mass_kg": AT.tensor([float(r.mass_kg or c.mass_kg)
+                                   for r, c in zip(self.rounds, cals)]),
+            "diameter_m": AT.tensor([float(r.diameter_m or c.diameter_m)
+                                      for r, c in zip(self.rounds, cals)]),
             "drag_coefficient": AT.tensor([self.drag_coefficient] * n),
             "air_density_kg_m3": AT.tensor([self.air_density_kg_m3] * n),
             "gravity_m_s2": AT.tensor([9.80665] * n),

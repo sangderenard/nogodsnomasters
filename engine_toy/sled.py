@@ -99,6 +99,8 @@ class PlatformStage:
     piston_area_m2: float = 0.0113
     link_radius_m: float = 0.050
     beam_radius_m: float = 0.058
+    pin_radius_m: float = 0.045
+    pin_length_m: float = 0.130
 
     def arm(self, angle_deg: float) -> np.ndarray:
         """Where the rectangle sits relative to its pins, at an angle."""
@@ -193,9 +195,14 @@ def emit_platform_stage(g, stage: PlatformStage, *,
                    mass_in_total=False, mass_kg=7.0,
                    part_role="platform-pin", stage=stage.identity,
                    corner=tag, inboard_m=stage.inboard_m,
-                   half_extent_m=(0.05, 0.05, 0.05))
+                   pin_level=2, shape="drum", drum_axis=(1.0, 0.0, 0.0),
+                   drum_radius_m=stage.pin_radius_m,
+                   drum_length_m=stage.pin_length_m,
+                   half_extent_m=(stage.pin_length_m / 2.0,
+                                  stage.pin_radius_m, stage.pin_radius_m))
             g.edge(f"{stage.identity}.pin_boss.{tag}", p, anchor,
-                   "rigid-distance", radius=0.026, rigid=True,
+                   "rigid-distance", radius=stage.pin_radius_m * 0.58,
+                   rigid=True,
                    beam_solvable=False, palette="chassis-grey",
                    load_path="the-pin-stood-inboard-to-clear-the-other-stage")
         else:
@@ -211,6 +218,7 @@ def emit_platform_stage(g, stage: PlatformStage, *,
                "pinned-trunnion-mount", radius=stage.link_radius_m,
                alloy=stage.material, palette="rollbar-silver",
                part_role="platform-link", stage=stage.identity, corner=tag,
+               pin_bore_radius_m=stage.pin_radius_m,
                link_m=stage.link_m, rises=stage.rises,
                rest_angle_deg=stage.rest_angle_deg,
                travel_deg=stage.travel_deg,
@@ -232,6 +240,45 @@ def emit_platform_stage(g, stage: PlatformStage, *,
                palette="rollbar-silver", part_role="platform-brace",
                stage=stage.identity,
                load_path="the-platform-braced-square-not-a-lozenge")
+    # The rectangle carries a real sheet.  Its grid participates in the beam
+    # solve and its surface is later used for contact between the two stages.
+    from surfaces import Plate, emit_plate
+    sheet_t = 0.012
+    corner_position = {
+        tag: np.asarray(next(n["reference_position"] for n in g.nodes
+                             if n["identity"] == identity), float)
+        for tag, identity in corner.items()}
+    p00 = corner_position["aft.a"]
+    sheet = emit_plate(
+        g, Plate(identity=f"{stage.identity}.deck_sheet",
+                 # The sheet rests on the top tangent of the perimeter pipe;
+                 # it is not centred through the pipe and it does not extend
+                 # beyond the four supporting centre lines in plan.
+                 corner=tuple(float(v) for v in p00 + UP * (
+                     stage.beam_radius_m + sheet_t / 2.0)),
+                 span_u=tuple(float(v) for v in
+                              (corner_position["aft.b"] - p00)),
+                 span_v=tuple(float(v) for v in
+                              (corner_position["fwd.a"] - p00)),
+                 thickness_m=sheet_t, nu=2, nv=2,
+                 material="steel-plate", alloy=stage.material,
+                 attributes={"surface_role": "platform-deck-sheet",
+                             "stage": stage.identity,
+                             "contact_surface": True,
+                             "mounting_face": "top-of-support-pipe",
+                             "support_pipe_radius_m": stage.beam_radius_m,
+                             "plan_boundary": "support-pipe-centrelines",
+                             "overhang_m": 0.0}),
+        motion_group=motion_group, assembly=assembly)
+    for key, tag in (((0, 0), "aft.a"), ((2, 0), "aft.b"),
+                     ((0, 2), "fwd.a"), ((2, 2), "fwd.b")):
+        g.edge(f"{stage.identity}.deck_sheet.weld.{tag}",
+               sheet["nodes"][key], corner[tag], "rigid-distance",
+               radius=0.018, alloy=stage.material,
+               palette="rollbar-silver", beam_solvable=True,
+               part_role="platform-sheet-corner-weld",
+               fastening="continuous-fillet-weld",
+               load_path="deck-sheet-welded-to-platform-perimeter")
     # ---- EVERY BAY DAMPED, NOT EVERY SIDE ----
     # A stage has four bays: two sides, and on each side a fore and an
     # aft link. One damper per side damps the side's average and leaves
@@ -241,12 +288,20 @@ def emit_platform_stage(g, stage: PlatformStage, *,
     # the aperture is set per shot from the impulse, so the stage stops
     # in the same place whether the round is 20 mm or 120 mm.
     d = stage.damper()
+    damper_edges = []
     for side in ("a", "b"):
         for bay, other in (("fwd", "aft"), ("aft", "fwd")):
-            g.edge(f"{stage.identity}.damper.{bay}.{side}",
+            damper_identity = f"{stage.identity}.damper.{bay}.{side}"
+            g.edge(damper_identity,
                    pin[f"{bay}.{side}"], corner[f"{other}.{side}"],
                    "spring-damper", radius=0.030, alloy=stage.material,
                    palette="actuator-yellow", part_role="platform-damper",
+                   # Clevis-ended telescoping hardware is a constitutive
+                   # axial path, not a fixed-ended diagonal beam.  Its spring
+                   # tangent is assembled by FrameSolver and its damping by
+                   # GraphJointForces; admitting the drawn cylinder as a beam
+                   # additionally invents transverse/bending restraint.
+                   structural_participation=False,
                    stage=stage.identity, bay=f"{bay}.{side}",
                    spring_rate_n_per_m=d.spring_rate_n_per_m,
                    spring_preload_n=d.spring_preload_n,
@@ -258,6 +313,7 @@ def emit_platform_stage(g, stage: PlatformStage, *,
                    max_orifice_m2=d.max_orifice_m2,
                    set_per_shot=True,
                    load_path="an-adaptive-damper-across-this-bay")
+            damper_edges.append(damper_identity)
         # and one ram per side, which is what packs the stage forward
         # and holds the preload before firing
         g.edge(f"{stage.identity}.ram.{side}",
@@ -265,13 +321,129 @@ def emit_platform_stage(g, stage: PlatformStage, *,
                "linear-hydraulic-actuator", radius=0.036,
                alloy=stage.material, palette="actuator-yellow",
                part_role="platform-actuator", stage=stage.identity,
+               structural_participation=False,
                bore_m=0.063, rod_m=0.036,
                holding_force_n=stage.actuator_force_n,
                commanded_rest_length_m=0.0, preload_n=stage.preload_n,
+               minimum_preload_n=0.0,
+               maximum_preload_n=stage.actuator_force_n,
+               preload_command_frac=(stage.preload_n
+                                     / max(stage.actuator_force_n, 1.0)),
+               preload_energy_capacity_j=(stage.actuator_force_n
+                                          * stage.reach_m),
+               control="swing-preload-release-to-hang-or-pack-forward",
                load_path="the-ram-that-packs-and-unpacks-this-stage")
+
+    # Physical end stops use the same four diagonal bay coordinates as the
+    # dampers. One constitutive contact is scattered equally through all four
+    # faces, so a centered stop cannot manufacture a roll couple.
+    edge_by_id = {edge["identity"]: edge for edge in g.edges}
+    node_position = {node["identity"]: np.asarray(
+        node["reference_position"], float) for node in g.nodes}
+    reference_lengths = tuple(float(edge_by_id[name]["rest_length"])
+                              for name in damper_edges)
+    target_off = stage.arm(stage.rest_angle_deg - stage.travel_deg)
+    current_off = stage.arm(stage.rest_angle_deg)
+    back_lengths = []
+    for name in damper_edges:
+        edge = edge_by_id[name]
+        pa = node_position[edge["a"]]
+        pb = node_position[edge["b"]]
+        back_lengths.append(float(np.linalg.norm(
+            pb - current_off + target_off - pa)))
+    motion_signs = tuple(1.0 if back > reference else -1.0
+                         for back, reference in zip(back_lengths,
+                                                    reference_lengths))
+    back_gap = float(np.mean([
+        sign * (back - reference)
+        for sign, back, reference in zip(motion_signs, back_lengths,
+                                         reference_lengths)]))
+    shares = tuple(1.0 / len(damper_edges) for _ in damper_edges)
+    initial_preload_frac = (stage.preload_n
+                            / max(stage.actuator_force_n, 1.0))
+    release_adjustment = min(0.080, back_gap * 0.20)
+    stop_common = dict(
+        radius=0.034, alloy=stage.material, palette="actuator-yellow",
+        structural_participation=False,
+        coupled_slide_edges=tuple(damper_edges), slide_load_share=shares,
+        coupled_reference_separation_m=reference_lengths,
+        coupled_motion_sign=motion_signs,
+        maximum_compression_m=0.025,
+        linear_stiffness_n_per_m=12.0e6,
+        cubic_stiffness_n_per_m3=1.2e10,
+        compression_damping_n_s_per_m=90_000.0,
+        equalized_across_bays=True)
+    first = edge_by_id[damper_edges[0]]
+    g.edge(f"{stage.identity}.stop.forward", first["a"], first["b"],
+           "bump-stop-contact", kind="bump-stop",
+           part_role="adjustable-forward-preload-stop", stage=stage.identity,
+           contact_side="minimum-separation",
+           # The normal planted pose is already the full-forward pose.  Its
+           # installed ram force presses the stage against this set stop;
+           # commanding zero withdraws the stop and releases the swing.
+           clearance_m=0.0,
+           nominal_clearance_m=0.0,
+           release_adjustment_m=release_adjustment,
+           actuated_setpoint=True,
+           preload_command_frac=initial_preload_frac,
+           installed_preload_command_frac=initial_preload_frac,
+           installed_stage_preload_n=stage.preload_n * 2.0,
+           maximum_stage_preload_n=stage.actuator_force_n * 2.0,
+           load_path="four-face-forward-stop-reacting-packing-ram-preload",
+           **stop_common)
+    g.edge(f"{stage.identity}.stop.aft", first["a"], first["b"],
+           "bump-stop-contact", kind="bump-stop",
+           part_role="fixed-full-aft-maintenance-stop", stage=stage.identity,
+           contact_side="maximum-separation", clearance_m=back_gap,
+           load_path="four-face-full-aft-stop-at-parallelogram-travel-limit",
+           **stop_common)
     return {"corners": corner, "pins": pin, "stage": stage,
+            "deck_sheet": sheet,
             "anchors_for_next": (corner["aft.a"], corner["fwd.a"],
                                  corner["aft.b"], corner["fwd.b"])}
+
+
+def emit_platform_deck_contacts(g, lower: dict,
+                                upper: dict) -> tuple[str, ...]:
+    """Emit unilateral contacts wherever the two real deck sheets overlap."""
+    position = {node["identity"]: np.asarray(node["reference_position"], float)
+                for node in g.nodes}
+    lower_nodes = list(lower["deck_sheet"]["nodes"].values())
+    upper_nodes = list(upper["deck_sheet"]["nodes"].values())
+    lower_surface = lower_nodes[0].split(".node.", 1)[0]
+    upper_surface = upper_nodes[0].split(".node.", 1)[0]
+    lower_xyz = np.asarray([position[name] for name in lower_nodes])
+    lo = lower_xyz[:, [0, 2]].min(axis=0)
+    hi = lower_xyz[:, [0, 2]].max(axis=0)
+    made = []
+    for upper_node in upper_nodes:
+        here = position[upper_node]
+        horizontal = here[[0, 2]]
+        if np.any(horizontal < lo - 1.0e-9) or np.any(
+                horizontal > hi + 1.0e-9):
+            continue
+        lower_node = min(
+            lower_nodes,
+            key=lambda name: float(np.linalg.norm(
+                position[name][[0, 2]] - horizontal)))
+        identity = f"platform.deck_contact.{len(made)}"
+        g.edge(identity, lower_node, upper_node, "bump-stop-contact",
+               kind="bump-stop", radius=0.020, alloy="4340qt",
+               palette="actuator-yellow", in_view=False,
+               structural_participation=False,
+               part_role="platform-sheet-contact",
+               contact_side="minimum-separation", slide_axis=tuple(UP),
+               clearance_m=0.012, maximum_compression_m=0.010,
+               linear_stiffness_n_per_m=30.0e6,
+               cubic_stiffness_n_per_m3=3.0e10,
+               compression_damping_n_s_per_m=120_000.0,
+               lower_surface=lower_surface,
+               upper_surface=upper_surface,
+               load_path="upper-deck-sheet-seated-on-lower-deck-sheet")
+        made.append(identity)
+    if not made:
+        raise ValueError("platform deck sheets have no contact overlap")
+    return tuple(made)
 
 
 @dataclass
@@ -348,31 +520,30 @@ def describe(p: TwoStagePlatform, recoil_j: float) -> list:
     d, u = p.dangling, p.gun
     left = max(recoil_j - p.gravity_j, 0.0)
     return [
-        f"THREE STAGES IN SERIES -- {p.identity}",
+        f"ONE COUPLED GRAPH -- {p.identity}",
         f"  arches          2, feet on the deck, {p.arch_span_m:.2f} m apart,"
         f" the only rigid members",
         "",
-        f"  stage 1  SLIDE  the gun in its cradle, on the existing rail",
+        f"  recoil journal  the production gun moves in its square journal",
         f"                  back {p.slide_travel_m * 1000:6.0f} mm"
-        f"   up      0 mm   1:1, no gravity -- the softest, so it goes"
-        f" first",
-        f"  stage 2  GUN PLATFORM   stands on 4 inboard pins"
+        f"   up      0 mm; MR, oil and recuperator act in parallel",
+        f"  upper platform  stands on 4 inboard pins"
         f" ({u.inboard_m * 1000:.0f} mm in), link {u.link_m:.3f} m,"
-        f" rest {u.rest_angle_deg:+.0f} deg, sweep {u.travel_deg:.0f} deg",
+        f" rest {u.rest_angle_deg:+.0f} deg",
         f"                  back {u.reach_m * 1000:6.0f} mm"
         f"   up {u.rise_m * 1000:6.0f} mm"
         f"   carries {u.carries_kg:5.0f} kg -> {u.stored_j / 1000:5.1f} kJ",
-        f"  stage 3  DANGLING       hangs from 4 arch pins,"
+        f"  lower platform  hangs from 4 arch pins,"
         f" link {d.link_m:.3f} m,"
-        f" rest {d.rest_angle_deg:+.0f} deg, sweep {d.travel_deg:.0f} deg",
+        f" rest {d.rest_angle_deg:+.0f} deg",
         f"                  back {d.reach_m * 1000:6.0f} mm"
         f"   up {d.rise_m * 1000:6.0f} mm"
         f"   carries {d.carries_kg:5.0f} kg -> {d.stored_j / 1000:5.1f} kJ",
         "",
-        f"  the fold        back {p.fold_reach_m * 1000:.0f} mm,"
+        f"  platform envelope back {p.fold_reach_m * 1000:.0f} mm,"
         f"  up {p.total_rise_m * 1000:.0f} mm",
-        f"  ALL THREE       back {p.total_reach_m * 1000:.0f} mm"
-        f"  -- the slide and the fold add",
+        f"  geometric envelope back {p.total_reach_m * 1000:.0f} mm",
+        f"  motion order     none -- all freedoms solve together from force",
         f"  gravity takes   {p.gravity_j / 1000:.1f} kJ of"
         f" {recoil_j / 1000:.1f} kJ"
         f"  ({p.gravity_j / max(recoil_j, 1) * 100:.0f}%)",

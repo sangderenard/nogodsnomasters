@@ -369,6 +369,14 @@ SLIDING = (FREE, RIGID, RIGID, RIGID, RIGID, RIGID)
 #: only one invents structure that is not there.
 PINNED = (RIGID, RIGID, RIGID, FREE, FREE, FREE)
 WELDED = (RIGID,) * 6
+# A screw closes a split clamp axially.  Its authored spring/preload owns x;
+# the bolt shank locates the two lugs transversely but does not weld their
+# rotations together.
+# The screw's axial extension is owned by its torque/preload spring.  Below
+# slip, however, the clamped lug faces and bolt bearing transmit both shear
+# and relative rotation.  Releasing all three rotations left every two-piece
+# strap with a closure mechanism that a thin strap happened to regularise.
+TENSIONER = (FREE, RIGID, RIGID, RIGID, RIGID, RIGID)
 
 
 @dataclass(frozen=True)
@@ -518,6 +526,12 @@ _mc("rigid-distance", WELDED, alloy="4130n",
 _mc("rigid-offset", WELDED, zero_length=True,
     note="two surfaces of ONE piece of metal described twice -- a seat, "
          "a boss, a machined face")
+_mc("welded-joint-element", WELDED, alloy="4130n",
+    note="explicit filler-metal element between two weld toes; unlike a "
+         "rigid-distance member, its throat, filler and damage are authored")
+_mc("strap-clamped-contact", WELDED, alloy="4130n",
+    note="preloaded shaped-strap contact, locked only below its declared "
+         "friction capacities; a later contact solve may release it on slip")
 _mc("bolted-flange-mount", WELDED, zero_length=True)
 _mc("point-impulse-wrench-coupling", WELDED, zero_length=True, bushed=True,
     alloy="300m", material="gun-steel",
@@ -539,6 +553,10 @@ _mc("engine-mount-isolator", COMPLIANT_ALL, bushed=True, spring_like=True,
 _mc("tension-limit-strap", PINNED, alloy="4130n",
     note="carries tension and nothing else, so it is pinned: a strap "
          "that transmitted bending would be a bar")
+_mc("strap-tensioner", TENSIONER, release_ends=BOTH_ENDS,
+    spring_like=True, alloy="4340qt", material="hardened-steel",
+    note="torqued side closure: axial preload is its constitutive load; "
+         "two closures make the shaped clamp removable and adjustable")
 
 # ---- things that turn -----------------------------------------------
 for _k, _alloy, _zero, _bush in (
@@ -573,7 +591,7 @@ _mc("oleo-recoil-slide", SLIDING, release_ends=ONE_END, travels=True,
 _mc("spring-damper", SLIDING, release_ends=ONE_END, travels=True,
     spring_like=True)
 for _k in ("linear-hydraulic-actuator", "commanded-rest-length-elevation-ram",
-           "outrigger-lift-jack"):
+           "outrigger-lift-jack", "chain-winch-hoist"):
     _mc(_k, SLIDING, release_ends=ONE_END, travels=True, spring_like=True,
         bushed=True, alloy="4340qt", material="hardened-steel")
 for _k in ("fine-aim-twitch-actuator", "belleville-preload-stack"):
@@ -581,6 +599,10 @@ for _k in ("fine-aim-twitch-actuator", "belleville-preload-stack"):
         alloy="4340qt", material="hardened-steel")
 _mc("preloaded-captive-body-retainer-spring", SLIDING, release_ends=ONE_END,
     travels=True, spring_like=True)
+_mc("bump-stop-contact", SLIDING, release_ends=ONE_END, travels=True,
+    alloy="4340qt", material="polyurethane",
+    note="normally open unilateral end-stop: it transmits compression only "
+         "after the declared slide clearance is exhausted")
 
 # ---- a turntable running on its own face ------------------------------
 #: A FLAT GREASED TRACK IS NOT A BEARING IN A HOUSING. It carries
@@ -630,7 +652,14 @@ _mc("direct-drive-lockup", WELDED, travels=True, spring_like=False,
 for _k in ("coolant-line", "oil-line", "exhaust-flow-path", "fuel-line",
            "air-line", "pressure-rated-hydraulic-line",
            "flexible-hydraulic-hose", "pressure-rated-air-line",
-           "flexible-air-line", "insulated-copper-wire"):
+           "flexible-air-line", "insulated-copper-wire", "refrigerant-line",
+           "flexible-multi-circuit-conduit", "metaconduit-isolated-channel",
+           "insulated-flexible-thermal-duct",
+           "insulated-flexible-exhaust-duct",
+           # A service shaft belongs to the runnable rigid power graph.
+           # Its torque reaction reaches the beam model through the
+           # mounted machine body; it is not itself a beam member.
+           "shaft-service-drive"):
     _mc(_k, WELDED, routed=True, material="steel-pipe")
 _mc("port-face-seal", WELDED, routed=True, zero_length=True,
     material="steel-pipe")

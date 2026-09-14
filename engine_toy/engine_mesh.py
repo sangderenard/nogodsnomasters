@@ -20,7 +20,9 @@ import os
 
 import numpy as np
 
-from vehicle_mesh import build_drivetrain_solid_parts, build_throttle_parts
+from vehicle_mesh import (build_agt1500_moving_parts,
+                          build_drivetrain_solid_parts,
+                          build_throttle_parts)
 
 
 @dataclass(frozen=True)
@@ -345,6 +347,37 @@ class EngineMesh:
         return self.normals[self.triangles]
 
 
+def merge_engine_meshes(meshes: list[EngineMesh]) -> EngineMesh:
+    """Join already-baked mesh objects without reinterpreting their parts.
+
+    This is the scene-composition boundary for a complex object supplied by
+    another subsystem: its triangles, material ids and thermal groups remain
+    exactly the ones that subsystem baked.
+    """
+    live = [mesh for mesh in meshes if mesh is not None and mesh.n_triangles]
+    if not live:
+        return EngineMesh(np.zeros((0, 3)), np.zeros((0, 3)),
+                          np.zeros((0, 3), dtype=np.int64),
+                          np.zeros(0, dtype=np.int32), [], [], False, [])
+    vertices, normals, triangles, materials = [], [], [], []
+    names, ranges, groups = [], [], []
+    vertex_offset = triangle_offset = 0
+    for mesh in live:
+        vertices.append(np.asarray(mesh.vertices))
+        normals.append(np.asarray(mesh.normals))
+        triangles.append(np.asarray(mesh.triangles) + vertex_offset)
+        materials.append(np.asarray(mesh.material_ids))
+        names.extend(mesh.part_names)
+        ranges.extend((a + triangle_offset, b + triangle_offset)
+                      for a, b in mesh.part_ranges)
+        groups.extend(mesh.part_groups or [None] * len(mesh.part_names))
+        vertex_offset += len(mesh.vertices)
+        triangle_offset += mesh.n_triangles
+    return EngineMesh(np.concatenate(vertices), np.concatenate(normals),
+                      np.concatenate(triangles), np.concatenate(materials),
+                      names, ranges, any(mesh.moving for mesh in live), groups)
+
+
 def _from_parts(parts, moving: bool) -> EngineMesh:
     verts, norms, mats, names, ranges, groups = [], [], [], [], [], []
     t0 = 0
@@ -429,7 +462,10 @@ def declared_in_view(graph: dict) -> set[str]:
     for key, prefix in (("nodes", "node_"), ("edges", "edge_")):
         for item in graph.get(key, ()):
             if item.get("in_view"):
-                out.add(prefix + str(item["identity"]).replace("/", "_").replace(".", "_"))
+                part_name = prefix + str(item["identity"]).replace("/", "_").replace(".", "_")
+                out.add(part_name)
+                if item.get("moving_geometry"):
+                    out.add(part_name + "_" + str(item["moving_geometry"]))
     return out
 
 
@@ -446,6 +482,10 @@ def build_engine_mesh(graph: dict, crank_angle_deg: float = 0.0, covers_off: boo
 def build_moving_mesh(graph: dict, crank_angle_deg: float, covers_off: bool = False, spring_style: str = "helix") -> EngineMesh:
     """Only the moving parts, at this crank angle -- the per-frame call."""
     from cylinder_ports import deserialize_layout, build_parts_from_layout
+    turbine_parts = build_agt1500_moving_parts(graph, crank_angle_deg)
+    if turbine_parts:
+        declared = declared_in_view(graph)
+        return _from_parts([p for p in turbine_parts if p.name in declared], moving=True)
     layout_data = graph.get("cylinder_layout")
     if not layout_data:
         return _from_parts([], moving=True)

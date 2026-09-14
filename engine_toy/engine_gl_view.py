@@ -47,7 +47,7 @@ _SPECTRAL_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 if _SPECTRAL_DIR not in sys.path:
     sys.path.insert(0, _SPECTRAL_DIR)
 
-from engine_mesh import (EngineMesh, MATERIALS, material_table, build_engine_mesh, start_animation, CYCLE_DEG,
+from engine_mesh import (EngineMesh, MATERIALS, material_table, build_engine_mesh, merge_engine_meshes, start_animation, CYCLE_DEG,
                         build_throttle_animation, blackbody_emission_rgb, BLACKBODY_VISIBLE_FLOOR_K,
                         significant_crank_angles, BLACKBODY_REFERENCE_K, BLACKBODY_SCENE_GAIN)
 from sdf_geometry import CapsuleSdf
@@ -647,6 +647,21 @@ class EngineGLView:
             static_mesh, _moving0 = build_engine_mesh(graph, crank_angle_deg=0.0, covers_off=self.covers_off)
         finally:
             _mp.DETAIL = _prev_detail
+        # Other simulation objects may supply their own fully baked meshes.
+        # Keep their geometry/material/thermal records intact; the scene only
+        # places the object and later swaps its equally-shaped live frame.
+        self._mesh_overlay_slices = {}
+        overlays = list(graph.get("mesh_overlays") or ())
+        if overlays:
+            joined = [static_mesh]
+            cursor = len(static_mesh.vertices)
+            for overlay in overlays:
+                mesh = overlay["mesh"]
+                joined.append(mesh)
+                self._mesh_overlay_slices[str(overlay["identity"])] = slice(
+                    cursor, cursor + len(mesh.vertices))
+                cursor += len(mesh.vertices)
+            static_mesh = merge_engine_meshes(joined)
         self._materials_present = set(int(i) for i in np.unique(static_mesh.material_ids)) if static_mesh.n_triangles else set()
         if _moving0.n_triangles:
             self._materials_present |= set(int(i) for i in np.unique(_moving0.material_ids))
@@ -732,6 +747,14 @@ class EngineGLView:
         if self._throttle_gl:
             self._materials_present |= {int(i) for f in self._throttle_animation.frames if f.n_triangles
                                         for i in np.unique(f.material_ids)}
+
+    def update_mesh_overlay(self, identity: str, mesh: EngineMesh) -> None:
+        """Replace one baked object's live vertices without rebuilding it."""
+        span = self._mesh_overlay_slices[str(identity)]
+        if len(mesh.vertices) != span.stop - span.start:
+            raise ValueError(f"{identity}: live overlay changed topology")
+        self._static_mesh.vertices[span] = mesh.vertices
+        self._static_mesh.normals[span] = mesh.normals
 
     def set_cutout_punctures(self, punctures) -> int:
         """Replace the rendered cutout set from persistent damage state."""
@@ -1246,11 +1269,25 @@ class EngineGLView:
         mv_gl = np.ascontiguousarray(mv.T, dtype=np.float32)
         mvp_gl = np.ascontiguousarray(mvp.T, dtype=np.float32)
 
-        key = eye + np.array([-0.3, 0.5, -0.2], dtype=np.float32) * self._scale
-        fill = self._center - (eye - self._center) * 0.6 + np.array([0.0, self._scale, 0.0], dtype=np.float32)
-        light_pos = [key, fill]
-        light_col = [np.array([1.0, 0.98, 0.94], dtype=np.float32), np.array([0.55, 0.62, 0.75], dtype=np.float32)]
-        light_int = [self._scale * 3.5, self._scale * 1.4]
+        key = eye + np.array([-0.3, 0.6, -0.2], dtype=np.float32) * self._scale
+        fill = (self._center - (eye - self._center) * 0.55
+                + np.array([0.0, self._scale, 0.0], dtype=np.float32))
+        overhead = self._center + np.array(
+            [0.0, self._scale * 2.6, 0.0], dtype=np.float32)
+        rim = (self._center - dir_to_eye.astype(np.float32) * self._scale * 1.8
+               + np.array([self._scale * .5, self._scale * .6, 0.0],
+                          dtype=np.float32))
+        light_pos = [key, fill, overhead, rim]
+        light_col = [np.array([1.0, 0.98, 0.94], dtype=np.float32),
+                     np.array([0.62, 0.70, 0.88], dtype=np.float32),
+                     np.array([0.96, 0.97, 1.0], dtype=np.float32),
+                     np.array([0.72, 0.82, 1.0], dtype=np.float32)]
+        # Point-light intensity is an emitter area in the shader and must
+        # scale with scene length squared.  The former linear scale left a
+        # station-sized graph almost entirely on its 12% ambient floor.
+        area_scale = self._scale * self._scale
+        light_int = [area_scale * 12.0, area_scale * 7.0,
+                     area_scale * 10.0, area_scale * 6.0]
         for pos, colour, intensity in (self._thermal_emitters() + self._flame_emitters())[:96]:
             light_pos.append(pos); light_col.append(colour); light_int.append(intensity)
         self._renderer.set_point_lights(

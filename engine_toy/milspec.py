@@ -177,6 +177,86 @@ class TubeSection:
                 f"{self.mass_per_m_kg:5.2f} kg/m  yield {self.axial_yield_n() / 1000:7.1f} kN"]
 
 
+@dataclass(frozen=True)
+class WeldedISection:
+    """A parametric doubly-symmetric welded I section.
+
+    This is deliberately not given an AISC W-shape designation: those names
+    imply rolled-shape dimensions and tabulated properties.  The station can
+    fabricate this section from its declared plate alloy, and the solver gets
+    the actual strong-axis, weak-axis and Saint-Venant torsion properties.
+    Local ``z`` is the section depth/``section_up`` direction; local ``y`` is
+    across the flanges.
+    """
+    depth_m: float
+    flange_width_m: float
+    web_thickness_m: float
+    flange_thickness_m: float
+    material: str = "hy80"
+    designation: str = ""
+
+    def __post_init__(self) -> None:
+        if min(self.depth_m, self.flange_width_m, self.web_thickness_m,
+               self.flange_thickness_m) <= 0.0:
+            raise ValueError("I-section dimensions must be positive")
+        if 2.0 * self.flange_thickness_m >= self.depth_m:
+            raise ValueError("I-section flanges leave no web depth")
+        if self.web_thickness_m >= self.flange_width_m:
+            raise ValueError("I-section web must be narrower than its flange")
+
+    @property
+    def web_depth_m(self) -> float:
+        return self.depth_m - 2.0 * self.flange_thickness_m
+
+    @property
+    def area_m2(self) -> float:
+        return (2.0 * self.flange_width_m * self.flange_thickness_m
+                + self.web_depth_m * self.web_thickness_m)
+
+    @property
+    def second_moment_y_m4(self) -> float:
+        """Strong-axis inertia (depth cubed)."""
+        b, tf, hw = (self.flange_width_m, self.flange_thickness_m,
+                     self.web_depth_m)
+        offset = self.depth_m / 2.0 - tf / 2.0
+        return (2.0 * (b * tf ** 3 / 12.0 + b * tf * offset ** 2)
+                + self.web_thickness_m * hw ** 3 / 12.0)
+
+    @property
+    def second_moment_z_m4(self) -> float:
+        """Weak-axis inertia (flange width cubed)."""
+        return (2.0 * self.flange_thickness_m * self.flange_width_m ** 3 / 12.0
+                + self.web_depth_m * self.web_thickness_m ** 3 / 12.0)
+
+    @property
+    def torsion_constant_m4(self) -> float:
+        # Thin open-section Saint-Venant approximation. Warping torsion is
+        # intentionally not invented by the 3-D Timoshenko frame element.
+        return (2.0 * self.flange_width_m * self.flange_thickness_m ** 3
+                + self.web_depth_m * self.web_thickness_m ** 3) / 3.0
+
+    @property
+    def mat(self) -> StructuralMaterial:
+        return MATERIAL_BY_KEY[self.material]
+
+    @property
+    def mass_per_m_kg(self) -> float:
+        return self.area_m2 * self.mat.density_kg_m3
+
+    def graph_properties(self) -> dict:
+        """Section fields consumed by both the frame and material engines."""
+        return {
+            "section_area_m2": self.area_m2,
+            "second_moment_m4": min(self.second_moment_y_m4,
+                                     self.second_moment_z_m4),
+            "second_moment_y_m4": self.second_moment_y_m4,
+            "second_moment_z_m4": self.second_moment_z_m4,
+            "torsion_constant_m4": self.torsion_constant_m4,
+            "section_outer_y_m": self.flange_width_m / 2.0,
+            "section_outer_z_m": self.depth_m / 2.0,
+        }
+
+
 def pipe(nominal: str, schedule: str = "40", material: str = "4130n") -> TubeSection:
     od, walls = PIPE_B36_10[nominal]
     return TubeSection(od, walls[schedule], material,

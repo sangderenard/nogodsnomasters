@@ -362,7 +362,7 @@ def build_round(dt: float, *, target: str = "native", algorithm: str = "verlet")
     fixed = np.array([bool(n.get("fixed_to")) for n in doc["nodes"]])
     mass[fixed] = 1e12                     # the world does not accelerate
     pairs = np.array([[index[e["a"]], index[e["b"]]]
-                      for e in sn.travelling_joints(doc)], dtype=np.int64)
+                      for e in sn.force_joints(doc)], dtype=np.int64)
 
     x0 = np.asarray([n["reference_position"] for n in doc["nodes"]],
                     float).reshape(-1)

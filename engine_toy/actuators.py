@@ -103,6 +103,10 @@ class LinearActuator:
     bore_m: float = 0.063
     rod_m: float = 0.035
     stroke_m: float = 0.200
+    # Pin-to-pin length at zero travel.  Most catalogue cylinders in this
+    # module can derive a conservative value, but installed support jacks
+    # know theirs exactly and must not confuse body length with stroke.
+    closed_length_m: float = 0.0
     # what it is bolted to at each end, which is what decides whether
     # the rod is a strut or a pendulum when it buckles
     mounting: str = "clevis-both-ends"   # "clevis-both-ends" | "flange-rigid" | "trunnion"
@@ -150,6 +154,12 @@ class LinearActuator:
     def swept_volume_l(self) -> float:
         return self.area_extend_m2 * self.stroke_m * 1000.0
 
+    @property
+    def physical_length_m(self) -> float:
+        if self.closed_length_m > 0.0:
+            return self.closed_length_m + self.position_m
+        return self.stroke_m + 0.15 + 1.5 * self.bore_m + self.position_m
+
     def force_at(self, pressure_pa: float, extending: bool = True) -> float:
         """Theoretical force, before seals and before the spring."""
         area = self.area_extend_m2 if extending else self.area_retract_m2
@@ -186,8 +196,7 @@ class LinearActuator:
         # stroke again. Using the rod's own length here made a long
         # cylinder look far safer than it is, and buckling is precisely
         # a long-cylinder failure.
-        dead_m = 0.15 + 1.5 * self.bore_m
-        length = 2.0 * self.stroke_m + dead_m
+        length = self.physical_length_m
         inertia = math.pi * self.rod_m ** 4 / 64.0
         return math.pi ** 2 * STEEL_E_PA * inertia / max((k * length) ** 2, 1e-9)
 
@@ -553,7 +562,11 @@ class Positioner:
         drop = max(0.0, supply_pressure_pa - ATM_PA)
         valve_flow = self.valve_rated_flow_l_min * math.sqrt(max(drop, 0.0) / self.valve_rated_drop_pa)
         flow = min(available_flow_l_min, valve_flow * abs(self.command))
-        out = a.step(dt, supply_pressure_pa, flow, self.command, load_n)
+        # ``flow`` has already been metered by the spool command.  The
+        # actuator receives its direction only, otherwise command is applied
+        # twice and low-speed servo motion is spuriously command-squared.
+        direction = 1.0 if self.command > 0.0 else -1.0
+        out = a.step(dt, supply_pressure_pa, flow, direction, load_n)
         out["error_m"] = self.error_m
         out["settled"] = self.settled
         return out
