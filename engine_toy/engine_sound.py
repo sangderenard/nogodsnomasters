@@ -44,6 +44,16 @@ import sound_parts
 SAMPLE_RATE = 44100
 BLOCK_SIZE = 512
 
+# High turbine blade-pass harmonics become disproportionately piercing even
+# when the physical spool amplitude remains reasonable.  This is a spectral
+# loudness compressor, not a low-pass: tones below the knee are untouched and
+# higher tones remain present with progressively reduced gain.  Set this one
+# constant to False for an uncompressed turbine-whine reference render.
+COMPRESS_HIGH_FREQUENCY_TURBINE_WHINE = True
+TURBINE_WHINE_COMPRESSION_START_HZ = 4_000.0
+TURBINE_WHINE_COMPRESSION_RATIO = 4.0
+TURBINE_WHINE_COMPRESSION_GAIN_FLOOR = 0.20
+
 # Detonation rings the COMBUSTION CHAMBER, not the pipes: the autoignition
 # pressure wave bounces across the bore, so the ring sits at the chamber's
 # own acoustic modes (Draper): f = c * rho / (pi * B) with the Bessel
@@ -58,6 +68,25 @@ KNOCK_GAS_R = 287.0
 # Exhaust port pressure at opening, relative to a full-strength burn:
 MOTORED_BLOWDOWN_FRAC = 0.12      # a compressed-and-expanded charge that never burned, per unit MAP
 JAKE_RELEASE_FRAC = 1.1           # the compression-release crack at TDC: full compression pressure
+
+
+def turbine_whine_loudness_gain(frequency_hz: float) -> float:
+    """Frequency-keyed soft compression for a pitched turbine voice.
+
+    Above the knee, every octave of frequency receives only one compression-
+    ratio share of its former loudness rise.  The floor keeps blade-pass
+    harmonics audible instead of turning this into a hard filter.
+    """
+    if not COMPRESS_HIGH_FREQUENCY_TURBINE_WHINE:
+        return 1.0
+    frequency = max(float(frequency_hz), 0.0)
+    knee = max(float(TURBINE_WHINE_COMPRESSION_START_HZ), 1.0)
+    if frequency <= knee:
+        return 1.0
+    ratio = max(float(TURBINE_WHINE_COMPRESSION_RATIO), 1.0)
+    excess_octaves = math.log2(frequency / knee)
+    gain = 2.0 ** (-excess_octaves * (1.0 - 1.0 / ratio))
+    return max(float(TURBINE_WHINE_COMPRESSION_GAIN_FLOOR), gain)
 
 
 def knock_ring_modes_hz(engine, exhaust_temp_k: float, load_frac: float) -> tuple[float, ...]:
@@ -582,7 +611,7 @@ class EngineSoundSynth:
             phase_inc = 2 * np.pi * freq / sr
             phases = self.turbine_whine_phase[i] + phase_inc * steps
             amp = 0.6 if i == 0 else 0.3 / i
-            sig += amp * np.sin(phases)
+            sig += amp * turbine_whine_loudness_gain(freq) * np.sin(phases)
             self.turbine_whine_phase[i] = phases[-1] % (2 * np.pi)
 
         noise = self.rng.standard_normal(n_frames)
@@ -685,7 +714,9 @@ class EngineSoundSynth:
             sig += filtered * (0.05 + 0.35 * turbo_spool_frac)
             whine_freq = 500.0 + 6000.0 * turbo_spool_frac
             phases = self.turbo_phase + 2 * np.pi * whine_freq / sr * steps
-            sig += 0.30 * turbo_spool_frac * np.sin(phases)
+            sig += (0.30 * turbo_spool_frac
+                    * turbine_whine_loudness_gain(whine_freq)
+                    * np.sin(phases))
             self.turbo_phase = phases[-1] % (2 * np.pi)
         return sig
 
