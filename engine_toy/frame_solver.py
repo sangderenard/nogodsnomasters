@@ -57,22 +57,50 @@ MECHANISM_EIGENVALUE = 1e-6
 GRAVITY = 9.80665
 
 
-def _local_frame(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def _local_frame(a: np.ndarray, b: np.ndarray, section_up=None) -> np.ndarray:
     """A 3x3 rotation whose first row is the member axis.
 
-    The other two rows are any perpendicular pair -- which is legitimate
-    ONLY because the section is circular. Picking them arbitrarily for a
-    non-axisymmetric section would silently rotate its strong axis."""
+    ``section_up`` fixes local z for a non-axisymmetric section.  It is
+    projected normal to the member so slightly imperfect authored geometry
+    cannot rotate the section or corrupt orthogonality."""
     x = b - a
     length = float(np.linalg.norm(x))
     if length < 1e-12:
         return np.eye(3)
     x = x / length
+    if section_up is not None:
+        z = np.asarray(section_up, dtype=float)
+        z = z - float(z @ x) * x
+        if float(np.linalg.norm(z)) <= 1.0e-10:
+            raise ValueError("section_up must not be parallel to the member")
+        z /= float(np.linalg.norm(z))
+        y = np.cross(z, x)
+        y /= max(float(np.linalg.norm(y)), 1e-12)
+        z = np.cross(x, y)
+        return np.vstack([x, y, z])
     helper = np.array([0.0, 0.0, 1.0]) if abs(x[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
     y = np.cross(helper, x)
     y /= max(float(np.linalg.norm(y)), 1e-12)
     z = np.cross(x, y)
     return np.vstack([x, y, z])
+
+
+def _element_frame(edge: dict, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Orient a travelling joint by its declared motion axis.
+
+    A guide's endpoints locate its two bodies; they do not necessarily lie
+    on the guide axis.  Condensing local ``x`` in the endpoint-to-endpoint
+    frame therefore released the mounting offset instead of the declared
+    slide direction.  Ordinary members still use their geometric axis.
+    """
+    declared = edge.get("slide_axis")
+    if declared is None:
+        return _local_frame(a, b, edge.get("section_up"))
+    axis = np.asarray(declared, dtype=float)
+    length = float(np.linalg.norm(axis))
+    if length <= 1.0e-12:
+        raise ValueError(f"{edge['identity']}: slide_axis must be nonzero")
+    return _local_frame(np.zeros(3), axis / length, edge.get("section_up"))
 
 
 def _routed(edge) -> bool:
@@ -153,7 +181,7 @@ def _condense(k, released):
     return out
 
 
-def element_stiffness(E, G, A, I, J, L, kappa):
+def element_stiffness(E, G, A, Iy, Iz, J, L, kappa):
     """The 12x12 local stiffness of a 3D Timoshenko beam element.
 
     Standard form. `phi` is the shear-flexibility parameter: zero
@@ -161,7 +189,6 @@ def element_stiffness(E, G, A, I, J, L, kappa):
     short and fat, which is when shear stops being negligible."""
     k = np.zeros((12, 12))
     As = kappa * A
-    phi = 12.0 * E * I / (G * As * L * L) if G * As > 0 else 0.0
     # --- axial ---
     ea = E * A / L
     k[0, 0] = k[6, 6] = ea
@@ -170,14 +197,16 @@ def element_stiffness(E, G, A, I, J, L, kappa):
     gj = G * J / L
     k[3, 3] = k[9, 9] = gj
     k[3, 9] = k[9, 3] = -gj
-    # --- bending, both planes (identical: the section is axisymmetric) ---
-    f = E * I / (L ** 3 * (1.0 + phi))
-    kv = 12.0 * f
-    km = 6.0 * L * f
-    ka = (4.0 + phi) * L * L * f
-    kb = (2.0 - phi) * L * L * f
-    # bending in the x-y plane: v (1,7) with theta_z (5,11)
-    for v1, t1, v2, t2, sign in ((1, 5, 7, 11, +1.0), (2, 4, 8, 10, -1.0)):
+    # local y deflection bends about z; local z deflection bends about y.
+    for inertia, v1, t1, v2, t2, sign in (
+            (Iz, 1, 5, 7, 11, +1.0), (Iy, 2, 4, 8, 10, -1.0)):
+        phi = (12.0 * E * inertia / (G * As * L * L)
+               if G * As > 0 else 0.0)
+        f = E * inertia / (L ** 3 * (1.0 + phi))
+        kv = 12.0 * f
+        km = 6.0 * L * f
+        ka = (4.0 + phi) * L * L * f
+        kb = (2.0 - phi) * L * L * f
         k[v1, v1] = k[v2, v2] = kv
         k[v1, v2] = k[v2, v1] = -kv
         k[t1, t1] = k[t2, t2] = ka
@@ -196,6 +225,7 @@ class FrameSolver:
     #: extra point loads, identity -> (fx, fy, fz) newtons
     loads: dict = field(default_factory=dict)
     gravity: bool = True
+    gravity_scale: float = 1.0
     index: dict = field(default_factory=dict)
     members: list = field(default_factory=list)
 
@@ -211,9 +241,140 @@ class FrameSolver:
         # int32 token column once per document and masks over the forty
         # declared constraints, so "which of these are structure" is an
         # indexing operation rather than a loop.
-        from graph_columns import structural
+        from graph_columns import structural, structural_nodes
         edges = self.document["edges"]
-        self.members = [edges[i] for i in structural(self.document)]
+        self.structural_node = structural_nodes(self.document)
+        self.solver_master_index = np.arange(len(nodes), dtype=np.int32)
+        self.solver_endpoint_transform = np.repeat(
+            np.eye(DOF_PER_NODE, dtype=float)[None, :, :], len(nodes), axis=0)
+        for i, node in enumerate(nodes):
+            target = node.get("solver_condensed_into")
+            if not target:
+                continue
+            if target not in self.index:
+                raise KeyError(
+                    f"{node['identity']}: missing solver gestalt {target!r}")
+            j = self.index[target]
+            if nodes[j].get("solver_condensed_into"):
+                raise ValueError(
+                    f"{node['identity']}: solver gestalt chains are not allowed")
+            self.solver_master_index[i] = j
+            offset = self.position[i] - self.position[j]
+            skew = np.asarray(((0.0, -offset[2], offset[1]),
+                               (offset[2], 0.0, -offset[0]),
+                               (-offset[1], offset[0], 0.0)))
+            # u(point) = u(master) + theta x offset.
+            self.solver_endpoint_transform[i, :3, 3:] = -skew
+        self.solver_master_dof = (
+            self.solver_master_index[:, None] * DOF_PER_NODE
+            + np.arange(DOF_PER_NODE, dtype=np.int32)[None, :])
+        self.members = []
+        for edge_i in structural(self.document):
+            edge = edges[int(edge_i)]
+            ia = int(self.solver_master_index[self.index[edge["a"]]])
+            ib = int(self.solver_master_index[self.index[edge["b"]]])
+            if ia == ib:
+                # Both endpoints are points on the same rigid gestalt.
+                # Their exact kinematics already satisfy its internal link.
+                continue
+            if self.structural_node[ia] and self.structural_node[ib]:
+                self.members.append(edge)
+        # One baked machine is one inertial body. Internal state/render parts
+        # can name that body explicitly; their masses and box inertias are
+        # condensed onto it rather than becoming extra free bodies.
+        self.solver_node_mass = np.zeros(len(nodes), dtype=float)
+        self.solver_node_inertia = np.zeros((len(nodes), 3), dtype=float)
+        for i, node in enumerate(nodes):
+            mass = float(node.get("mass_kg", 0.0))
+            half = tuple(float(v) for v in (
+                node.get("body_half_extent_m") or ()))
+            if len(half) == 3:
+                a2, b2, c2 = (v * v for v in half)
+                inertia = mass * np.asarray(
+                    (b2 + c2, a2 + c2, a2 + b2)) / 3.0
+            else:
+                inertia = np.zeros(3, dtype=float)
+            target = node.get("solver_condensed_into")
+            if target:
+                j = int(self.solver_master_index[i])
+                offset = self.position[i] - self.position[j]
+                if node.get("solver_condensed_mass", False):
+                    self.solver_node_mass[j] += mass
+                    self.solver_node_inertia[j] += inertia + mass * np.asarray((
+                        offset[1] ** 2 + offset[2] ** 2,
+                        offset[0] ** 2 + offset[2] ** 2,
+                        offset[0] ** 2 + offset[1] ** 2))
+                node["solver_mass_condensed_kg"] = mass
+            elif self.structural_node[i]:
+                self.solver_node_mass[i] += mass
+                self.solver_node_inertia[i] += inertia
+            elif mass:
+                node["solver_mass_ignored_kg"] = mass
+
+    def _master_dofs(self, endpoint_index: int) -> list[int]:
+        master = int(self.solver_master_index[endpoint_index])
+        return list(range(master * DOF_PER_NODE,
+                          (master + 1) * DOF_PER_NODE))
+
+    def _assemble_endpoint_matrix(self, matrix: np.ndarray, ia: int, ib: int,
+                                  element: np.ndarray) -> None:
+        """Assemble a 12x12 matrix through rigid surface-point MPCs."""
+        indices = (ia, ib)
+        for p, ip in enumerate(indices):
+            Pp = self.solver_endpoint_transform[ip]
+            dp = self._master_dofs(ip)
+            for q, iq in enumerate(indices):
+                Pq = self.solver_endpoint_transform[iq]
+                dq = self._master_dofs(iq)
+                block = element[p * 6:(p + 1) * 6, q * 6:(q + 1) * 6]
+                matrix[np.ix_(dp, dq)] += Pp.T @ block @ Pq
+
+    def _add_endpoint_wrench(self, vector: np.ndarray, endpoint_index: int,
+                             wrench) -> None:
+        transformed = (self.solver_endpoint_transform[endpoint_index].T
+                       @ np.asarray(wrench, dtype=float))
+        vector[self._master_dofs(endpoint_index)] += transformed
+
+    def _endpoint_motion(self, displacement: np.ndarray,
+                         endpoint_index: int) -> np.ndarray:
+        return (self.solver_endpoint_transform[endpoint_index]
+                @ displacement[self._master_dofs(endpoint_index)])
+
+    def endpoint_motion(self, displacement) -> np.ndarray:
+        """Materialise every graph point from the solver's master bodies.
+
+        Condensed surface ports own no independent DOFs.  Their translation
+        is the master translation plus ``theta x offset`` and their rotation
+        is the master's rotation.  Keeping this gather here makes live
+        rendering, strain recovery and joint kinematics use the same MPC as
+        stiffness/load assembly instead of reading the ports' fixed zero
+        slots and inventing strain against an invisible world anchor.
+        """
+        flat = np.asarray(displacement, dtype=float).reshape(-1)
+        master_motion = flat[self.solver_master_dof]
+        return np.einsum("nij,nj->ni", self.solver_endpoint_transform,
+                         master_motion)
+
+    def endpoint_motion_batch(self, displacements) -> np.ndarray:
+        """Materialise several complete states through one MPC gather."""
+        values = np.asarray(displacements, dtype=float)
+        if values.ndim != 2 or values.shape[1] != len(self.document["nodes"]) * DOF_PER_NODE:
+            raise ValueError("endpoint motion batch must have shape (states, dofs)")
+        master_motion = values[:, self.solver_master_dof]
+        return np.einsum("nij,snj->sni", self.solver_endpoint_transform,
+                         master_motion)
+
+    def _add_endpoint_lumped_mass(self, diagonal: np.ndarray,
+                                  endpoint_index: int, mass: float,
+                                  rotary: float = 0.0) -> None:
+        master = int(self.solver_master_index[endpoint_index])
+        base = master * DOF_PER_NODE
+        diagonal[base:base + 3] += mass
+        offset = self.position[endpoint_index] - self.position[master]
+        diagonal[base + 3:base + 6] += rotary + mass * np.asarray((
+            offset[1] ** 2 + offset[2] ** 2,
+            offset[0] ** 2 + offset[2] ** 2,
+            offset[0] ** 2 + offset[1] ** 2))
 
     # ------------------------------------------------------------------
     #: How much stiffer than the stiffest REAL member a rigid link is
@@ -251,8 +412,10 @@ class FrameSolver:
                 continue
             d = edge.get("damage") or {}
             area = float(d.get("section_area_m2", 1e-4))
-            second = float(d.get("second_moment_m4", area * area
-                                 / (4.0 * math.pi)))
+            second = max(float(d.get("second_moment_y_m4", 0.0)),
+                         float(d.get("second_moment_z_m4", 0.0)),
+                         float(d.get("second_moment_m4", area * area
+                                     / (4.0 * math.pi))))
             mat = MATERIAL_BY_KEY.get(d.get("material", "4130n"),
                                       MATERIAL_BY_KEY["4130n"])
             e = float(d.get("youngs_modulus_pa", mat.youngs_pa))
@@ -281,19 +444,23 @@ class FrameSolver:
             length = max(float(edge.get("rest_length", 0.0)), 1e-4)
             area = self.RIGID_LINK_FACTOR * k_ax * length / e
             second = self.RIGID_LINK_FACTOR * k_bend * length ** 3 / e
-            return (e, float(mat.shear_pa), area, second, 2.0 * second,
+            return (e, float(mat.shear_pa), area, second, second,
+                    2.0 * second,
                     1.0, mat)
         d = edge["damage"]
         alloy = d.get("material", "4130n")
         mat = MATERIAL_BY_KEY.get(alloy, MATERIAL_BY_KEY["4130n"])
         area = float(d.get("section_area_m2", 1e-4))
         second = float(d.get("second_moment_m4", area * area / (4.0 * math.pi)))
+        iy = float(d.get("second_moment_y_m4", second))
+        iz = float(d.get("second_moment_z_m4", second))
         # a circular tube's radii, back out of area and second moment
         ro = float(edge.get("radius", 0.012))
         ri = max(0.0, math.sqrt(max(ro * ro - area / math.pi, 0.0)))
         return (float(d.get("youngs_modulus_pa", mat.youngs_pa)),
                 float(d.get("shear_modulus_pa", mat.shear_pa)),
-                area, second, 2.0 * second,      # J = 2I, exact for a circle
+                area, iy, iz, float(d.get("torsion_constant_m4",
+                                          2.0 * second)),
                 shear_coefficient(ro, ri), mat)
 
     def _fixed_dofs(self) -> list:
@@ -302,10 +469,191 @@ class FrameSolver:
         no support has six rigid-body modes and a singular stiffness."""
         fixed = []
         for n in self.document["nodes"]:
-            if n.get("fixed_to") or n.get("kind") == "structural-body-pin-frame-foot":
+            i = self.index[n["identity"]]
+            if (not self.structural_node[i] or n.get("fixed_to")
+                    or n.get("kind") == "structural-body-pin-frame-foot"):
                 base = self.index[n["identity"]] * DOF_PER_NODE
                 fixed.extend(range(base, base + DOF_PER_NODE))
         return fixed
+
+    def _assemble_plain_springs(self, stiffness: np.ndarray | None,
+                                load: np.ndarray | None = None,
+                                edge_identities: set[str] | None = None) -> None:
+        """Put graph-declared linear springs into the frame equilibrium.
+
+        These edges release axial beam stiffness because their constitutive
+        law owns that freedom.  A plain spring/damper (one with no piston
+        geometry) is linear, so its tangent belongs directly in the global
+        stiffness matrix.  Its installed preload is a real static load and is
+        included when ``load`` is supplied.  Pneumatic/orifice elements stay
+        with the nonlinear joint bank.
+        """
+        for edge in self.document["edges"]:
+            if (edge_identities is not None
+                    and edge["identity"] not in edge_identities):
+                continue
+            is_belleville = edge.get("constraint") == "belleville-preload-stack"
+            is_chain_winch = edge.get("constraint") == "chain-winch-hoist"
+            is_platform_preload = edge.get("part_role") == "platform-actuator"
+            is_strap_tensioner = edge.get("constraint") == "strap-tensioner"
+            is_linear_spring = (
+                edge.get("constraint") == "spring-damper"
+                and (float(edge.get("piston_area_m2", 0.0)) <= 0.0
+                     or "linear_damping_n_s_per_m" in edge
+                     or set(edge.get("force_components") or ()) ==
+                     {"spring-recuperator"}))
+            if not (is_belleville or is_chain_winch or is_strap_tensioner
+                    or is_platform_preload or is_linear_spring):
+                continue
+            ia, ib = self.index[edge["a"]], self.index[edge["b"]]
+            delta = self.position[ib] - self.position[ia]
+            length = float(np.linalg.norm(delta))
+            if length <= 1.0e-12:
+                continue
+            axis = _element_frame(edge, self.position[ia],
+                                  self.position[ib])[0]
+            rate = float(edge.get(
+                "stiffness_n_per_m",
+                edge.get("spring_rate_n_per_m",
+                         edge.get("stack_rate_n_per_m", 0.0))))
+            if rate < 0.0:
+                raise ValueError(f"{edge['identity']}: negative spring rate")
+            axial = rate * np.outer(axis, axis)
+            ke = np.zeros((12, 12), dtype=float)
+            ke[:3, :3] = axial
+            ke[6:9, 6:9] = axial
+            ke[:3, 6:9] = -axial
+            ke[6:9, :3] = -axial
+            if stiffness is not None:
+                self._assemble_endpoint_matrix(stiffness, ia, ib, ke)
+            if load is not None:
+                preload = float(edge.get("preload_force_n",
+                                         edge.get("spring_preload_n",
+                                                  edge.get("preload_n", 0.0))))
+                self._add_endpoint_wrench(
+                    load, ia, np.r_[-axis * preload, np.zeros(3)])
+                self._add_endpoint_wrench(
+                    load, ib, np.r_[axis * preload, np.zeros(3)])
+
+    def assemble_component_matrices(
+            self, member_identities,
+            *, node_mass_fractions: dict[str, float] | None = None) -> dict:
+        """Assemble one component from the members it owns.
+
+        This deliberately assembles element contributions before slicing the
+        component coordinates. Slicing the station's completed global matrix
+        would lose ownership at shared interfaces. ``node_mass_fractions``
+        makes shared body-mass partition explicit; omitted fractions are zero.
+        Member distributed mass always belongs to its member.
+        """
+        selected = set(member_identities)
+        known = {edge["identity"] for edge in self.document["edges"]}
+        missing = selected - known
+        if missing:
+            raise KeyError(f"unknown component member {sorted(missing)[0]!r}")
+        fractions = dict(node_mass_fractions or {})
+        for identity, fraction in fractions.items():
+            if identity not in self.index:
+                raise KeyError(f"unknown component mass node {identity!r}")
+            if not math.isfinite(float(fraction)) or not 0.0 <= float(fraction) <= 1.0:
+                raise ValueError(f"{identity}: node mass fraction must be in [0, 1]")
+
+        n_dof = len(self.document["nodes"]) * DOF_PER_NODE
+        stiffness = np.zeros((n_dof, n_dof), dtype=float)
+        mass = np.zeros(n_dof, dtype=float)
+        touched_masters: set[int] = set()
+        selected_members = [edge for edge in self.members
+                            if edge["identity"] in selected]
+        for edge in selected_members:
+            ia, ib = self.index[edge["a"]], self.index[edge["b"]]
+            touched_masters.update((int(self.solver_master_index[ia]),
+                                    int(self.solver_master_index[ib])))
+            a, b = self.position[ia], self.position[ib]
+            length = float(np.linalg.norm(b - a))
+            if length < 1.0e-9:
+                continue
+            E, G, A, Iy, Iz, J, kappa, material = self._section(edge)
+            local = _condense(
+                element_stiffness(E, G, A, Iy, Iz, J, length, kappa),
+                _released_dofs(edge))
+            rotation = _element_frame(edge, a, b)
+            transform = np.zeros((12, 12), dtype=float)
+            for block in range(4):
+                transform[block * 3:block * 3 + 3,
+                          block * 3:block * 3 + 3] = rotation
+            self._assemble_endpoint_matrix(
+                stiffness, ia, ib, transform.T @ local @ transform)
+            if edge.get("rigid"):
+                continue
+            half = A * length * material.density_kg_m3 / 2.0
+            outer = math.sqrt(max(A, 0.0) / math.pi)
+            rotary = half * (outer * outer / 4.0 + length * length / 12.0)
+            self._add_endpoint_lumped_mass(mass, ia, half, rotary)
+            self._add_endpoint_lumped_mass(mass, ib, half, rotary)
+
+        self._assemble_plain_springs(
+            stiffness, edge_identities=selected)
+        # Spring-only components still own their endpoint coordinates.
+        for edge in self.document["edges"]:
+            if edge["identity"] not in selected:
+                continue
+            for endpoint in (edge["a"], edge["b"]):
+                touched_masters.add(int(self.solver_master_index[
+                    self.index[endpoint]]))
+        for identity, fraction in fractions.items():
+            i = self.index[identity]
+            master = int(self.solver_master_index[i])
+            if master != i:
+                raise ValueError(
+                    f"{identity}: assign condensed mass to its gestalt master")
+            touched_masters.add(master)
+            base = master * DOF_PER_NODE
+            mass[base:base + 3] += self.solver_node_mass[master] * fraction
+            mass[base + 3:base + 6] += (
+                self.solver_node_inertia[master] * fraction)
+        nodes = np.asarray(sorted(touched_masters), dtype=np.int64)
+        physical_dofs = (nodes[:, None] * DOF_PER_NODE
+                         + np.arange(DOF_PER_NODE)[None, :]).reshape(-1)
+        return {
+            "node_indices": nodes,
+            "node_positions": self.position[nodes].copy(),
+            "physical_dofs": physical_dofs,
+            "stiffness_matrix": stiffness[np.ix_(physical_dofs, physical_dofs)],
+            "mass_matrix": np.diag(mass[physical_dofs]),
+        }
+
+    def applied_force_vector(self) -> np.ndarray:
+        """Constant graph loads in physical coordinates.
+
+        This is also the runtime gravity/preload vector when a mechanism is
+        deliberately started from its authored pose and allowed to settle
+        through its nonlinear joint laws.  Keeping the construction here
+        prevents the live engine from inventing a second gravity model.
+        """
+        f = np.zeros(len(self.document["nodes"]) * DOF_PER_NODE)
+        self._assemble_plain_springs(None, f)
+        if self.gravity:
+            for edge in self.members:
+                if edge.get("rigid"):
+                    continue
+                _E, _G, A, _Iy, _Iz, _J, _kappa, mat = self._section(edge)
+                ia, ib = self.index[edge["a"]], self.index[edge["b"]]
+                L = float(np.linalg.norm(self.position[ib] - self.position[ia]))
+                w = (A * L * mat.density_kg_m3 * GRAVITY
+                     * float(self.gravity_scale) / 2.0)
+                gravity_wrench = np.asarray(
+                    (0.0, -w, 0.0, 0.0, 0.0, 0.0))
+                self._add_endpoint_wrench(f, ia, gravity_wrench)
+                self._add_endpoint_wrench(f, ib, gravity_wrench)
+            for i, _node in enumerate(self.document["nodes"]):
+                f[i * DOF_PER_NODE + 1] -= (
+                    self.solver_node_mass[i] * GRAVITY
+                    * float(self.gravity_scale))
+        for ident, force in self.loads.items():
+            i = self.index[ident]
+            self._add_endpoint_wrench(
+                f, i, np.r_[np.asarray(force, float), np.zeros(3)])
+        return f
 
     # ------------------------------------------------------------------
     def solve(self) -> dict:
@@ -319,47 +667,25 @@ class FrameSolver:
             L = float(np.linalg.norm(b - a))
             if L < 1e-9:
                 continue
-            E, G, A, I, J, kappa, _mat = self._section(edge)
-            kl = element_stiffness(E, G, A, I, J, L, kappa)
+            E, G, A, Iy, Iz, J, kappa, _mat = self._section(edge)
+            kl = element_stiffness(E, G, A, Iy, Iz, J, L, kappa)
             # THE JOINT, APPLIED. Released freedoms are condensed out of
             # the element before it is rotated into the structure, which
             # is the difference between a recoil slide and a bar.
             kl = _condense(kl, _released_dofs(edge))
-            R = _local_frame(a, b)
+            R = _element_frame(edge, a, b)
             T = np.zeros((12, 12))
             for blk in range(4):
                 T[blk * 3:blk * 3 + 3, blk * 3:blk * 3 + 3] = R
             kg = T.T @ kl @ T
-            dofs = (list(range(ia * DOF_PER_NODE, ia * DOF_PER_NODE + 6))
-                    + list(range(ib * DOF_PER_NODE, ib * DOF_PER_NODE + 6)))
-            K[np.ix_(dofs, dofs)] += kg
+            self._assemble_endpoint_matrix(K, ia, ib, kg)
 
-        # --- the loads -------------------------------------------------
-        if self.gravity:
-            # LUMPED AT THE NODES. Half of each member's mass to each of
-            # its ends, plus whatever the node itself weighs. Crude
-            # against a consistent mass matrix and entirely adequate for
-            # a static settle, which is what this is for.
-            for edge in self.members:
-                # A RIGID LINK WEIGHS NOTHING. Its section is an
-                # idealisation sized to out-stiffen real structure, so
-                # multiplying it by a density gives a body's own skin a
-                # mass thousands of times the body's -- the mass is
-                # already on the body node it belongs to.
-                if edge.get("rigid"):
-                    continue
-                E, G, A, I, J, kappa, mat = self._section(edge)
-                ia, ib = self.index[edge["a"]], self.index[edge["b"]]
-                L = float(np.linalg.norm(self.position[ib] - self.position[ia]))
-                w = A * L * mat.density_kg_m3 * GRAVITY / 2.0
-                f[ia * DOF_PER_NODE + 1] -= w
-                f[ib * DOF_PER_NODE + 1] -= w
-            for n in self.document["nodes"]:
-                i = self.index[n["identity"]]
-                f[i * DOF_PER_NODE + 1] -= float(n.get("mass_kg", 0.0)) * GRAVITY
-        for ident, force in self.loads.items():
-            i = self.index[ident]
-            f[i * DOF_PER_NODE:i * DOF_PER_NODE + 3] += np.asarray(force, float)
+        # The installed spring rate and preload participate in the same
+        # equilibrium as gravity and beam deformation.  Omitting them here
+        # and trying to introduce them on the first live tick creates a false
+        # store of energy in a pose that was never jointly settled.
+        self._assemble_plain_springs(K)
+        f = self.applied_force_vector()
 
         # --- supports and solve ---------------------------------------
         fixed = set(self._fixed_dofs())
@@ -387,22 +713,30 @@ class FrameSolver:
             L = float(np.linalg.norm(b - a))
             if L < 1e-9:
                 continue
-            E, G, A, I, J, kappa, _m = self._section(edge)
-            R = _local_frame(a, b)
-            ua = u[ia * DOF_PER_NODE:ia * DOF_PER_NODE + 6]
-            ub = u[ib * DOF_PER_NODE:ib * DOF_PER_NODE + 6]
+            E, G, A, Iy, Iz, J, kappa, _m = self._section(edge)
+            R = _element_frame(edge, a, b)
+            ua = self._endpoint_motion(u, ia)
+            ub = self._endpoint_motion(u, ib)
             # into the member's own frame
             da, ra = R @ ua[:3], R @ ua[3:]
             db, rb = R @ ub[:3], R @ ub[3:]
             axial = (db[0] - da[0]) / L
-            ro = float(edge.get("radius", 0.012))
+            d = edge.get("damage") or {}
+            outer_y = float(d.get("section_outer_y_m",
+                                  edge.get("radius", 0.012)))
+            outer_z = float(d.get("section_outer_z_m",
+                                  edge.get("radius", 0.012)))
             curv_y = (rb[1] - ra[1]) / L
             curv_z = (rb[2] - ra[2]) / L
-            bending = math.sqrt(curv_y ** 2 + curv_z ** 2) * ro
+            if ("section_outer_y_m" in d or "section_outer_z_m" in d):
+                bending = abs(curv_y) * outer_z + abs(curv_z) * outer_y
+            else:
+                bending = math.hypot(curv_y, curv_z) * outer_y
             shear_y = (db[1] - da[1]) / L - (ra[2] + rb[2]) / 2.0
             shear_z = (db[2] - da[2]) / L + (ra[1] + rb[1]) / 2.0
             twist = (rb[0] - ra[0]) / L
-            shear = math.sqrt(shear_y ** 2 + shear_z ** 2 + (twist * ro) ** 2)
+            shear = math.sqrt(shear_y ** 2 + shear_z ** 2
+                              + (twist * max(outer_y, outer_z)) ** 2)
             # A RELEASED FREEDOM CARRIES NOTHING, and its relative motion
             # is therefore not strain. A slider's ends move apart by the
             # whole of its travel; multiplying that by EA reported an
@@ -461,16 +795,14 @@ class FrameSolver:
             L = float(np.linalg.norm(b - a))
             if L < 1e-9:
                 continue
-            E, G, A, I, J, kappa, mat = self._section(edge)
-            kl = _condense(element_stiffness(E, G, A, I, J, L, kappa),
+            E, G, A, Iy, Iz, J, kappa, mat = self._section(edge)
+            kl = _condense(element_stiffness(E, G, A, Iy, Iz, J, L, kappa),
                            _released_dofs(edge))
-            R = _local_frame(a, b)
+            R = _element_frame(edge, a, b)
             T = np.zeros((12, 12))
             for blk in range(4):
                 T[blk * 3:blk * 3 + 3, blk * 3:blk * 3 + 3] = R
-            dofs = (list(range(ia * DOF_PER_NODE, ia * DOF_PER_NODE + 6))
-                    + list(range(ib * DOF_PER_NODE, ib * DOF_PER_NODE + 6)))
-            K[np.ix_(dofs, dofs)] += T.T @ kl @ T
+            self._assemble_endpoint_matrix(K, ia, ib, T.T @ kl @ T)
             # A RIGID LINK WEIGHS NOTHING HERE EITHER. Its section is an
             # idealisation sized to out-stiffen real structure, so
             # A*L*rho is a body's own skin weighing thousands of times
@@ -480,30 +812,29 @@ class FrameSolver:
             if edge.get("rigid"):
                 continue
             half = A * L * mat.density_kg_m3 / 2.0
+            # AND ITS ROTARY INERTIA, which is not optional.  When an end
+            # is a condensed surface point, both quantities are lumped on
+            # the body master with the parallel-axis contribution.
+            r_o = math.sqrt(max(A, 0.0) / math.pi)
+            rotary = half * (r_o * r_o / 4.0 + L * L / 12.0)
             for i in (ia, ib):
-                M[i * DOF_PER_NODE:i * DOF_PER_NODE + 3] += half
-                # AND ITS ROTARY INERTIA, which is not optional.
-                # The standard lumped-mass beam puts half the mass at
-                # each end together with half the rod's inertia about
-                # that end: m/2 * (r^2/4 + L^2/12). Both terms are the
-                # member's own declared section and length.
-                r_o = math.sqrt(max(A, 0.0) / math.pi)
-                M[i * DOF_PER_NODE + 3:i * DOF_PER_NODE + 6] += \
-                    half * (r_o * r_o / 4.0 + L * L / 12.0)
-        for n in self.document["nodes"]:
-            i = self.index[n["identity"]]
-            m_n = float(n.get("mass_kg", 0.0))
+                self._add_endpoint_lumped_mass(M, i, half, rotary)
+        # Plain graph springs close the axial freedoms their released beam
+        # members deliberately leave open.  They must be present before the
+        # eigensolve or genuine spring-supported motion is misclassified as a
+        # zero-frequency mechanism.
+        self._assemble_plain_springs(K)
+        for i, n in enumerate(self.document["nodes"]):
+            m_n = self.solver_node_mass[i]
             M[i * DOF_PER_NODE:i * DOF_PER_NODE + 3] += m_n
             # A NODE'S OWN ROTARY INERTIA, off the extent it declared.
             # A body of half-extents (a, b, c) has I = m(b^2+c^2)/3 and
             # its permutations; every node here carries `half_extent_m`
             # because the mesher needs it to draw the thing, so this is
             # read rather than guessed.
-            h = n.get("half_extent_m") or ()
-            if m_n > 0.0 and len(h) == 3:
-                a2, b2, c2 = (float(v) ** 2 for v in h)
-                for k, pair in enumerate(((b2 + c2), (a2 + c2), (a2 + b2))):
-                    M[i * DOF_PER_NODE + 3 + k] += m_n * pair / 3.0
+            if m_n > 0.0:
+                M[i * DOF_PER_NODE + 3:i * DOF_PER_NODE + 6] += \
+                    self.solver_node_inertia[i]
         # ---- WHAT THE FLOOR WAS DOING, AND WHY IT IS NOW A FLOOR -----
         # This used to be `M[M <= 0] = 1e-6` with no rotary inertia
         # assembled at all, so EVERY rotational freedom in the structure
@@ -529,6 +860,7 @@ class FrameSolver:
         # symmetric standard form: M^-1/2 K M^-1/2
         A_sym = Mff @ Kff @ Mff
         vals, vecs = np.linalg.eigh((A_sym + A_sym.T) / 2.0)
+        raw_eigenvalues = vals.copy()
         keep = vals > MECHANISM_EIGENVALUE
         # ---- THE FREEDOMS THAT WERE BEING THROWN AWAY ---------------
         # A mode with no stiffness behind it is not noise. On a frame
@@ -572,7 +904,14 @@ class FrameSolver:
                 # the articulation: zero-stiffness, mass-orthonormal,
                 # and integrated by whoever knows what resists them
                 "mechanism_shapes": mech,
+                "mechanism_eigenvalues": raw_eigenvalues[~keep],
+                "eigenvalue_scale": float(np.max(np.abs(raw_eigenvalues)))
+                if len(raw_eigenvalues) else 0.0,
                 "mechanism_count": int(mech.shape[1]),
                 "free": free,
+                # The live solver advances the complete physical-coordinate
+                # beam system. Returning the assembly that produced the
+                # eigensystem prevents it rebuilding a second K.
+                "stiffness_matrix": K,
                 "lumped_mass": M,
                 "modal_mass": np.ones(len(freqs))}
