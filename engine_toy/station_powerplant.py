@@ -69,9 +69,24 @@ class FuelControlUnit:
     enabled: dict[str, bool] = field(default_factory=dict)
     last_command: dict[str, float] = field(default_factory=dict)
     heater: ElectricFuelHeater | None = field(default_factory=ElectricFuelHeater)
+    #: Fuel temperature arriving at the FCU. NOT a constant 15 C: this is
+    #: a deployed installation, and a drum standing in the sun is nothing
+    #: like a drum in a northern European yard. It matters more than it
+    #: looks -- waste oil wants 80 C, which is a 65 K lift from 15 C and
+    #: only a 35 K lift from 45 C, so the same heater that falls short in
+    #: the cold has margin to spare in the desert.
+    inlet_k: float = 318.15            # 45 C, a drum in desert sun
     #: what the heater actually managed last command, for the panel
     heater_draw_w: float = 0.0
-    heater_outlet_k: float = 288.15
+    heater_outlet_k: float = 318.15
+    #: DOWNSTREAM REHEAT, once something is running. The FCU's electric
+    #: heater only has to get the plant STARTED; a turbine exhausting
+    #: north of 700 K has heat to spare and can raise its own fuel the
+    #: rest of the way. Set by the plant when an engine is up, so a cold
+    #: start is electric and a running station is nearly free -- the same
+    #: arrangement as an SVO conversion starting on diesel and switching
+    #: over, done with waste heat instead of a second tank.
+    reheat_k: float = 0.0
 
     def attach(self, pump: DropInBarrelFuelPump) -> None:
         """Register a cap-pump dropped into a newly rolled-up barrel."""
@@ -100,12 +115,22 @@ class FuelControlUnit:
             required_k = 273.15 + float(fluid.preheat_c)
         elif fluid is not None and fluid.viscous_at_ambient:
             required_k = 323.15
-        if self.heater is not None and required_k > 288.15:
-            self.heater_outlet_k = self.heater.delivered_temp_k(remaining)
-            self.heater_draw_w = self.heater.draw_w(remaining)
-            remaining *= self.heater.flow_factor(remaining, required_k)
+        inlet_k = max(float(self.inlet_k), 0.0)
+        if self.heater is not None and required_k > inlet_k:
+            self.heater_outlet_k = max(
+                self.heater.delivered_temp_k(remaining, inlet_k),
+                float(self.reheat_k))
+            # the electric heater only pays for what the reheat did not
+            # already provide -- a running plant barely loads it
+            self.heater_draw_w = (
+                0.0 if self.reheat_k >= required_k
+                else self.heater.draw_w(remaining, inlet_k))
+            span = max(required_k - inlet_k, 1e-6)
+            warmed = max(0.0, min(1.0, (self.heater_outlet_k - inlet_k) / span))
+            remaining *= (self.heater.cold_flow_frac
+                          + (1.0 - self.heater.cold_flow_frac) * warmed)
         else:
-            self.heater_outlet_k = 288.15
+            self.heater_outlet_k = inlet_k
             self.heater_draw_w = 0.0
 
         result = {}
