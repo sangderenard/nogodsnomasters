@@ -10,6 +10,9 @@ platform accidentally.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+
+from fuel_network import ElectricFuelHeater
+from working_fluids import WORKING_FLUIDS
 import math
 
 import numpy as np
@@ -46,11 +49,29 @@ class DropInBarrelFuelPump:
 
 @dataclass
 class FuelControlUnit:
-    """Stage compatible barrel pumps onto one fuel-typed manifold."""
+    """Stage compatible barrel pumps onto one fuel-typed manifold.
+
+    Carries an INLINE ELECTRIC HEATER, because a fixed installation is
+    exactly the case the coolant-heated fuel heater cannot serve: that
+    one needs an engine already warm, which is why a vehicle SVO
+    conversion starts on diesel from a second tank and switches over. A
+    station has mains power and can heat the fuel before anything is
+    running, so it can start cold on a drum of waste oil or crude.
+
+    The heater is power limited rather than magic: a stream costs
+    mdot * cp * dT to raise, so the temperature it reaches falls as
+    demand rises and the fuel arrives half-heated instead of the heater
+    refusing. What that costs the manifold is delivery -- a fuel below
+    its working temperature does not pump.
+    """
     manifold_fuel: str = "multifuel"
     pumps: tuple[DropInBarrelFuelPump, ...] = ()
     enabled: dict[str, bool] = field(default_factory=dict)
     last_command: dict[str, float] = field(default_factory=dict)
+    heater: ElectricFuelHeater | None = field(default_factory=ElectricFuelHeater)
+    #: what the heater actually managed last command, for the panel
+    heater_draw_w: float = 0.0
+    heater_outlet_k: float = 288.15
 
     def attach(self, pump: DropInBarrelFuelPump) -> None:
         """Register a cap-pump dropped into a newly rolled-up barrel."""
@@ -69,6 +90,24 @@ class FuelControlUnit:
                 declared_fuel: dict[str, str] | None = None) -> dict[str, float]:
         remaining = max(0.0, float(demand_kg_s))
         fuel_of = declared_fuel or {}
+        # THE HEATER, BEFORE ANY OF IT IS PUMPED. A viscous fuel that
+        # has not reached temperature simply does not deliver, so this
+        # scales the whole manifold's demand rather than being a note on
+        # a panel somewhere.
+        required_k = 288.15
+        fluid = WORKING_FLUIDS.get(self.manifold_fuel)
+        if fluid is not None and getattr(fluid, "preheat_c", 0.0) > 0.0:
+            required_k = 273.15 + float(fluid.preheat_c)
+        elif fluid is not None and fluid.viscous_at_ambient:
+            required_k = 323.15
+        if self.heater is not None and required_k > 288.15:
+            self.heater_outlet_k = self.heater.delivered_temp_k(remaining)
+            self.heater_draw_w = self.heater.draw_w(remaining)
+            remaining *= self.heater.flow_factor(remaining, required_k)
+        else:
+            self.heater_outlet_k = 288.15
+            self.heater_draw_w = 0.0
+
         result = {}
         for pump in self.pumps:
             compatible = fuel_of.get(pump.barrel_identity, pump.fuel) == self.manifold_fuel

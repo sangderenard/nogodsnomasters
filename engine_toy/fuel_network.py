@@ -166,6 +166,61 @@ class FuelHeater:
 
 
 @dataclass(frozen=True)
+class ElectricFuelHeater:
+    """Inline electric fuel heater. Works from cold, and costs watts.
+
+    The coolant-heated FuelHeater above cannot start a cold plant on a
+    viscous fuel, because there is no coolant heat until something has
+    already been running -- which is the whole reason an SVO conversion
+    starts on diesel from a second tank. A fixed installation does not
+    have that problem and does not need that workaround: it has mains
+    power, so it can heat the fuel before anything is running at all.
+    That is why a station burning waste oil or crude uses one of these
+    and a vehicle usually does not.
+
+    It is POWER LIMITED, which is the honest constraint: raising a fuel
+    stream by dT costs mdot * cp * dT, so the achievable temperature
+    falls as demand rises. A heater sized for idle will not keep up at
+    full flow, and the fuel arrives half-heated rather than the heater
+    politely refusing.
+    """
+
+    rated_w: float = 6_000.0
+    target_k: float = 353.0
+    #: real specific heat of a liquid hydrocarbon, the same figure
+    #: engines.py already uses for fuel charge cooling
+    fuel_cp_j_per_kgk: float = 2100.0
+    #: what a cold, viscous fuel still pushes through the pump before
+    #: the heater has caught up -- same meaning as FuelHeater's
+    cold_flow_frac: float = 0.15
+    kind: str = "electric-fuel-heater"
+
+    def delivered_temp_k(self, mass_flow_kg_s: float,
+                         inlet_k: float = 288.15) -> float:
+        """How warm this heater can actually get that much fuel."""
+        flow = max(float(mass_flow_kg_s), 1e-9)
+        rise = self.rated_w / (flow * max(self.fuel_cp_j_per_kgk, 1.0))
+        return min(self.target_k, float(inlet_k) + rise)
+
+    def draw_w(self, mass_flow_kg_s: float, inlet_k: float = 288.15) -> float:
+        """Electrical load, which a station has to actually supply."""
+        flow = max(float(mass_flow_kg_s), 0.0)
+        needed = flow * self.fuel_cp_j_per_kgk * max(self.target_k - float(inlet_k), 0.0)
+        return min(self.rated_w, needed)
+
+    def flow_factor(self, mass_flow_kg_s: float, required_k: float,
+                    inlet_k: float = 288.15) -> float:
+        """0..1 -- how much of the demanded flow this fuel will actually
+        pass at the temperature the heater managed to reach."""
+        if required_k <= inlet_k:
+            return 1.0
+        reached = self.delivered_temp_k(mass_flow_kg_s, inlet_k)
+        span = max(required_k - inlet_k, 1e-6)
+        warmed = max(0.0, min(1.0, (reached - inlet_k) / span))
+        return self.cold_flow_frac + (1.0 - self.cold_flow_frac) * warmed
+
+
+@dataclass(frozen=True)
 class CoolerFilter:
     restriction_frac: float = 0.15          # fraction of the upstream flow ceiling it takes away
     kind: str = "cooler-filter"
@@ -220,7 +275,8 @@ class CutoffValve:
 
 
 SOURCE_KINDS = (LiquidTank, PressurizedBottle, Gasholder, UtilityMain, BoilerSource, Receiver)
-INLINE_KINDS = (Regulator, Vaporizer, FuelHeater, CoolerFilter, FlameArrestor, PurgeValve, LockoffSolenoid)
+INLINE_KINDS = (Regulator, Vaporizer, FuelHeater, ElectricFuelHeater, CoolerFilter,
+                FlameArrestor, PurgeValve, LockoffSolenoid)
 ADMISSION_KINDS = (Mixer, GasInjector, LiquidCarburetor, LiquidInjector, CutoffValve)
 
 
@@ -266,8 +322,9 @@ class FuelNetworkSpec:
             missing.append("Regulator (bottle pressure is far above any admission pressure)")
         if f.storage in (PRESSURIZED_LIQUID, CRYOGENIC) and not self.has(Vaporizer):
             missing.append("Vaporizer (the store holds a liquid; the cylinder needs a gas)")
-        if f.viscous_at_ambient and not self.has(FuelHeater):
-            missing.append("FuelHeater (this fuel is too viscous to pump and atomize cold)")
+        if f.viscous_at_ambient and not (self.has(FuelHeater) or self.has(ElectricFuelHeater)):
+            missing.append("FuelHeater or ElectricFuelHeater "
+                           "(this fuel is too viscous to pump and atomize cold)")
         if f.flame_arrestor_required and not self.has(FlameArrestor):
             missing.append("FlameArrestor (min ignition energy / flame speed make line flashback real)")
         if f.storage == GASHOLDER and isinstance(self.source, Gasholder) and self.source.generator is not None \
