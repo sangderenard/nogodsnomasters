@@ -151,6 +151,63 @@ class TimeBudget:
         return out
 
 
+# ---------------------------------------------------------------------
+# measuring what a step actually COST, under any dispatch
+# ---------------------------------------------------------------------
+
+def _make_thread_cpu_clock():
+    """Per-thread CPU seconds, at a resolution that can see a 5 ms step.
+
+    Wall clock is wrong the moment a frame is dispatched across threads:
+    a scope's elapsed time then includes every moment it sat waiting for
+    the GIL, which is not its work and not something it can act on.
+    Feeding that to the allocator inflates every cost as soon as
+    threading is switched on -- measured, 27.9 ms of real work reported
+    as 64.8 ms -- and the field dilates everything to pay for contention.
+
+    `time.thread_time()` is the portable answer and is unusable here: on
+    Windows its granularity is the scheduler tick, so a 5 ms step reads
+    as either 0 or 15.6 ms. Windows has QueryThreadCycleTime for exactly
+    this, at cycle resolution (verified: a 50 ms sleep registers 0.051 ms
+    of CPU). Used where available, with thread_time as the fallback.
+    """
+    import time as _time
+
+    try:
+        import ctypes
+
+        kernel32 = ctypes.windll.kernel32           # type: ignore[attr-defined]
+        kernel32.QueryThreadCycleTime.argtypes = [
+            ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulonglong)]
+
+        def _cycles() -> int:
+            value = ctypes.c_ulonglong()
+            # -2 is the pseudo-handle for the calling thread
+            kernel32.QueryThreadCycleTime(ctypes.c_void_p(-2), ctypes.byref(value))
+            return int(value.value)
+
+        # calibrate cycles -> seconds once, against a real busy interval
+        c0, t0 = _cycles(), _time.perf_counter()
+        acc = 0.0
+        for i in range(400_000):
+            acc += i * 0.5
+        c1, t1 = _cycles(), _time.perf_counter()
+        elapsed = max(t1 - t0, 1e-9)
+        hz = max((c1 - c0) / elapsed, 1.0)
+
+        def thread_cpu_s() -> float:
+            return _cycles() / hz
+
+        thread_cpu_s()                               # prove it runs
+        return thread_cpu_s
+    except Exception:
+        return _time.thread_time
+
+
+#: Per-thread CPU seconds. Call twice and subtract.
+thread_cpu_s = _make_thread_cpu_clock()
+
+
 def derive_dt_limit_s(subject, graph=None, *, safety: float = 1.0) -> float:
     """The stability floor implied by a subject's OWN graph.
 
