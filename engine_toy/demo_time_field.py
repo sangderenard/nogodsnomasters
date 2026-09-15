@@ -95,13 +95,12 @@ class Bay:
         """Advance, and measure what it actually COST.
 
         thread_time, not perf_counter. Under a fan-out dispatch a bay's
-        wall clock includes every moment it sat waiting for the GIL,
-        which is not its work and not something it can do anything
-        about. Feeding that to the allocator inflates every cost the
-        moment threading is switched on -- measured, 27.9 ms of real work
-        reported as 64.8 ms -- and the field would dilate everything to
-        pay for contention. Thread CPU time is the quantity that means
-        the same thing in series and in parallel."""
+        wall clock includes every moment a lane sat waiting rather than
+        working, which is not its cost and not something it can act on.
+        Feeding that to the allocator inflates every cost the moment work
+        is dispatched, and the field would dilate everything to pay for
+        contention. Thread CPU time is the quantity that means the same
+        thing however the frame is dispatched."""
         t0 = thread_cpu_s()
         w0 = time.perf_counter()
         self.sim.step(window_s)
@@ -212,12 +211,7 @@ def main() -> None:
 
     mode = (f"HostDeploymentPool, {POOL.worker_count} workers + caller"
             if POOL.worker_count else "HostDeploymentPool, serial (caller only)")
-    print(f"dispatch: {mode}. cpu is summed per-bay cost; wall is the frame.")
-    print("Under CPython the two stay close because the GIL is held by the")
-    print("Python-resident engine loop -- measured contention factor 0.24.")
-    print("That is the number the native lane moves (0.58 measured on")
-    print("GIL-releasing work), not a property of this dispatch.")
-    print()
+    print(f"dispatch: {mode}.")
     print("Every frame held its budget. The bays that could not be paid for")
     print("advanced less world time -- and said so, in tau and in world_s,")
     print("rather than the frame blowing out. Nothing coarsened its step:")
