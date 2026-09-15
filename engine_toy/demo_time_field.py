@@ -35,6 +35,8 @@ from time_field import TimeField, TimeFieldConfig
 from time_contract import StoreLedger, opportunity_for, state_digest
 from abi_negotiator import negotiate, negotiate_substeps
 from engine_abi import engine_graph_abi
+from time_allocator import TimeBudget, simple_metrics, DEFAULT_TARGETS
+from src.common.dt_system.realtime import RealtimeConfig
 
 REFERENCE_DT_S = 1.0 / 60.0
 BUDGET_MS = 16.7
@@ -113,21 +115,23 @@ def main() -> None:
           f"reference dt {REFERENCE_DT_S*1000:.2f} ms, ramp limit {MAX_RAMP_PER_S:.1f}/s")
     print()
 
+    # dt_system's OWN allocator -- its EMA, its penalties, its weights --
+    # closed onto time velocity instead of onto dt. The local hand-rolled
+    # split this replaced was a worse copy of machinery that already
+    # exists and is already universal.
+    budget = TimeBudget(RealtimeConfig(budget_ms=BUDGET_MS, slack=SLACK))
+    names = [b.name for b in bays]
+
     for frame in range(1, 25):
         # ---- what the frame can afford -------------------------------
-        total_cost = sum(b.cost_ms for b in bays)
-        target = SLACK * BUDGET_MS
-        # each bay's share of a budget it collectively overruns. This is
-        # the only decision made here: how much TIME each bay gets. Step
-        # size is never touched.
         for b in bays:
-            share = (b.cost_ms / total_cost) if total_cost > 0 else 1.0 / len(bays)
-            affordable = target * share
-            # the bay's own cost per unit of world time it advanced
-            per_world_s = b.cost_ms / max(REFERENCE_DT_S * field_.velocity(b.name), 1e-9)
-            want_world_s = affordable / max(per_world_s, 1e-9)
-            want_tau = max(0.02, min(1.0, want_world_s / REFERENCE_DT_S))
-            field_.set_target(b.name, math.log(want_tau),
+            budget.observe(b.name, simple_metrics(b.cost_ms, dt_limit=b.dt_limit_s),
+                           DEFAULT_TARGETS, tau=field_.velocity(b.name))
+        alloc = budget.allocate(names, {b.name: field_.velocity(b.name) for b in bays})
+        for b in bays:
+            # the ALLOCATOR says where to go; the FIELD decides how fast
+            # it may get there, because the ramp is physical
+            field_.set_target(b.name, alloc[b.name].log_tau_target,
                               dt=REFERENCE_DT_S, max_ramp_per_s=MAX_RAMP_PER_S)
 
         # ---- one K for everyone, from the tightest lane's own limit ---
