@@ -80,6 +80,30 @@ class WorkingFluid:
     # a real conversion needs a fuel heater (fuel_network.FuelHeater)
     viscous_at_ambient: bool = False
 
+    # ---- WHAT MAKES A FUEL HARD ON AN ENGINE -------------------------
+    # Octane already says how a fuel resists knock in a spark engine.
+    # These say the other things a fuel does to the hardware it is burnt
+    # in, so tolerance can be DERIVED per engine instead of typed per
+    # pair (see fuel_tolerance below).
+    #: Ignition quality under compression. The diesel counterpart of
+    #: octane, and the opposite of it -- a good diesel fuel is a bad
+    #: spark fuel and the reverse. 0 means "no opinion declared".
+    cetane: float = 0.0
+    #: Incombustible mineral content, mass fraction. This is the one that
+    #: destroys turbines: sodium and vanadium in residual fuels attack a
+    #: hot section far faster than heat alone. A piston engine mostly
+    #: just wears.
+    ash_frac: float = 0.0
+    #: Tendency to leave gum, lacquer and carbon behind. Rings, injector
+    #: tips, valve stems, turbine nozzles.
+    gum_tendency: float = 0.0
+    #: Sulphur, mass fraction. Acid in the crankcase, and why oil change
+    #: intervals were short before ULSD.
+    sulfur_frac: float = 0.0
+    #: Temperature this must be heated to before it will atomise at all.
+    #: Ambient means none needed; a residual oil is unusable cold.
+    preheat_c: float = 0.0
+
     @property
     def combustible(self) -> bool:
         return self.phase != EXPANDER_FLUID
@@ -90,11 +114,13 @@ class WorkingFluid:
 
 
 def _liquid(name, energy, afr, octane, density, latent=350_000.0, flame=0.40, mie=0.25,
-            ignition="spark", viscous=False) -> WorkingFluid:
+            ignition="spark", viscous=False, cetane=0.0, ash=0.0, gum=0.0,
+            sulfur=0.0, preheat=0.0) -> WorkingFluid:
     return WorkingFluid(name=name, phase=LIQUID_FUEL, energy_density_j_per_kg=energy, stoich_afr=afr,
                         effective_octane=octane, density_kg_m3=density, latent_heat_j_per_kg=latent,
                         laminar_flame_speed_m_s=flame, min_ignition_energy_mj=mie, ignition=ignition,
-                        viscous_at_ambient=viscous)
+                        viscous_at_ambient=viscous, cetane=cetane, ash_frac=ash,
+                        gum_tendency=gum, sulfur_frac=sulfur, preheat_c=preheat)
 
 
 WORKING_FLUIDS: dict[str, WorkingFluid] = {f.name: f for f in (
@@ -106,11 +132,39 @@ WORKING_FLUIDS: dict[str, WorkingFluid] = {f.name: f for f in (
     _liquid("aviation-gasoline-100-130", 43.5e6, 14.7, 100.0, 715.0),
     _liquid("methanol-race", 19.9e6, 6.4, 105.0, 792.0, latent=1_100_000.0, flame=0.45),
     _liquid("nitromethane-race", 11.3e6, 1.7, 110.0, 1140.0, latent=330_000.0),
-    _liquid("ultra-low-sulfur-diesel", 45.5e6, 14.5, 100.0, 832.0, latent=250_000.0, ignition="compression"),
-    _liquid("jet-a-kerosene", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0, ignition="compression"),
-    _liquid("kerosene", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0, ignition="compression"),
-    _liquid("crude-oil", 42.0e6, 14.0, 100.0, 870.0, latent=250_000.0, ignition="compression", viscous=True),
-    _liquid("vegetable-oil", 37.5e6, 12.5, 100.0, 920.0, latent=250_000.0, ignition="compression", viscous=True),
+    _liquid("ultra-low-sulfur-diesel", 45.5e6, 14.5, 100.0, 832.0, latent=250_000.0,
+            ignition="compression", cetane=48.0, sulfur=0.000015),
+    _liquid("jet-a-kerosene", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0,
+            ignition="compression", cetane=43.0, sulfur=0.0003),
+    _liquid("kerosene", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0,
+            ignition="compression", cetane=40.0, sulfur=0.0004, gum=0.05),
+    # JP-8 is kerosene with additives; the military multifuel standard.
+    _liquid("jp-8", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0,
+            ignition="compression", cetane=43.0, sulfur=0.0003),
+    # Crude is the hard one and the ash is why: sodium and vanadium in a
+    # hot section corrode it far faster than temperature alone does.
+    _liquid("crude-oil", 42.0e6, 14.0, 100.0, 870.0, latent=250_000.0,
+            ignition="compression", viscous=True, cetane=35.0, ash=0.0008,
+            gum=0.45, sulfur=0.015, preheat=45.0),
+    _liquid("vegetable-oil", 37.5e6, 12.5, 100.0, 920.0, latent=250_000.0,
+            ignition="compression", viscous=True, cetane=38.0, gum=0.55, preheat=70.0),
+    # USED ENGINE OIL. A real waste-oil fuel: burnt in heaters, in big
+    # marine and stationary diesels, and acceptable to a continuous
+    # burner. It carries the metal it wore off the engine it came out
+    # of, which is exactly the ash that eats a turbine's hot section --
+    # so it is "yes, at a cost", not "yes".
+    _liquid("engine-oil-waste", 40.0e6, 13.5, 100.0, 890.0, latent=250_000.0,
+            ignition="compression", viscous=True, cetane=30.0, ash=0.011,
+            gum=0.70, sulfur=0.006, preheat=80.0),
+    # Residual/bunker fuel: the bottom of the barrel, and unusable cold.
+    _liquid("heavy-fuel-oil", 40.5e6, 13.8, 100.0, 980.0, latent=250_000.0,
+            ignition="compression", viscous=True, cetane=32.0, ash=0.0015,
+            gum=0.60, sulfur=0.025, preheat=120.0),
+    _liquid("biodiesel-b100", 37.8e6, 13.8, 100.0, 880.0, latent=250_000.0,
+            ignition="compression", cetane=55.0, gum=0.30, sulfur=0.00001),
+    # E85: high octane, big latent heat, poor energy density -- it needs
+    # far more fuel for the same air and cools the charge doing it.
+    _liquid("ethanol-e85", 29.2e6, 9.8, 105.0, 785.0, latent=760_000.0, flame=0.44),
     # -- gaseous fuels --
     # Victorian town gas: H2/CH4/CO, light, wide band, fast flame (H2-rich).
     WorkingFluid("coal-gas", GASEOUS_FUEL, energy_density_j_per_kg=30.0e6, stoich_afr=8.6,
@@ -174,3 +228,123 @@ FUEL_GAS_PROPERTIES: dict[str, dict[str, float]] = {
     f.name: dict(density_kg_m3=f.density_kg_m3, lfl=f.lfl, ufl=f.ufl, stoich_vol_frac=f.stoich_vol_frac)
     for f in WORKING_FLUIDS.values() if f.gaseous
 }
+
+
+# ---------------------------------------------------------------------
+# tolerance, DERIVED rather than typed per engine/fuel pair
+# ---------------------------------------------------------------------
+
+#: How an engine meets its fuel. This is the property that decides most
+#: of the tolerance, and it is not the same question as "petrol or
+#: diesel".
+SPARK_IGNITION = "spark"            #: a flame kernel, so octane is everything
+COMPRESSION_IGNITION = "compression"  #: autoignition, so cetane is everything
+CONTINUOUS_BURNER = "continuous"    #: a flame in a can that never goes out
+
+
+def fuel_tolerance(fluid: "WorkingFluid", *, burner: str,
+                   compression_ratio: float = 10.0,
+                   hot_section: bool = False,
+                   fuel_heater: bool = False) -> tuple[float, tuple[str, ...]]:
+    """How well this engine tolerates this fuel, and WHY.
+
+    Returns a 0..1 factor and the reasons that moved it, so a bad score
+    is explainable rather than a number someone chose. The reasons are
+    the point: "0.25" tells you nothing, "cetane 30 against a 22:1
+    compression ratio" tells you what to change.
+
+    The three burners want genuinely different things, which is why one
+    table of per-pair numbers could never be right:
+
+      SPARK          lives or dies on octane against its compression
+                     ratio. Knock is the failure and it is immediate.
+      COMPRESSION    wants cetane, and does not care about octane at
+                     all -- a high-octane fuel is a BAD diesel fuel,
+                     which is why petrol in a diesel is a problem of
+                     ignition delay and not of knock.
+      CONTINUOUS     barely cares about ignition quality either way,
+                     because the flame is already lit and stays lit.
+                     This is the real reason a gas turbine is the
+                     multifuel engine and a piston engine is not. What
+                     it cares about instead is ASH, because a hot
+                     section corrodes.
+
+    Viscosity is a hard gate rather than a penalty: a fuel that will not
+    atomise cold will not run at all without a heater, however good it
+    is once warm.
+    """
+    reasons: list[str] = []
+    factor = 1.0
+
+    if fluid.preheat_c > 0.0 and not fuel_heater:
+        factor *= 0.05
+        reasons.append(
+            f"needs {fluid.preheat_c:.0f} C of preheat and there is no fuel heater")
+    elif fluid.viscous_at_ambient and not fuel_heater:
+        factor *= 0.55
+        reasons.append("viscous cold: poor atomisation, hard starting")
+
+    if burner == SPARK_IGNITION:
+        # a real, disclosed octane requirement from the compression the
+        # piston/head choice actually runs
+        required = 80.0 + 6.0 * max(compression_ratio - 8.0, 0.0)
+        margin = fluid.effective_octane - required
+        if margin < 0.0:
+            factor *= max(0.10, 1.0 + margin / 40.0)
+            reasons.append(
+                f"octane {fluid.effective_octane:.0f} against {required:.0f} required "
+                f"at {compression_ratio:.1f}:1 -- knock")
+        if fluid.cetane >= 40.0:
+            factor *= 0.45
+            reasons.append(
+                f"cetane {fluid.cetane:.0f}: pre-ignites before the plug fires")
+    elif burner == COMPRESSION_IGNITION:
+        required_cetane = 52.0 - 0.8 * max(compression_ratio - 16.0, 0.0)
+        if fluid.cetane <= 0.0:
+            factor *= 0.08
+            reasons.append("no compression ignition quality at all: it will not light")
+        else:
+            margin = fluid.cetane - required_cetane
+            if margin < 0.0:
+                factor *= max(0.15, 1.0 + margin / 30.0)
+                reasons.append(
+                    f"cetane {fluid.cetane:.0f} against {required_cetane:.0f} wanted at "
+                    f"{compression_ratio:.1f}:1 -- long ignition delay, hard knock")
+    elif burner == CONTINUOUS_BURNER:
+        # almost anything burns. What it costs is the hot section.
+        if fluid.ash_frac > 0.0 and hot_section:
+            factor *= max(0.25, 1.0 - fluid.ash_frac * 45.0)
+            reasons.append(
+                f"ash {fluid.ash_frac*100:.2f}%: hot-section corrosion, shortened life")
+        elif fluid.ash_frac > 0.0:
+            factor *= max(0.70, 1.0 - fluid.ash_frac * 12.0)
+            reasons.append(f"ash {fluid.ash_frac*100:.2f}%: deposits")
+
+    # everything gunks and everything sulphurs, in proportion
+    if fluid.gum_tendency > 0.0:
+        factor *= max(0.60, 1.0 - fluid.gum_tendency * 0.30)
+        reasons.append(f"gum {fluid.gum_tendency:.2f}: deposits on tips and rings")
+    if fluid.sulfur_frac > 0.0005:
+        factor *= max(0.75, 1.0 - fluid.sulfur_frac * 8.0)
+        reasons.append(f"sulphur {fluid.sulfur_frac*100:.2f}%: acid wear, shorter oil life")
+
+    return max(0.0, min(1.0, factor)), tuple(reasons)
+
+
+if __name__ == "__main__":
+    CASES = (
+        ("gas turbine (hot section)", CONTINUOUS_BURNER, 10.0, True, True),
+        ("multifuel diesel 22:1", COMPRESSION_IGNITION, 22.0, False, True),
+        ("road diesel 17:1", COMPRESSION_IGNITION, 17.0, False, False),
+        ("petrol engine 10:1", SPARK_IGNITION, 10.0, False, False),
+    )
+    FUELS = ("jet-a-kerosene", "ultra-low-sulfur-diesel", "pump-gasoline-87",
+             "crude-oil", "engine-oil-waste", "vegetable-oil", "heavy-fuel-oil")
+    for label, burner, cr, hot, heater in CASES:
+        print(f"\n{label}" + ("  [fuel heater fitted]" if heater else ""))
+        for name in FUELS:
+            factor, why = fuel_tolerance(WORKING_FLUIDS[name], burner=burner,
+                                         compression_ratio=cr, hot_section=hot,
+                                         fuel_heater=heater)
+            head = why[0] if why else "no objection"
+            print(f"   {name:<26}{factor:5.2f}   {head}")
