@@ -6,11 +6,27 @@ all: it is RECOGNISED, and replaced by control data
 (`control_source.ParallelDeployment`), after which the existing pipeline
 takes over.
 
+WHAT IS ALREADY THERE, AND WHAT THIS ACTUALLY ADDS
+
+Almost all of the graduation path exists. A loop whose iterations are
+provably independent is ALREADY discovered without any annotation:
+`loop_composer` sets `allow_parallel_iterations` when the loop has no
+carried bindings, is not backpressured, and every state effect is an
+indexed publication; `precompile_to_ssa.lower_loop` then mints a
+`parallel_candidate` region from it. Derivation beats declaration, and
+nothing here should be used to assert what that analysis already proves.
+
+What it does NOT cover is HETEROGENEOUS lanes -- several different pieces
+of work running concurrently, which is not a loop over one body and so
+has no iteration space to analyse. `precompile_to_ssa` already lowers
+that case (`origin: "parallel_block"`), and `ParallelDeployment` already
+exists to carry it, but nothing produces one from authored source. That
+gap is what this fills, and only that.
+
 WHY A MARKER RATHER THAN THREADS
 
-Emitting threads literally would be the wrong answer, because the
-compiler can already make a better decision than the author can. Once a
-region reaches the SSA deployment layer it is:
+Emitting threads literally would be the wrong answer, because everything
+downstream can make a better decision than the author:
 
   1. PROVEN independent -- `deployment_ssa_binding` checks that no value
      defined in one lane is consumed by a sibling, and a region that
@@ -51,8 +67,9 @@ Loop form, for when the lanes are an iterable rather than written out:
         ...
 
 which the recogniser maps onto the loop-origin deployment path
-`precompile_to_ssa` already mints regions from, rather than a second
-mechanism.
+`precompile_to_ssa` already mints regions from. For a loop the analysis
+usually gets there on its own, so this form is for the cases it cannot
+see -- not a way to overrule it.
 """
 from __future__ import annotations
 
