@@ -115,6 +115,31 @@ class TurbineSpec:
     accel_schedule_k_per_s: float = 260.0
     light_off_spool_time_s: float = 12.0   # real: how long a starter motors this rotor up to light-off speed
 
+    def rated_shaft_torque_nm(self, max_t3_k: float = MAX_T3_K,
+                              ambient_k: float = AMBIENT_T_K) -> float:
+        """Peak torque this cycle can actually put on its OUTPUT shaft.
+
+        Derived from the declared cycle rather than from the placeholder
+        bmep/displacement an Engine row carries for a turbine -- those
+        fields exist only so the piston-shaped parts of the catalogue
+        have something to read, and sizing anything off them means
+        sizing it off a number chosen to look plausible.
+
+        Net specific work is turbine work less compressor work at the
+        limiting turbine inlet temperature; times mass flow gives shaft
+        power; divided by the output shaft's own speed gives torque.
+        """
+        ideal_c = CP_AIR_J_PER_KGK * ambient_k * (
+            self.design_pressure_ratio ** ISENTROPIC_EXPONENT - 1.0)
+        compressor_w = ideal_c / max(self.compressor_efficiency, 1e-3)
+        turbine_w = (CP_AIR_J_PER_KGK * max_t3_k
+                     * (1.0 - self.design_pressure_ratio ** -ISENTROPIC_EXPONENT)
+                     * self.turbine_efficiency)
+        net_w_per_kg = max(turbine_w - compressor_w, 0.0)
+        power_w = net_w_per_kg * self.mdot_design_kg_s
+        output_omega = self.omega_design_rad_s / max(self.reduction_ratio, 1e-6)
+        return power_w / max(output_omega, 1e-6)
+
     def build(self) -> "SingleShaftGasTurbine":
         return SingleShaftGasTurbine(
             mdot_design_kg_s=self.mdot_design_kg_s, omega_design_rad_s=self.omega_design_rad_s,

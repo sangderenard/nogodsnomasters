@@ -1661,6 +1661,20 @@ class Engine:
 
     @property
     def peak_torque_nm(self) -> float:
+        """Peak shaft torque, from whatever this engine REALLY is.
+
+        bmep times swept volume is the right answer for a piston engine
+        and a meaningless one for anything else. A turbine and an
+        electric drive carry bmep/displacement only so the piston-shaped
+        parts of this catalogue have something to read -- they are
+        declared placeholders, stated as such where they are set -- so
+        deriving a capability figure from them sizes real hardware
+        against a number chosen to look plausible. The dyno is sized off
+        this, which is exactly the kind of thing that then quietly
+        saturates.
+        """
+        if self.kind == "turbine" and self.turbine is not None:
+            return self.turbine.rated_shaft_torque_nm()
         vd = self.displacement_l / 1000.0
         return self.bmep_pa * vd / self._cycle_radians
 
