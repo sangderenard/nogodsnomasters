@@ -91,6 +91,28 @@ class TurbineSpec:
     turbine_efficiency: float = 0.88
     shaft_inertia_kg_m2: float = 0.05
     bearing_friction_nm: float = 2.0
+    #: DROOP. A hydromechanical fuel control unit is a PROPORTIONAL
+    #: device: flyweights sense N1, a spring opposes them, and the fuel
+    #: valve sits wherever the two balance. Speed therefore SAGS under
+    #: load and recovers only when the operator opens the throttle --
+    #: typically 3-5% no-load to full-load on a turboshaft. That droop is
+    #: not a defect to be tuned out: it is what lets two units share a
+    #: load, and it is what the operator feels.
+    #:
+    #: Modelled as PI instead, integral action drives steady-state error
+    #: to exactly zero and the engine holds one speed no matter what is
+    #: done to it. Measured before this change: 7189 rpm at 0 Nm, at
+    #: 4000 Nm and at 9000 Nm -- identical to four figures. See
+    #: governor.CaptiveBallGovernor for the pattern to follow: simulate
+    #: the mechanism and let droop fall out of the spring.
+    governor_droop_frac: float = 0.04
+    #: ACCELERATION SCHEDULE. A real FCU deliberately rate-limits fuel on
+    #: acceleration, because dumping fuel into a compressor that has not
+    #: caught up walks it into surge and cooks the turbine. It is why a
+    #: turbine takes seconds to answer a throttle and a piston engine
+    #: does not. Decel is NOT limited the same way -- taking fuel away is
+    #: always safe, which is why one spools down faster than it spools up.
+    accel_schedule_k_per_s: float = 260.0
     light_off_spool_time_s: float = 12.0   # real: how long a starter motors this rotor up to light-off speed
 
     def build(self) -> "SingleShaftGasTurbine":
@@ -98,7 +120,9 @@ class TurbineSpec:
             mdot_design_kg_s=self.mdot_design_kg_s, omega_design_rad_s=self.omega_design_rad_s,
             design_pressure_ratio=self.design_pressure_ratio,
             compressor_efficiency=self.compressor_efficiency, turbine_efficiency=self.turbine_efficiency,
-            shaft_inertia_kg_m2=self.shaft_inertia_kg_m2, bearing_friction_nm=self.bearing_friction_nm)
+            shaft_inertia_kg_m2=self.shaft_inertia_kg_m2, bearing_friction_nm=self.bearing_friction_nm,
+            governor_droop_frac=self.governor_droop_frac,
+            accel_schedule_k_per_s=self.accel_schedule_k_per_s)
 
 
 @dataclass
@@ -119,6 +143,9 @@ class SingleShaftGasTurbine:
     turbine_efficiency: float = 0.88
     shaft_inertia_kg_m2: float = 0.05
     bearing_friction_nm: float = 2.0
+    #: see TurbineSpec for what these are and why
+    governor_droop_frac: float = 0.04
+    accel_schedule_k_per_s: float = 260.0
 
     omega_rad_s: float = field(default=0.0, init=False)
     t3_k: float = field(default=AMBIENT_T_K, init=False)
@@ -137,9 +164,14 @@ class SingleShaftGasTurbine:
         # calibration gets -- fast enough to hold N1 against a load
         # step, gentle enough not to chase the compressor's own
         # omega^2 nonlinearity into oscillation
+        # PROPORTIONAL ONLY: ki = 0, so droop exists by construction
+        # rather than by tuning. The gain is DERIVED from the declared
+        # droop rather than picked -- full fuel authority corresponds to
+        # exactly `governor_droop_frac` of N1 error, so a 4% droop engine
+        # really does sit 4% low at full load.
         self.fuel_governor = ClosedLoopRegulator(
-            kp=2_200.0, ki=900.0, output_min=AMBIENT_T_K, output_max=MAX_T3_K,
-            integral_clamp=500.0)
+            kp=(MAX_T3_K - AMBIENT_T_K) / max(self.governor_droop_frac, 1e-3),
+            ki=0.0, output_min=AMBIENT_T_K, output_max=MAX_T3_K)
     fuel_flow_kg_s: float = field(default=0.0, init=False)
     pressure_ratio: float = field(default=1.0, init=False)
     mdot_kg_s: float = field(default=0.0, init=False)
@@ -193,8 +225,21 @@ class SingleShaftGasTurbine:
             self._t3_command_k = AMBIENT_T_K
         # real thermal lag: the combustor/turbine metal + gas thermal
         # mass doesn't track a fuel valve step instantly
+        # The schedule and the lag are two different real things: the
+        # schedule is a deliberate control limit on how fast fuel may be
+        # ADDED, the lag is metal and gas not following a valve step. They
+        # must be applied to the same quantity ONCE, not composed --
+        # capping the lag's TARGET and then lagging toward the cap
+        # multiplies the two limits together. Measured doing exactly that:
+        # a declared 260 K/s schedule became an effective 3.25 K/s, and
+        # the engine took minutes to reach a temperature it should reach
+        # in seconds. So the lag computes the rise, and the schedule caps
+        # that rise.
         T3_TAU_S = 0.4
-        self.t3_k += (self._t3_command_k - self.t3_k) * min(1.0, dt / T3_TAU_S)
+        rise = (self._t3_command_k - self.t3_k) * min(1.0, dt / T3_TAU_S)
+        if rise > 0.0 and self.accel_schedule_k_per_s > 0.0:
+            rise = min(rise, self.accel_schedule_k_per_s * dt)
+        self.t3_k += rise
 
         # compressor: real isentropic work (the exact relation already
         # used elsewhere in this codebase for supercharger/turbo

@@ -2477,13 +2477,43 @@ class EngineCycleSim:
         self.state.ignition_cut = False
         self._time_since_start_s = 0.0
         if self._turbine is not None:
-            # a real gas generator spinning at the idle N1 this catalogue
-            # entry's own idle_rpm was derived from (see engines.py's
-            # _build_turbine_and_atmospheric_engines) -- the "already
-            # running, warm" teleport this method already gives every
-            # other engine kind, not a cold-start light-off sequence
-            reduction = max(self.engine.turbine.reduction_ratio, 1e-6)
-            self._turbine.omega_rad_s = self._omega * reduction
+            # A TURBINE DOES NOT TELEPORT TO IDLE. Every other engine
+            # kind here gets an "already running, warm" start, which is a
+            # fair simplification for a piston engine that makes torque
+            # on its first firing stroke. A gas turbine's start IS its
+            # characteristic behaviour: a starter motors the spool up to
+            # light-off speed with the combustor dark, the igniters fire,
+            # and only then does the engine accelerate itself to idle --
+            # tens of seconds, all of it audible and none of it optional.
+            # Teleporting past that removed the one thing that makes a
+            # turbine feel like a turbine, and left light_off_spool_time_s
+            # declared and unused on every turbine in the catalogue.
+            #
+            # So: start from rest and let the existing machinery run the
+            # sequence. `step` already refuses to fire below
+            # LIGHT_OFF_OMEGA_FRAC and already motors the rotor from the
+            # engine's own declared starting_systems; nothing new is
+            # needed except not skipping it.
+            # A TURBINE USES ITS REAL STARTER. Every other engine kind
+            # here gets an "already running, warm" teleport, which is a
+            # fair simplification for a piston engine that makes torque on
+            # its first firing stroke. A gas turbine's start IS its
+            # characteristic behaviour, and the machinery for it was
+            # already all present and simply not reached: `step` refuses
+            # to fire below LIGHT_OFF_OMEGA_FRAC, `_step_turbine` already
+            # feeds `self._crank_assist_nm * reduction` to the gas
+            # generator, and `engage_starter` already drives that from the
+            # engine's own declared starting_systems. The only thing
+            # missing was that `start()` skipped past all of it, which
+            # also left light_off_spool_time_s declared and unused.
+            #
+            # So: from rest, with the starter engaged, and let the real
+            # sequence run -- motor the spool dark, light off, and
+            # accelerate on its own combustion up to idle.
+            self._turbine.omega_rad_s = 0.0
+            self._omega = 0.0
+            self.state.rpm = 0.0
+            self.engage_starter()
         if self._atmospheric_cyl is not None:
             # the free piston's own natural resting state -- parked at
             # ignition height, at rest, ready for the next real charge;

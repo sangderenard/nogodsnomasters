@@ -2666,7 +2666,11 @@ def _build_turbine_and_atmospheric_engines() -> list[Engine]:
         # a worse problem than one that is weak, because everything
         # downstream is then sized against a lie.
         mdot_design_kg_s=5.6, omega_design_rad_s=3100.0,
-        design_pressure_ratio=5.5, reduction_ratio=4.2,
+        # REDUCTION SET BY THE OUTPUT SHAFT'S REAL SPEED. A real
+        # AGT1500 hands the transmission roughly 3,000 rpm; at 4.2 this
+        # was handing it 7,099, more than twice too fast, and everything
+        # geared off it inherited that. 29,603 / 9.9 = 2,990.
+        design_pressure_ratio=5.5, reduction_ratio=9.9,
         compressor_efficiency=0.84, turbine_efficiency=0.89,
         shaft_inertia_kg_m2=0.62, bearing_friction_nm=9.0,
         light_off_spool_time_s=28.0,
@@ -2694,8 +2698,25 @@ def _build_turbine_and_atmospheric_engines() -> list[Engine]:
         # THE POINT OF IT: it runs on whatever is in the drum. The
         # numbers are real relative heat content and how well the
         # burner copes, not a flag saying "multifuel".
-        fuel_compatibility={"jet-a-kerosene": 1.0, "diesel": 0.98,
-                            "pump-gasoline": 0.92},
+        # THE NAMES MUST BE REAL ONES. This read "diesel" and
+        # "pump-gasoline", neither of which is a fuel profile this
+        # catalogue declares -- so the engine's headline property, that
+        # it runs on whatever is in the drum, matched nothing and did
+        # nothing. The registry's names are ultra-low-sulfur-diesel and
+        # the pump-gasoline-NN ladder. The numbers are relative heat
+        # content and how well a continuous burner copes, not a flag.
+        fuel_compatibility={
+            "jet-a-kerosene": 1.0,
+            "kerosene": 0.99,
+            "ultra-low-sulfur-diesel": 0.98,
+            # a turbine burns a continuous flame in a can, so octane is
+            # nearly irrelevant to it -- every rung of the ladder is
+            # equally acceptable, which is exactly the point of the
+            # engine and is NOT true of any piston engine here
+            "pump-gasoline-87": 0.92, "pump-gasoline-89": 0.92,
+            "pump-gasoline-91": 0.92, "pump-gasoline-93": 0.92,
+            "crude-oil": 0.80, "vegetable-oil": 0.72,
+        },
         lifter_spring=LIFTER_SPRING_PRESETS["stock"],   # unused, no valvetrain
         starting_systems=("electric-starter",),
         electrical_system_voltage_v=24.0,
