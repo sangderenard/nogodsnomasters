@@ -35,7 +35,8 @@ from time_field import TimeField, TimeFieldConfig
 from time_contract import StoreLedger, opportunity_for, state_digest
 from abi_negotiator import negotiate, negotiate_substeps
 from engine_abi import engine_graph_abi
-from time_allocator import TimeBudget, simple_metrics, DEFAULT_TARGETS
+from time_allocator import (TimeBudget, simple_metrics, DEFAULT_TARGETS,
+                            derive_dt_limit_s)
 from src.common.dt_system.realtime import RealtimeConfig
 
 REFERENCE_DT_S = 1.0 / 60.0
@@ -77,16 +78,15 @@ class Bay:
         self.world_s = 0.0
         self.substeps = 1
         self.label = identity
+        # the bay's own stability floor, DERIVED from its own graph rather
+        # than assumed -- see derive_dt_limit_s. Never overridden to make
+        # a budget fit.
+        derived = derive_dt_limit_s(self.subject)
+        self.dt_limit_s = derived if derived > 0.0 else 1.0 / 240.0
 
     @property
     def rpm(self) -> float:
         return float(getattr(self.sim, "rpm", 0.0) or 0.0)
-
-    @property
-    def dt_limit_s(self) -> float:
-        """The bay's own stability floor. Published by the engine, never
-        overridden to make a budget fit."""
-        return 1.0 / 2000.0
 
     def step(self, window_s: float) -> None:
         t0 = time.perf_counter()

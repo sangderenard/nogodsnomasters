@@ -151,6 +151,50 @@ class TimeBudget:
         return out
 
 
+def derive_dt_limit_s(subject, graph=None, *, safety: float = 1.0) -> float:
+    """The stability floor implied by a subject's OWN graph.
+
+    Not a number typed into a config: the stiffest coupling in the graph
+    against the inertia it drives sets a natural frequency, and an
+    explicit step cannot exceed 2/omega_n without that mode growing. This
+    is exactly the quantity `Metrics.dt_limit` exists to carry -- "an
+    absolute dt limit hint proposed by the engine", so that stability
+    control is central rather than every engine self-capping.
+
+    It matters more than a default would suggest. Measured across the
+    catalogue: a road V6 lands near 500 us, while a slow-speed marine
+    diesel lands at 12 us -- forty times tighter, because of a very stiff
+    alternator drive. A single hardcoded limit is right for one of those
+    and badly wrong for the other.
+
+    Returns 0.0 when the graph declares no stiffness at all, which means
+    "no opinion" rather than "no limit" -- callers should treat it as
+    unconstrained by this route and fall back to their own.
+    """
+    import math as _math
+
+    import drivetrain_graph as dg
+
+    if graph is None:
+        graph = (subject.build_graph() if hasattr(subject, "build_graph")
+                 else dg.build_drivetrain_graph(subject))
+    solver = dg.DrivetrainSolver(graph)
+    edges = graph["edges"] if isinstance(graph, dict) else graph[1]
+    worst_omega = 0.0
+    for edge in edges:
+        stiffness = edge.get("stiffness_nm_per_rad")
+        if not stiffness:
+            continue
+        for side in ("a", "b"):
+            inertia = solver._inertia.get(edge.get(side))
+            if not inertia or inertia <= 0.0:
+                continue
+            worst_omega = max(worst_omega, _math.sqrt(float(stiffness) / float(inertia)))
+    if worst_omega <= 0.0:
+        return 0.0
+    return safety * 2.0 / worst_omega
+
+
 def simple_metrics(proc_ms: float, *, max_vel: float = 0.0,
                    dt_limit: float = 0.0) -> Metrics:
     """A Metrics carrying just what the allocator reads, for callers whose
