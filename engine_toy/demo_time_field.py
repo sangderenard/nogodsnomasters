@@ -29,7 +29,6 @@ from __future__ import annotations
 import math
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
 
 import engines
 from engine_cycle_sim import EngineCycleSim
@@ -40,6 +39,7 @@ from engine_abi import engine_graph_abi
 from time_allocator import (TimeBudget, simple_metrics, DEFAULT_TARGETS,
                             derive_dt_limit_s, thread_cpu_s)
 from src.common.dt_system.realtime import RealtimeConfig
+from src.compiler.deployment_host_pool import HostDeploymentPool
 
 REFERENCE_DT_S = 1.0 / 60.0
 BUDGET_MS = 16.7
@@ -110,9 +110,16 @@ class Bay:
         self.world_s += window_s
 
 
-#: set TIME_FIELD_THREADS=0 to run the frame in series instead
+#: The repository's OWN deployment pool -- the one the compiled lane
+#: dispatches Deploy/Join frames onto (turing_pool.c is its native
+#: counterpart). Persistent workers that start once and park between
+#: frames, so a frame costs no thread dispatch; the caller drains
+#: alongside them, which makes workers=0 the serial fallback through the
+#: IDENTICAL code path rather than a second implementation that could
+#: drift. Its `lane` is the same lane as the ABI's batch axis.
+#: Set TIME_FIELD_THREADS=0 for that serial disposition.
 _WORKERS = int(os.environ.get("TIME_FIELD_THREADS", "4"))
-POOL = ThreadPoolExecutor(max_workers=_WORKERS) if _WORKERS > 0 else None
+POOL = HostDeploymentPool(workers=_WORKERS)
 
 
 def main() -> None:
@@ -171,11 +178,8 @@ def main() -> None:
         # concurrency without issuing every request before collecting any.
         # This does that directly.
         frame_t0 = time.perf_counter()
-        if POOL is None:
-            for b, window in zip(bays, sched.windows_s):
-                b.step(window)
-        else:
-            list(POOL.map(lambda bw: bw[0].step(bw[1]), list(zip(bays, sched.windows_s))))
+        POOL.deploy([(lambda b=b, w=w: b.step(w))
+                     for b, w in zip(bays, sched.windows_s)])
         wall_ms = (time.perf_counter() - frame_t0) * 1000.0
         for b, window in zip(bays, sched.windows_s):
             b.ledger.observe(
@@ -206,7 +210,8 @@ def main() -> None:
                   f"{b.ledger.shortfall_ema:>7.2f}  {'YES' if opp.worth_offering else '-'}")
         print()
 
-    mode = f"{_WORKERS} worker threads" if POOL else "series"
+    mode = (f"HostDeploymentPool, {POOL.worker_count} workers + caller"
+            if POOL.worker_count else "HostDeploymentPool, serial (caller only)")
     print(f"dispatch: {mode}. cpu is summed per-bay cost; wall is the frame.")
     print("Under CPython the two stay close because the GIL is held by the")
     print("Python-resident engine loop -- measured contention factor 0.24.")
