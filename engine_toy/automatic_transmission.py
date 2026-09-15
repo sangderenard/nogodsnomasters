@@ -35,6 +35,7 @@ transmission is.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 ATF_DENSITY_KG_M3 = 850.0
 ATF_SPECIFIC_HEAT_J_PER_KG_K = 2000.0
@@ -142,11 +143,18 @@ class AutomaticTransmission:
         self.temp_k = max(ambient_k, self.temp_k)
 
         # and the damage, which does not undo itself when it cools
-        if self.temp_k > ATF_OXIDATION_K:
+        if self.temp_k > ATF_OXIDATION_K and self.life_frac > 0.0:
             over = self.temp_k - ATF_OXIDATION_K
             # the real rule of thumb: life halves for every ~10 K above
             # the knee
-            self.life_frac = max(0.0, self.life_frac - (2.0 ** (over / 10.0)) * dt / 3.0e5)
+            # Compare damage with the remaining life before exponentiating.
+            # This preserves the same law without overflowing the rate when
+            # the fluid is already certain to be exhausted this tick.
+            log_damage = over / 10.0 + math.log2(dt) - math.log2(3.0e5)
+            if log_damage >= math.log2(self.life_frac):
+                self.life_frac = 0.0
+            else:
+                self.life_frac = max(0.0, self.life_frac - 2.0 ** log_damage)
         return self.converter_torque_nm
 
     def describe(self) -> list[str]:

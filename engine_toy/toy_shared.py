@@ -18,6 +18,7 @@ from engine_builder import build_custom_engine, PERFORMANCE_PART_DEFAULTS as PER
 from engine_cycle_sim import EngineCycleSim
 import engine_baker
 import wear as wear_module
+import cylinder_ports
 
 LISTEN_MODES = ("stereo", "header-solo", "bay-solo")
 
@@ -695,7 +696,8 @@ def dashboard_lines(sim: EngineCycleSim, roster: list, listen: Listen,
         lines.append(f"  {'  '.join(flags)}  (N limiter)")
         spring = eng.lifter_spring
         spring_cap = spring.max_safe_rpm()
-        spring_drag = spring.drag_torque_nm(eng.architecture.cylinders)
+        spring_drag = spring.drag_torque_nm(
+            eng.architecture.cylinders, valves_per_cylinder=cylinder_ports.valves_per_cylinder(eng))
         float_note = f"  VALVE FLOAT (risk {st.valve_float_risk * 100:.0f}%)" if st.valve_float_flag else ""
         # a spring nowhere near float is not news; near it, or floating,
         # it is the most important line on the screen

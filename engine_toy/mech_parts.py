@@ -149,6 +149,11 @@ class CombustionCrankPart(Part):
     cylinders: int = 0
     firing_order: tuple[int, ...] = ()
     cycle_degrees: float = 720.0
+    # the crank angle each firing-order slot fires at. Empty = evenly
+    # spaced, which is what an ordinary crank does; an odd-fire engine
+    # passes its architecture's real unequal angles instead, so the baked
+    # snapshot hears the same lumpy schedule the live sim runs.
+    slot_angles_deg: tuple[float, ...] = ()
     cylinder_positions: dict[int, Vec3] = field(default_factory=dict)
     strength_fn: Callable[[float, float, float], float] = lambda rpm, thr, load: 0.0
     imbalance_position: Vec3 = (0.0, 0.0, 0.0)
@@ -168,12 +173,15 @@ class CombustionCrankPart(Part):
         sec_per_deg = cycle_time_s / self.cycle_degrees
         crank_freq_hz = max(input_rpm, 1.0) / 60.0
         strength = self.strength_fn(input_rpm, throttle, load_frac)
-        step_deg = self.cycle_degrees / max(len(self.firing_order), 1)
+        n_slots = max(len(self.firing_order), 1)
+        step_deg = self.cycle_degrees / n_slots
+        angles = (tuple(self.slot_angles_deg) if len(self.slot_angles_deg) == len(self.firing_order)
+                  else tuple(slot * step_deg for slot in range(len(self.firing_order))))
 
         out = []
         for slot, cyl in enumerate(self.firing_order):
             pos = self.cylinder_positions.get(cyl, (0.0, 0.0, 0.0))
-            t_event = (slot * step_deg * sec_per_deg) % cycle_time_s
+            t_event = (angles[slot] * sec_per_deg) % cycle_time_s
             for voice in self.ring_voices:
                 vpos = (pos[0] + voice.position_offset[0], pos[1] + voice.position_offset[1],
                         pos[2] + voice.position_offset[2])

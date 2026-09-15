@@ -161,7 +161,7 @@ MATERIAL_RULES = [
     (("leak_flame",), Material("fireball", "detonation fireball", _rgb("#ffd08a"), 0.9, 1.0, 0.0, 0.0, 1.0)),
     (("leak_soot",), Material("fireball_soot", "detonation smoke", _rgb("#4a4038"), 0.45, 0.9, 0.25, 0.0, 1.0)),
     # universal bolt-ons (engine_parts.py)
-    (("_pulley", "belt_tensioner", "_sprocket", "timing_chain_run"), Material("pulley", "pulleys / tensioner / sprockets", _rgb("#3a3d44"), 1.0, 0.4, 0.22, 0.5, 34.0, 0.7)),
+    (("_pulley", "belt_tensioner", "_sprocket", "timing_chain_run", "timing_belt_run", "timing_gear_run"), Material("pulley", "pulleys / tensioner / sprockets", _rgb("#3a3d44"), 1.0, 0.4, 0.22, 0.5, 34.0, 0.7)),
     (("harmonic_balancer",), Material("damper", "harmonic damper", _rgb("#2c2f36"), 1.0, 0.45, 0.2, 0.45, 32.0, 0.5)),
     (("starter_motor", "recoil_starter", "crank_nose_fitting"), Material("starter", "starter hardware", _rgb("#4a4f58"), 1.0, 0.5, 0.25, 0.35, 24.0, 0.4)),
     (("expansion_bottle", "heater_core"), Material("coolant_gear", "coolant bottle / heater core", _rgb("#e8e6d8"), 0.85, 0.5, 0.3, 0.2, 16.0)),
@@ -304,7 +304,7 @@ def wanted_in_view(name: str) -> bool:
                                        # real visible lines from engine_parts.py: hoses, the EGR
                                        # tube, the timing run -- NOT the hub/bolted-joint edges,
                                        # which are joints, not pipes, and stay unlisted
-                                       "heater_", "expansion_bottle", "egr_tube", "timing_chain",
+                                       "heater_", "expansion_bottle", "egr_tube", "timing_chain", "timing_belt_run", "timing_gear_run",
                                        "blower_belt", "charge_pipe", "up_pipe", "turbine_to_downpipe",
                                        "blower_case_to_plenum_charge", "hat_nozzle", "barrel_valve",
                                        "cooling_tin_bank", "dry_sump_belt", "cooling_fan_belt", "oil_cooler",

@@ -26,6 +26,7 @@ from dataclasses import dataclass
 
 from engines import Engine, RPM_TO_RAD_S
 from engine_sim import torque_fraction
+import cylinder_ports
 
 # Real, typical idle manifold pressure as a fraction of atmospheric --
 # the commanded starting point every idle correction is applied on top
@@ -133,7 +134,9 @@ def idle_plant(engine: Engine) -> IdlePlant:
     f_slope = (_friction_nm(engine, rpm0 + d_rpm) - _friction_nm(engine, rpm0 - d_rpm)) / (2.0 * d_rpm)
     p = engine.peak_torque_nm
     b = engine.peak_braking_torque_nm
-    v = engine.lifter_spring.drag_torque_nm(arch.cylinders) if arch.has_poppet_valves else 0.0
+    v = (engine.lifter_spring.drag_torque_nm(
+        arch.cylinders, valves_per_cylinder=cylinder_ports.valves_per_cylinder(engine))
+        if arch.has_poppet_valves else 0.0)
     f0 = _friction_nm(engine, rpm0)
     if engine.compression_ignition:
         # unthrottled: charge fixed at DIESEL_UNTHROTTLED_MAP_FRAC, fuel is the actuator

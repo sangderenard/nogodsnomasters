@@ -255,28 +255,69 @@ def _emit_belt_drive(engine, nodes, edges, node, edge, node_by_id) -> None:
 # timing drive: cover + chain/belt run
 # ---------------------------------------------------------------------
 
+def _block_rear_face_x(engine, nodes) -> float:
+    """The flywheel-end face of the block casting -- _block_front_face_x's
+    mirror, for the engines whose timing drive lives back there."""
+    faces = [n["reference_position"][0] + float(n["body_half_extent_m"][0])
+             for n in nodes if n["identity"].startswith("powertrain.engine_block_body") and n.get("body_half_extent_m")]
+    if faces:
+        return max(faces)
+    _, x_max = engine_geometry.crank_extent(engine_geometry.cylinder_sites(engine))
+    return x_max + 0.03
+
+
+def camshaft_ids(engine, node_by_id) -> list[str]:
+    """Every camshaft node this engine actually has, in order. One is the
+    ordinary case; a SOHC vee engine has one per bank and a DOHC one has
+    two per bank (drivetrain_graph.py builds the extras from the
+    architecture's declared camshaft_count)."""
+    ids = ["powertrain.camshaft"] + [f"powertrain.camshaft_{i}" for i in range(2, 9)]
+    return [i for i in ids if i in node_by_id]
+
+
+# Real relative torsional stiffness of the three things that actually
+# drive a camshaft, as multiples of a roller chain's. A toothed rubber
+# belt is markedly more compliant than a chain (its tensile cords
+# stretch where a chain's plates do not) and a gear train is stiffer
+# than either. These are disclosed ratios chosen to be the right
+# ORDER, not measured figures for any specific drive.
+TIMING_DRIVE_STIFFNESS_FACTOR = {"chain": 1.0, "belt": 0.35, "gear": 3.0}
+
+
 def _emit_timing_drive(engine, nodes, edges, node, edge, node_by_id) -> None:
-    cam = node_by_id.get("powertrain.camshaft")
-    if cam is None:
+    cams = camshaft_ids(engine, node_by_id)
+    if not cams:
         return
-    face_x = _block_front_face_x(engine, nodes)
+    arch = engine.architecture
+    medium = str(getattr(arch, "timing_drive", "chain") or "chain")
+    at_rear = str(getattr(arch, "timing_drive_at", "front") or "front") == "rear"
+    # which end of the block the drive actually lives on, and which way
+    # the cover and sprockets stand off from that face
+    face_x = _block_rear_face_x(engine, nodes) if at_rear else _block_front_face_x(engine, nodes)
+    out = 1.0 if at_rear else -1.0
     half = engine_geometry.block_half_yz_m(engine)
-    cam_p = _pos(cam)
-    # the cover bolts flush to the block's real front face; the sprockets
-    # and their run sit just inside it
-    cover_c = np.array([face_x - 0.012, cam_p[1] * 0.5, 0.0])
+    cam_ps = [_pos(node_by_id[c]) for c in cams]
+    reach_y = max(abs(p[1]) for p in cam_ps)
+    cover_c = np.array([face_x + out * 0.012, float(np.mean([p[1] for p in cam_ps])) * 0.5, 0.0])
     node("powertrain.timing_cover", [float(v) for v in cover_c], "engine-block-component", mass_kg=1.5,
-         body_half_extent_m=[0.012, max(abs(cam_p[1]) * 0.5 + half * 0.3, half * 0.6), half * 0.7])
+         body_half_extent_m=[0.012, max(reach_y * 0.5 + half * 0.3, half * 0.6), half * 0.7])
     edge("powertrain.timing_cover_to_block", "powertrain.timing_cover", "powertrain.engine", "rigid-bolted-joint", radius=0.006)
-    sx = face_x - 0.006
+    sx = face_x + out * 0.006
     node("powertrain.timing_drive.crank_sprocket", [float(sx), 0.0, 0.0], "rotating-mass", mass_kg=0.3,
          drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half * 0.22, drum_length_m=0.012)
-    node("powertrain.timing_drive.cam_sprocket", [float(sx), float(cam_p[1]), float(cam_p[2])], "rotating-mass", mass_kg=0.4,
-         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half * 0.44, drum_length_m=0.012)
     edge("powertrain.timing_crank_sprocket_hub", "powertrain.engine", "powertrain.timing_drive.crank_sprocket", "rigid-keyed-hub", radius=0.006)
-    edge("powertrain.timing_cam_sprocket_hub", "powertrain.camshaft", "powertrain.timing_drive.cam_sprocket", "rigid-keyed-hub", radius=0.006)
-    edge("powertrain.timing_chain_run", "powertrain.timing_drive.crank_sprocket", "powertrain.timing_drive.cam_sprocket",
-         "cosmetic-belt-wrap", radius=0.004)
+    # one sprocket and one run per camshaft, off the single crank
+    # sprocket -- which is how a multi-cam engine is really driven,
+    # whether that is one belt wrapping every cam pulley or a chain per
+    # bank
+    for i, (cam_id, cam_p) in enumerate(zip(cams, cam_ps), start=1):
+        suffix = "" if i == 1 else f"_{i}"
+        sprocket = f"powertrain.timing_drive.cam_sprocket{suffix}"
+        node(sprocket, [float(sx), float(cam_p[1]), float(cam_p[2])], "rotating-mass", mass_kg=0.4,
+             drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half * 0.44, drum_length_m=0.012)
+        edge(f"powertrain.timing_cam_sprocket_hub{suffix}", cam_id, sprocket, "rigid-keyed-hub", radius=0.006)
+        edge(f"powertrain.timing_{medium}_run{suffix}", "powertrain.timing_drive.crank_sprocket", sprocket,
+             "cosmetic-belt-wrap", radius=0.004)
 
 
 # ---------------------------------------------------------------------

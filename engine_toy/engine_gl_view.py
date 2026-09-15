@@ -101,7 +101,7 @@ try:
         GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_MAG_FILTER,
         glGenVertexArrays, glBindVertexArray, glGenBuffers, glBindBuffer, glBufferData,
         glEnableVertexAttribArray, glVertexAttribPointer, glVertexAttribIPointer,
-        glDeleteVertexArrays, glDeleteBuffers,
+        glDeleteVertexArrays, glDeleteBuffers, glBufferSubData,
         glGenFramebuffers, glBindFramebuffer, glFramebufferTexture2D, glFramebufferRenderbuffer,
         glGenRenderbuffers, glBindRenderbuffer, glRenderbufferStorage, glCheckFramebufferStatus,
         glGenTextures, glBindTexture, glTexImage2D, glTexParameteri,
@@ -351,10 +351,51 @@ class GLMesh:
     vao: int
     buffers: tuple
     n_vertices: int
+    # The interleaved pos/nrm/uv rows exactly as uploaded, kept so that
+    # geometry which ARTICULATES can be restaged with a buffer write
+    # instead of a teardown (see update_geometry). None on a mesh built
+    # before this existed -- callers fall back to a full re-upload.
+    rows: "np.ndarray | None" = None
 
     def delete(self) -> None:
         glDeleteVertexArrays(1, [self.vao])
         glDeleteBuffers(len(self.buffers), list(self.buffers))
+
+    def update_geometry(self, pos: np.ndarray, nrm: np.ndarray,
+                        material_ids: "np.ndarray | None" = None) -> bool:
+        """Push moved vertices (and optionally recoloured triangles) into
+        the buffers this mesh already owns.
+
+        For geometry whose TRIANGLES do not change -- an articulating
+        mount, a recoiling barrel, a rig re-banded by utilisation -- the
+        UVs, the thermal group ids and the cull-immune column are all
+        still exactly right, because they are properties of the triangle
+        list and the triangle list did not change. Only positions,
+        normals and (sometimes) material ids differ, so only those are
+        written.
+
+        Returns False, changing nothing, if this mesh cannot take the
+        update (no cached rows, or a vertex count that no longer
+        matches); the caller is expected to fall back to a full upload.
+        That check is the whole safety story -- a topology change is
+        refused rather than written past the end of a buffer.
+        """
+        rows = self.rows
+        if rows is None or len(pos) != self.n_vertices or len(nrm) != self.n_vertices:
+            return False
+        rows[:, 0:3] = pos.astype(np.float32, copy=False)
+        rows[:, 3:6] = nrm.astype(np.float32, copy=False)
+        glBindBuffer(GL_ARRAY_BUFFER, self.buffers[0])
+        glBufferSubData(GL_ARRAY_BUFFER, 0, rows.nbytes, rows)
+        if material_ids is not None:
+            values = np.repeat(np.asarray(material_ids, dtype=np.int32), 3)
+            if len(values) != self.n_vertices:
+                return False
+            values = np.ascontiguousarray(values, dtype=np.int32)
+            glBindBuffer(GL_ARRAY_BUFFER, self.buffers[1])
+            glBufferSubData(GL_ARRAY_BUFFER, 0, values.nbytes, values)
+        glBindBuffer(GL_ARRAY_BUFFER, 0)
+        return True
 
 
 def _streak_soup(pos: np.ndarray, vel: np.ndarray, r: float, gas: bool = False) -> tuple[np.ndarray, np.ndarray]:
@@ -448,7 +489,7 @@ def upload_mesh(mesh: EngineMesh, uv: "np.ndarray | None" = None, group_ids: "np
     glVertexAttribPointer(6, 3, GL_FLOAT, GL_FALSE, 12, ctypes.c_void_p(0))
 
     glBindVertexArray(0)
-    return GLMesh(vao=vao, buffers=buffers, n_vertices=n)
+    return GLMesh(vao=vao, buffers=buffers, n_vertices=n, rows=rows)
 
 
 # ---------------------------------------------------------------------
@@ -685,7 +726,16 @@ class EngineGLView:
         self._db.remap(_moving0)
         self._atlas = self._build_atlas(graph, static_mesh) if self.thermal_texture_enabled else None
         self._static_mesh = static_mesh
+        # a fresh graph is a fresh triangle list: whatever was culled off
+        # the last engine does not apply to this one
+        self._static_tri_keep = None
+        self._absent = set()
         self._absent: set = set()
+        # which triangles of _static_mesh are actually in _static_gl.
+        # None means all of them; set_absent_parts narrows it when a part
+        # bursts, and restage_static_mesh has to honour the same subset or
+        # it would quietly resurrect the burst parts on the next restage.
+        self._static_tri_keep: "np.ndarray | None" = None
         self._static_gl = upload_mesh(static_mesh, uv=self._atlas_uv(static_mesh), group_ids=self._thermal_id_column(static_mesh))
         if self.thermal_mode == "ssbo":
             self._renderer.set_thermal_emission(True, gain=BLACKBODY_SCENE_GAIN, ref_k=BLACKBODY_REFERENCE_K,
@@ -861,6 +911,7 @@ class EngineGLView:
                 keep[t0:t1] = False
         from engine_mesh import EngineMesh
         tri_keep = np.nonzero(keep)[0]
+        self._static_tri_keep = None if len(tri_keep) == mesh.n_triangles else tri_keep
         sub = EngineMesh(mesh.vertices, mesh.normals, mesh.triangles[tri_keep], mesh.material_ids[tri_keep],
                          [], [], mesh.moving, [])
         # the thermal id column follows the same triangle subset
@@ -882,17 +933,45 @@ class EngineGLView:
         buffer write.
 
         The caller owns `self._static_mesh` and is expected to have
-        written new `vertices` and `normals` into it. Everything derived
-        from the TRIANGLES -- the atlas UVs, the thermal id column --
-        is still valid precisely because the triangles did not change.
+        written new `vertices` and `normals` into it (and may have
+        recoloured triangles by writing `material_ids`). Everything
+        derived from the TRIANGLES -- the atlas UVs, the thermal id
+        column -- is still valid precisely because the triangles did not
+        change, so none of it is recomputed: the moved vertices go
+        straight into the buffers the mesh already owns.
+
+        Falls back to a full re-upload whenever that is not safely
+        possible -- nothing uploaded yet, or a triangle list that really
+        did change underneath us. Both paths honour whatever triangle
+        subset `set_absent_parts` last culled, so restaging an engine
+        with a burst part does not bring the part back.
         """
-        if self._static_mesh is None:
+        mesh = self._static_mesh
+        if mesh is None:
             return
+        keep = self._static_tri_keep
+        tri_v = mesh.tri_vertices().reshape(-1, 3)
+        tri_n = mesh.tri_normals().reshape(-1, 3)
+        mat = mesh.material_ids
+        if keep is not None:
+            tri_v = tri_v.reshape(-1, 3, 3)[keep].reshape(-1, 3)
+            tri_n = tri_n.reshape(-1, 3, 3)[keep].reshape(-1, 3)
+            mat = mat[keep]
+        if self._static_gl is not None and self._static_gl.update_geometry(tri_v, tri_n, material_ids=mat):
+            return
+        # the fall-back: topology really changed (or nothing is uploaded
+        # yet), so the derived columns are no longer valid either
+        from engine_mesh import EngineMesh
+        staged = mesh
+        gid = self._thermal_id_column(mesh)
+        if keep is not None:
+            staged = EngineMesh(mesh.vertices, mesh.normals, mesh.triangles[keep], mesh.material_ids[keep],
+                                [], [], mesh.moving, [])
+            gid = gid[keep] if gid is not None and len(gid) == mesh.n_triangles else None
         if self._static_gl is not None:
             self._static_gl.delete()
         self._static_gl = upload_mesh(
-            self._static_mesh, uv=self._atlas_uv(self._static_mesh),
-            group_ids=self._thermal_id_column(self._static_mesh))
+            staged, uv=self._atlas_uv(staged), group_ids=gid)
 
     def set_emitter_particles(self, emitters, t_max_s: float = 0.3, budget: int = 6000) -> None:
         """Droplet clouds for every fluid emitter (hole_emitters.
@@ -1114,6 +1193,7 @@ class EngineGLView:
         self._combustion = None; self._live_flames = []; self._live_smoke = []
         if self._static_gl is not None:
             self._static_gl.delete(); self._static_gl = None
+            self._static_tri_keep = None
         for g in self._frame_gl:
             # EMPTY_FRAME is a sentinel meaning "baked, and there was
             # nothing in it" -- it owns no GPU buffer, so there is

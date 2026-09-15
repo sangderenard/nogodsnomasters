@@ -54,8 +54,8 @@ Controls: same layout as main.py --
              swap gear, clutch-in sequence, one button each way (not
              raw clutch control -- there's no manual clutch pedal
              binding yet, just the driver-side up/down shift request)
-  P          WOT dyno pull: neutral -> settle -> real quick-shift into
-             top ("H") gear -> floor it to redline. A real inertia-dyno
+  P          WOT dyno pull: neutral -> settle -> first gear -> real
+             quick-shifts through every ratio -> final-gear redline. A real inertia-dyno
              pull (brake load goes to 0.0 for the run, power read from
              the drum's own known inertia accelerating -- the DYNO
              dashboard line's own live numbers), captured at the

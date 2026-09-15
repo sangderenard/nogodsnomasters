@@ -439,7 +439,7 @@ BEHAVIOURS: list[tuple[str, NodeBehaviour]] = [
     (r"turbocharger", TurboBehaviour()),
     (r"alternator|battery", AlternatorBehaviour()),
     (r"magneto|distributor|ignition_coil|coil_pack|spark_plug|plug_lead", IgnitionBehaviour()),
-    (r"camshaft|timing_drive|cam_sprocket|crank_sprocket|timing_chain|injection_pump", TimingBehaviour()),
+    (r"camshaft|timing_drive|cam_sprocket|crank_sprocket|timing_(chain|belt|gear)|injection_pump", TimingBehaviour()),
     (r"pneumatic|brake_reservoir|air_tank|receiver", PneumaticBehaviour()),
     (r"mount_|engine_mount|isolator", MountBehaviour()),
     (r"starter_motor|starter|recoil", StarterBehaviour()),
@@ -493,8 +493,32 @@ def assess(sim) -> tuple[dict, Effects]:
             continue
         owner = key if key in nodes else (owning_part(key) or key)
         owned.setdefault(owner, []).append(st)
+
+    # THE WORK SET. Damage is the causer's bill, not a standing tax on
+    # every part in the machine: a part is only worth assessing if
+    # something has actually happened to it. Four things can, and each
+    # one names its own parts --
+    #   a hole or an impact          -> the part the record is filed on
+    #   a burst                      -> the absent part
+    #   a leak fouling a circuit     -> the parts on that circuit
+    #   a neglected air system       -> the parts its gunk reaches
+    # everything else produces a clean NodeCondition that the merge at
+    # the bottom then skips (`if not cond.any`), which is what made this
+    # scan every node of the graph, forever, to conclude that an
+    # undamaged engine is undamaged.
+    gunk_per_part: dict = {}
+    plant = getattr(sim, "plant", None)
+    if plant is not None:
+        import air_treatment as _at
+        gunk_per_part = _at.gunk_damage_by_part(plant.treatment.gunk, list(nodes),
+                                                plant.spec.wet_tank_capacity_l if plant.spec else 20.0)
+    work: set = set(owned) | set(absent) | set(gunk_per_part)
+    if fouling:
+        work |= {nid for nid, cid in circuit_of_node.items() if cid in fouling}
+    work &= set(nodes) | set(owned)
+
     conds: dict[str, NodeCondition] = {}
-    for ident in set(nodes) | set(owned):
+    for ident in work:
         node = nodes.get(ident, {})
         cond = NodeCondition(ident)
         cond.absent = ident in absent
@@ -518,27 +542,40 @@ def assess(sim) -> tuple[dict, Effects]:
             nominal = nominal_of_circuit.get(cid, cid)
             cond.fouling = {k: v for k, v in fouling[cid].items() if k != nominal and k != cid}
         conds[ident] = cond
-    for e in graph["edges"]:
-        kind = e.get("constraint")
-        if not is_dependency_edge(kind):
-            continue
-        for me, other in ((e["a"], e["b"]), (e["b"], e["a"])):
-            if me in conds and other in struct_gone and me not in struct_gone:
-                conds[me].missing_neighbors.append((kind, other))
+    # a part next to something that is GONE has a real condition of its
+    # own even though nothing happened to it directly -- so those
+    # neighbours, and only those, join the work set now that struct_gone
+    # is known. With nothing gone, this whole pass costs one bool.
+    if struct_gone:
+        for e in graph["edges"]:
+            kind = e.get("constraint")
+            if not is_dependency_edge(kind):
+                continue
+            for me, other in ((e["a"], e["b"]), (e["b"], e["a"])):
+                if other not in struct_gone or me in struct_gone or me not in nodes:
+                    continue
+                cond = conds.get(me)
+                if cond is None:
+                    cond = NodeCondition(me)
+                    mass = float(nodes[me].get("mass_kg", 0.0) or 0.0)
+                    if mass <= 0.0:
+                        eng = nodes.get("powertrain.engine", {})
+                        mass = float(eng.get("mass_kg", 100.0) or 100.0) * (0.06 if "cylinder" in me else 0.15)
+                    cond.budget_j = max(STRUCTURE_BUDGET_FLOOR_J,
+                                        STRUCTURE_BUDGET_J_PER_KG[_material_class(nodes[me].get("material"))] * mass)
+                    conds[me] = cond
+                cond.missing_neighbors.append((kind, other))
     merged = Effects()
     # the air system's accumulated contamination is a real consequence
     # of the same kind: it is reported here, not in a separate place
-    plant = getattr(sim, "plant", None)
     if plant is not None:
         g = plant.gunk_effects()
         merged.notes.extend(g["notes"])
         # ...and put that damage on the actual parts it reaches, so a
         # neglected air system shows up as named hardware in trouble
-        # rather than only as a global multiplier
-        import air_treatment as _at
-        per_part = _at.gunk_damage_by_part(plant.treatment.gunk, list(nodes),
-                                           plant.spec.wet_tank_capacity_l if plant.spec else 20.0)
-        for ident, sev in per_part.items():
+        # rather than only as a global multiplier (gunk_per_part was
+        # computed above, where it helped choose the work set)
+        for ident, sev in gunk_per_part.items():
             cond = conds.get(ident)
             if cond is None:
                 continue

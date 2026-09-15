@@ -47,6 +47,7 @@ def build_assembly(engine: Engine) -> Assembly:
         parts.append(CombustionCrankPart(
             cylinders=arch.cylinders, firing_order=tuple(arch.firing_order),
             cycle_degrees=arch.cycle_degrees, cylinder_positions=positions,
+            slot_angles_deg=tuple(arch.slot_angles_deg()),
             strength_fn=lambda rpm, thr, load: torque_fraction(engine, rpm) * (0.2 + 0.8 * thr),
             primary_amp_fn=lambda rpm, thr, load: 0.35 * (0.3 + 0.7 * load + 0.3 * thr),
             secondary_amp_fn=lambda rpm, thr, load: 0.18 * (0.3 + 0.7 * load) * (arch.cylinders / 4.0),

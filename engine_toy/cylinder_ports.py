@@ -176,31 +176,46 @@ def is_air_cooled(engine) -> bool:
 
 
 def throw_angles_deg(engine) -> dict[int, float]:
-    """Each cylinder's crank-throw phase from the declared firing order:
-    evenly spaced firing over one cycle (720 deg four-stroke, 360 two-
-    stroke), the throw sitting where the piston is at TDC as that
-    cylinder fires -- the same evenly-spaced firing engine_cycle_sim
-    already runs. A bank angle shows up in the sites, not here."""
+    """Each cylinder's crank-throw phase: the throw sits where the piston
+    is at TDC as that cylinder fires, so the throws follow the firing
+    schedule directly. That schedule comes from the architecture
+    (EngineArchitecture.slot_angles_deg) -- evenly spaced over the cycle
+    for an ordinary crank, and genuinely unequal for an odd-fire one,
+    which is exactly the case where the throws are NOT evenly spaced
+    around the crank either. The same angles engine_cycle_sim fires on.
+    A bank angle shows up in the sites, not here."""
     arch = engine.architecture
     order = list(arch.firing_order) if arch.firing_order else list(range(1, max(1, arch.cylinders) + 1))
-    cycle = 360.0 if arch.two_stroke else 720.0
-    step = cycle / max(len(order), 1)
-    return {cyl: (slot * step) % 360.0 for slot, cyl in enumerate(order)}
+    angles = arch.slot_angles_deg()
+    return {cyl: angles[slot] % 360.0 for slot, cyl in enumerate(order) if slot < len(angles)}
+
+
+def valves_per_cylinder(engine) -> int:
+    """How many valves each cylinder actually has. The head's declared
+    number wins; an engine that declares none falls back to the number
+    carried on its lifter spring, which is where this used to live
+    exclusively. One place, so the port layout, the valvetrain
+    correlation and the spring drag can never disagree."""
+    declared = int(getattr(engine.architecture, "valves_per_cylinder", 0) or 0)
+    if declared > 0:
+        return declared
+    return int(getattr(engine.lifter_spring, "valves_per_cylinder", 2) or 2)
 
 
 def derive_valvetrain(engine) -> str:
-    """Disclosed stand-in until EngineArchitecture declares it: 3+ valves
-    per cylinder -> twin cams; a two-valve head revving past 7000 ->
-    single overhead cam; any other two-valve head -> cam in the block
-    with pushrods (which is what every catalogue engine whose production
-    graph puts `powertrain.camshaft` beside the crank actually is). A
+    """The architecture's declared valvetrain if it has one. Otherwise a
+    disclosed correlation: 3+ valves per cylinder -> twin cams; a
+    two-valve head revving past 7000 -> single overhead cam; any other
+    two-valve head -> cam in the block with pushrods. That last step is
+    the weak one -- a real SOHC engine under 7000 rpm comes out
+    "pushrod" -- which is exactly why the field exists to be declared. A
     two-stroke with no poppet valves has none."""
     arch = engine.architecture
     if getattr(arch, "valvetrain", None):
         return arch.valvetrain
     if arch.two_stroke and not arch.has_poppet_valves:
         return "none"
-    valves = int(getattr(engine.lifter_spring, "valves_per_cylinder", 2) or 2)
+    valves = valves_per_cylinder(engine)
     if valves >= 3:
         return "dohc"
     if engine.redline_rpm >= 7000.0:
@@ -274,7 +289,7 @@ def cylinder_geometries(engine) -> list[CylinderGeometry]:
         wall_ports = "uniflow" if arch.has_poppet_valves else "loop"
     else:
         wall_ports = "none"
-    valves = int(getattr(engine.lifter_spring, "valves_per_cylinder", 2) or 2)
+    valves = valves_per_cylinder(engine)
     valvetrain = derive_valvetrain(engine)
     layout_name = arch.layout.lower()
     hit_and_miss = "hit-and-miss" in layout_name

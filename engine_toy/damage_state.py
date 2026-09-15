@@ -37,13 +37,36 @@ class Puncture:
 
 @dataclass
 class PartDamageState:
+    """One tracked piece of the machine, and the fluid it is holding back.
+
+    The pressure across this part is READ THROUGH its circuit rather than
+    copied onto it. A machine has a few hundred tracked parts and about
+    half a dozen fluid circuits, so broadcasting each circuit pressure onto
+    every one of its member parts every tick was writing six distinct
+    numbers into hundreds of objects -- redundant by construction, and
+    able to go stale the moment anything read a part between the write
+    and the next tick. The binding is the index: set once when the graph
+    is built (bind_part_circuits), read live.
+    """
     identity: str
     kind: str = "mesh-part"
     fluid_volume_l: float = 0.0
-    pressure_pa: float = ATMOSPHERIC_PRESSURE_PA
     circuit_identity: str | None = None
     punctures: list[Puncture] = field(default_factory=list)
     impacts: list[ImpactResult] = field(default_factory=list)
+    # the circuit this part is part of, or None for a part open to the
+    # air. Bound by bind_part_circuits; never copied from.
+    circuit: object | None = field(default=None, repr=False, compare=False)
+    # what to report when this part is on no circuit at all
+    ambient_pressure_pa: float = ATMOSPHERIC_PRESSURE_PA
+
+    @property
+    def pressure_pa(self) -> float:
+        """The live pressure this part is holding back, this instant."""
+        circuit = self.circuit
+        if circuit is None:
+            return self.ambient_pressure_pa
+        return float(circuit.pressure_pa)
 
 
 def register_graph_parts(states: dict[str, PartDamageState], graph: dict) -> None:
@@ -114,12 +137,38 @@ def mesh_part_identity(mesh_part: str, graph: dict) -> str:
     return mesh_part
 
 
-def sync_part_pressures(states: dict[str, PartDamageState], fluid_circuits: Iterable) -> None:
-    """Copy each live circuit pressure onto all of its participating nodes."""
-    circuits = tuple(fluid_circuits)
+def _bind_one(state: "PartDamageState", mesh_part: str, index: tuple) -> None:
+    """Bind one part to its circuit. `mesh_part` is the name the geometry
+    knows it by, which is what the water-jacket fallback keys on -- it can
+    differ from the graph identity the state is filed under."""
+    by_identity, coolant_fallback = index
+    found = by_identity.get(state.identity)
+    if found is None and "water_jacket" in mesh_part:
+        found = coolant_fallback
+    if found is None:
+        state.circuit, state.circuit_identity = None, None
+    else:
+        state.circuit, state.circuit_identity = found
+
+
+def bind_part_circuits(states: dict[str, PartDamageState], fluid_circuits: Iterable) -> None:
+    """Point every tracked part at the circuit it belongs to.
+
+    Topology, not state: a circuit's membership is fixed the moment the
+    graph is built (FluidCircuit.nodes is a frozenset and .edges a tuple),
+    so this runs when the graph changes, not every tick. Pressure is then
+    read through the binding by PartDamageState.pressure_pa and is always
+    current.
+    """
+    index = _circuit_index(tuple(fluid_circuits))
     for state in states.values():
-        state.pressure_pa, state.circuit_identity = _pressure_for_part(
-            state.identity, state.identity, circuits)
+        _bind_one(state, state.identity, index)
+
+
+# The old name, kept because binding is exactly what callers who used to
+# ask for a pressure sync actually need -- and it is now idempotent and
+# cheap enough that calling it on a graph change is the whole story.
+sync_part_pressures = bind_part_circuits
 
 
 def record_penetration(
@@ -130,20 +179,17 @@ def record_penetration(
 ) -> list[tuple[str, Puncture]]:
     """Persist every part traversal produced by ``RayMesh.penetrate``."""
     circuits = tuple(fluid_circuits)
+    index = _circuit_index(circuits)
     recorded: list[tuple[str, Puncture]] = []
     for mesh_part, impact in penetration.impacts:
         identity = mesh_part_identity(mesh_part, graph)
         state = states.setdefault(identity, PartDamageState(identity=identity))
-        pressure_pa, circuit_identity = _pressure_for_part(identity, mesh_part, circuits)
-        state.pressure_pa = pressure_pa
-        state.circuit_identity = circuit_identity
+        _bind_one(state, mesh_part, index)
         state.impacts.append(impact)
     for hole in penetration.holes:
         identity = mesh_part_identity(hole.part, graph)
         state = states.setdefault(identity, PartDamageState(identity=identity))
-        pressure_pa, circuit_identity = _pressure_for_part(identity, hole.part, circuits)
-        state.pressure_pa = pressure_pa
-        state.circuit_identity = circuit_identity
+        _bind_one(state, hole.part, index)
         puncture = Puncture(
             material=str(hole.material),
             entry_position_m=_point(hole.position),
@@ -167,24 +213,47 @@ def record_penetration(
     return recorded
 
 
-def _pressure_for_part(identity: str, mesh_part: str, circuits: tuple) -> tuple[float, str | None]:
+def _circuit_index(circuits: tuple) -> tuple[dict, tuple | None]:
+    """Every node and edge identity in these circuits -> that
+    (circuit, circuit identity), plus the coolant circuit a water jacket
+    falls back to. One pass over the circuits instead of one pass per part.
+
+    First circuit wins for an identity carried by more than one, and the
+    coolant fallback is the first coolant-ish circuit -- the same answers
+    the per-part linear scan gave, since it returned on its first match
+    in the same order.
+    """
+    by_identity: dict[str, tuple] = {}
+    coolant_fallback: tuple | None = None
     for index, circuit in enumerate(circuits):
-        if identity in circuit.nodes or any(edge.get("identity") == identity for edge in circuit.edges):
-            return float(circuit.pressure_pa), _circuit_identity(circuit, index)
-    if "water_jacket" in mesh_part:
-        for index, circuit in enumerate(circuits):
-            if any("coolant" in node or "radiator" in node or "water_pump" in node for node in circuit.nodes):
-                return float(circuit.pressure_pa), _circuit_identity(circuit, index)
-    return ATMOSPHERIC_PRESSURE_PA, None
+        entry = (circuit, _circuit_identity(circuit, index))
+        for node in circuit.nodes:
+            by_identity.setdefault(str(node), entry)
+        for edge in circuit.edges:
+            edge_identity = edge.get("identity")
+            if edge_identity is not None:
+                by_identity.setdefault(str(edge_identity), entry)
+        if coolant_fallback is None and any(
+                "coolant" in node or "radiator" in node or "water_pump" in node for node in circuit.nodes):
+            coolant_fallback = entry
+    return by_identity, coolant_fallback
+
+
+def _pressure_for_part(identity: str, mesh_part: str, circuits: tuple,
+                       index: "tuple[dict, tuple | None] | None" = None) -> tuple[float, str | None]:
+    by_identity, coolant_fallback = index if index is not None else _circuit_index(circuits)
+    entry = by_identity.get(identity)
+    if entry is None and "water_jacket" in mesh_part:
+        entry = coolant_fallback
+    if entry is None:
+        return ATMOSPHERIC_PRESSURE_PA, None
+    circuit, circuit_identity = entry
+    return float(circuit.pressure_pa), circuit_identity
 
 
 def _circuit_identity(circuit, index: int) -> str:
-    identities = sorted(
-        str(edge.get("circuit_identity"))
-        for edge in circuit.edges
-        if edge.get("circuit_identity")
-    )
-    return identities[0] if identities else f"{circuit.kind_class}:{index}"
+    named = circuit.edge_identity          # computed once, see FluidCircuit
+    return named if named is not None else f"{circuit.kind_class}:{index}"
 
 
 def _point(value) -> tuple[float, float, float]:

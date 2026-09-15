@@ -77,6 +77,46 @@ class EngineArchitecture:
     bore_m: float = 0.0
     stroke_m: float = 0.0
     rod_length_m: float = 0.0
+    # THE CRANK'S REAL FIRING INTERVALS, in crank degrees between one
+    # firing and the next, in firing_order sequence. Empty means evenly
+    # spaced (cycle_degrees / cylinders), which is what every engine with
+    # a purpose-built crank actually does and what this used to assume
+    # universally. It is NOT universal: an odd-fire engine shares crank
+    # pins between cylinders whose bank angle doesn't divide evenly into
+    # the cycle, and fires at genuinely unequal intervals as a result --
+    # the Buick 231's 90/150 alternation being the catalogue's own case.
+    # Must sum to cycle_degrees and have one entry per cylinder.
+    firing_intervals_deg: tuple[float, ...] = ()
+    # THE VALVE GEAR, declared rather than guessed. derive_valvetrain
+    # (cylinder_ports.py) falls back to a correlation off valve count and
+    # redline when this is left empty -- workable for a catalogue of
+    # pushrod V8s and DOHC fours, but that correlation cannot tell a
+    # single-overhead-cam engine from a cam-in-block one at all (it calls
+    # every two-valve head under 7000 rpm a pushrod), which is wrong for
+    # any real SOHC engine. Empty string keeps the correlation.
+    valvetrain: str = ""            # "" = derive; else "pushrod"|"sohc"|"dohc"|"none"
+    # Valves per cylinder. 0 = take the lifter spring's own number, which
+    # is where this used to live exclusively. It belongs to the HEAD, not
+    # to the spring fitted under it: LifterSpring carries it only because
+    # nothing else did, and since every shared spring PRESET is a
+    # two-valve spring, declaring a real four-valve head used to mean
+    # hand-building a spring just to change a number that isn't a spring
+    # property.
+    valves_per_cylinder: int = 0
+    # How many camshafts actually turn -- one cam-in-block shaft, one
+    # single-overhead cam over a single head, two on a SOHC vee or flat
+    # engine (one per bank), four on a DOHC one. The production graph
+    # built exactly one camshaft node for every engine ever, so a V6 with
+    # two heads carried one cam between them.
+    camshaft_count: int = 1
+    # What drives them, and from which end of the block. Both are real
+    # and neither was expressible: a toothed rubber belt is markedly more
+    # compliant than a roller chain and a gear train is stiffer than
+    # either (the timing drive's real torsional stiffness follows from
+    # it), and an engine whose chain runs off the flywheel end has its
+    # timing cover and sprockets under the bellhousing, not out front.
+    timing_drive: str = "chain"     # "chain" | "belt" | "gear"
+    timing_drive_at: str = "front"  # "front" | "rear"
     # Real static compression ratio (Vd+Vc)/Vc -- the piston/head choice
     # that actually sets thermodynamic ceiling on efficiency (see
     # derive_gross_bmep_pa below). 10.0 is a generic naturally-aspirated
@@ -115,6 +155,33 @@ class EngineArchitecture:
         if self.rotary or self.two_stroke or not self.cylinders:
             return 360.0
         return 720.0
+
+    def slot_angles_deg(self) -> list[float]:
+        """The crank angle at which each firing-order slot fires, one per
+        slot, starting at 0. THE one place firing timing is resolved: the
+        crank throws, the combustion scheduler and the acoustic model all
+        read this, so an odd-fire engine cannot come out even in one of
+        them and uneven in another.
+
+        Evenly spaced unless the architecture declares real intervals."""
+        n = len(self.firing_order) if self.firing_order else max(self.cylinders, 0)
+        if n <= 0:
+            return []
+        cycle = self.cycle_degrees
+        intervals = tuple(self.firing_intervals_deg or ())
+        if not intervals:
+            step = cycle / n
+            return [slot * step for slot in range(n)]
+        if len(intervals) != n:
+            raise ValueError(f"{self.layout}: {len(intervals)} firing intervals for {n} cylinders")
+        if abs(sum(intervals) - cycle) > 1e-6:
+            raise ValueError(f"{self.layout}: firing intervals sum to {sum(intervals)}, not {cycle}")
+        angles, running = [], 0.0
+        for gap in intervals[:-1]:
+            angles.append(running)
+            running += float(gap)
+        angles.append(running)
+        return angles
 
 
 @dataclass
@@ -1278,6 +1345,14 @@ class Transmission:
     kind: str = "manual"                   # "manual" | "automatic"
     fluid_capacity_l: float = 0.0          # 0 = derive from the kind
     cooler_fitted: bool | None = None      # None = automatics get one
+    # Whether this automatic's converter has a lock-up clutch at all.
+    # Not a detail: a locking converter bolts the turbine to the pump
+    # above coupling speed and the slip (and the heat it makes) simply
+    # stops, while an older converter is fluid at every speed and is
+    # still slipping a few percent at cruise. Real boxes differ -- a
+    # 1970s three-speed generally has no lock-up clutch, an 80s-on
+    # four-speed does -- so it is declared here rather than assumed.
+    lock_up_capable: bool = True
 
     @property
     def fluid_l(self) -> float:
@@ -1311,11 +1386,16 @@ class LifterSpring:
     friction_coeff: float = 0.12
     valvetrain_mass_g: float = 55.0   # effective reciprocating mass per valve
 
-    def drag_torque_nm(self, cylinders: int, lever_arm_m: float = 0.006) -> float:
+    def drag_torque_nm(self, cylinders: int, lever_arm_m: float = 0.006,
+                       valves_per_cylinder: int | None = None) -> float:
+        """`valves_per_cylinder` overrides the spring's own count with the
+        head's declared one -- a four-valve head on the same spring holds
+        twice as many lifters down, which is real drag, not bookkeeping."""
         if cylinders <= 0:
             return 0.0
+        valves = self.valves_per_cylinder if valves_per_cylinder is None else valves_per_cylinder
         peak_force_n = self.spring_rate_n_per_mm * self.valve_lift_mm
-        return (self.friction_coeff * peak_force_n * self.valves_per_cylinder
+        return (self.friction_coeff * peak_force_n * max(int(valves), 0)
                 * cylinders * lever_arm_m)
 
     def max_safe_rpm(self) -> float:
@@ -1759,9 +1839,15 @@ def _piston_geometry(displacement_l: float, cylinders: int, redline_rpm: float) 
     return bore_m, stroke_m, rod_length_m
 
 
-def _arch(layout, cylinders, banks, bank_angle, firing_order, wobble_amt: float | None = None) -> EngineArchitecture:
+def _arch(layout, cylinders, banks, bank_angle, firing_order, wobble_amt: float | None = None,
+          **head) -> EngineArchitecture:
+    """`head` carries the declared valve-gear fields (valvetrain,
+    valves_per_cylinder, camshaft_count, timing_drive, timing_drive_at)
+    for the engines that know their own; anything left out keeps
+    EngineArchitecture's own derive-or-default behaviour."""
     return EngineArchitecture(layout, cylinders, banks, bank_angle, list(firing_order),
-                               wobble_amt=_default_wobble(layout) if wobble_amt is None else wobble_amt)
+                               wobble_amt=_default_wobble(layout) if wobble_amt is None else wobble_amt,
+                               **head)
 
 
 _RAW = [
@@ -1807,6 +1893,74 @@ _RAW = [
          torque_peak=6250, power_peak=8400, redline=9000, inertia=.19,
          mass=190, clutch_torque=610, combustion_efficiency=.92, coupling_efficiency=.96,
          architecture=("flat-six", 6, 2, 180.0, [1, 6, 2, 4, 3, 5])),
+    # The odd-fire Buick 231. GM cut two cylinders off the 90-degree
+    # 300/340 V8 and kept the V8's crankshaft, so the six rods share
+    # three unsplit crankpins on a 90-degree block: the firing interval
+    # alternates 90/150 degrees instead of an even 120, which is where
+    # the famous shake at idle comes from. (The 1977-on 231 got a
+    # split-pin crank and fires evenly; this is the 1975-76 engine,
+    # before that fix, and the direct ancestor of the Grand National
+    # turbo six.) 231 ci, 3.800 x 3.400 in, 8.0:1, Rochester 2GC
+    # two-barrel, SAE net 110 hp @ 4000 and 175 lb-ft @ 2000.
+    #
+    # The 90/150 alternation is declared as the crank's real firing
+    # intervals, so it is the actual schedule the throws sit at, the
+    # combustion events fire on and the acoustic model hears -- not a
+    # wobble factor standing in for one. wobble_amt is therefore back to
+    # an ordinary V6's rocking couple: the unevenness is already in the
+    # timing itself, and adding synthetic half-order content on top of a
+    # genuinely uneven schedule would count it twice.
+    dict(identity="buick-231-oddfire-v6-1975", label="1975 Buick 231 ci odd-fire V6 (Fireball)", kind="combustion",
+         # 3.791 L from the real bore/stroke below; 175 lb-ft = 237.3 Nm
+         # -> bmep 4*pi*237.3/0.003791
+         displacement=3.791, bmep=786_000, braking_bmep=130_000, idle=700,
+         torque_peak=2000, power_peak=4000, redline=4800, inertia=.50,
+         mass=170, clutch_torque=250, combustion_efficiency=.80, coupling_efficiency=.89,
+         architecture=("odd-fire-ninety-degree-v6", 6, 2, 90.0, [1, 6, 5, 4, 3, 2], 0.10),
+         # three unsplit pins shared by six rods in a 90-degree block:
+         # each pair fires 90 degrees apart, then 150 to the next pair
+         head=dict(firing_intervals_deg=(90.0, 150.0, 90.0, 150.0, 90.0, 150.0),
+                   valvetrain="pushrod", valves_per_cylinder=2, camshaft_count=1,
+                   timing_drive="chain", timing_drive_at="front")),
+    # The VR6: a vee so narrow the two banks share ONE cylinder head and
+    # one head gasket. At 15 degrees the bores are staggered along a
+    # single block deck rather than sitting in two separate castings, so
+    # this engine is as long as an inline-four and as wide as one, with
+    # six cylinders in it -- the whole point, since it was designed to fit
+    # a transverse Golf-platform bay. Its timing chains run off the
+    # FLYWHEEL end of the block, under the bellhousing, not behind a
+    # front cover. 2792 cc, 81.0 x 90.3 mm, 10.0:1, single overhead cam,
+    # 12 valves, 174 PS @ 5800 and 235 Nm @ 4200.
+    #
+    # It fires evenly -- a 120-degree crank in a 15-degree vee is an
+    # even-fire engine -- so the low wobble here is the ordinary rocking
+    # couple a V6 has, not an odd-fire interval. Its famously uneven
+    # induction note comes from the intake runners, which really are of
+    # unequal length because one bank sits ahead of the other.
+    dict(identity="vw-vr6-2800-12v", label="1992 VW VR6 2.8 L 12v narrow-angle V6 (transverse)", kind="combustion",
+         # 235 Nm -> bmep 4*pi*235/0.002792
+         displacement=2.792, bmep=1_058_000, braking_bmep=150_000, idle=800,
+         torque_peak=4200, power_peak=5800, redline=6400, inertia=.28,
+         mass=170, clutch_torque=260, combustion_efficiency=.90, coupling_efficiency=.94,
+         architecture=("narrow-angle-vr6", 6, 2, 15.0, [1, 5, 3, 6, 2, 4], 0.10),
+         # one head, one cam in it, chain-driven from the back of the block
+         head=dict(valvetrain="sohc", valves_per_cylinder=2, camshaft_count=1,
+                   timing_drive="chain", timing_drive_at="rear")),
+    # The Busso. A 60-degree V6 on a split-pin crank, which is the
+    # smoothest vee a six can be built at -- even firing AND naturally
+    # balanced, needing no balance shaft to be civilised. Belt-driven
+    # single overhead cam per bank (two camshafts, one toothed belt), and
+    # the long equal-length intake runners over the top of it are the
+    # engine's signature, acoustically and visually. 2959 cc, 93.0 x 72.6
+    # mm, 9.5:1, 192 hp @ 5600 and 255 Nm @ 4400, in the transverse 164.
+    dict(identity="alfa-busso-v6-3000-12v", label="1990 Alfa Romeo 164 3.0 V6 12v (Busso, transverse)", kind="combustion",
+         # 255 Nm -> bmep 4*pi*255/0.002959
+         displacement=2.959, bmep=1_083_000, braking_bmep=155_000, idle=800,
+         torque_peak=4400, power_peak=5600, redline=6500, inertia=.26,
+         mass=165, clutch_torque=285, combustion_efficiency=.91, coupling_efficiency=.95,
+         architecture=("sixty-degree-v6", 6, 2, 60.0, [1, 4, 2, 5, 3, 6], 0.08),
+         head=dict(valvetrain="sohc", valves_per_cylinder=2, camshaft_count=2,
+                   timing_drive="belt", timing_drive_at="front")),
     dict(identity="supercharged-drag-v8-8200", label="8.2 L supercharged drag V8", kind="combustion",
          displacement=8.2, bmep=6_200_000, braking_bmep=420_000, idle=1150,
          torque_peak=6500, power_peak=8700, redline=9600, inertia=.46,
@@ -1941,8 +2095,16 @@ _FUEL: dict[str, dict] = {
                                   fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
     "aircooled-flat-four-1584": dict(preferred_fuel_profile="pump-gasoline-87",
                                       fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
+    # 8.0:1 and smog-era timing: regular unleaded is what it was built for
+    "buick-231-oddfire-v6-1975": dict(preferred_fuel_profile="pump-gasoline-87",
+                                       fuel_compatibility=_pump_gas_profile("pump-gasoline-87")),
     "springtail-i4-1600": dict(preferred_fuel_profile="pump-gasoline-89",
                                 fuel_compatibility=_pump_gas_profile("pump-gasoline-89")),
+    # both were sold on European 95 RON, which is this ladder's 91
+    "vw-vr6-2800-12v": dict(preferred_fuel_profile="pump-gasoline-91",
+                             fuel_compatibility=_pump_gas_profile("pump-gasoline-91")),
+    "alfa-busso-v6-3000-12v": dict(preferred_fuel_profile="pump-gasoline-91",
+                                    fuel_compatibility=_pump_gas_profile("pump-gasoline-91")),
     # higher state of tune, wants real premium
     "superbike-i4-1340": dict(preferred_fuel_profile="pump-gasoline-93",
                                fuel_compatibility=_pump_gas_profile("pump-gasoline-93")),
@@ -2002,7 +2164,10 @@ _LIFTER_SPRING: dict[str, str] = {
     "toyota-3sfe-camry-1990": "stock",
     "mazda-b6ze-miata-1990": "stock",
     "aircooled-flat-four-1584": "soft",
+    "buick-231-oddfire-v6-1975": "soft",
     "springtail-i4-1600": "stock",
+    "vw-vr6-2800-12v": "stock",
+    "alfa-busso-v6-3000-12v": "stock",
     "superbike-i4-1340": "race",
     "gt-flat-six-4000": "race",
     "supercharged-drag-v8-8200": "race",
@@ -2685,6 +2850,8 @@ _REV_LIMITER: dict[str, RevLimiterProfile] = {
     "toyota-3sfe-camry-1990": RevLimiterProfile.consumer_soft(),
     "mazda-b6ze-miata-1990": RevLimiterProfile.consumer_soft(),
     "springtail-i4-1600": RevLimiterProfile.consumer_soft(),
+    "vw-vr6-2800-12v": RevLimiterProfile.consumer_soft(),
+    "alfa-busso-v6-3000-12v": RevLimiterProfile.consumer_soft(),
 }
 
 # Modern EFI daily drivers get real ECU protection (closed-loop knock
@@ -2697,6 +2864,10 @@ _ECU: dict[str, ECUProfile] = {
     "toyota-3sfe-camry-1990": ECU_PRESETS["protected"],
     "mazda-b6ze-miata-1990": ECU_PRESETS["protected"],
     "springtail-i4-1600": ECU_PRESETS["protected"],
+    # Digifant and Motronic respectively: real closed-loop injection with
+    # knock retard, not the crude open-loop default
+    "vw-vr6-2800-12v": ECU_PRESETS["protected"],
+    "alfa-busso-v6-3000-12v": ECU_PRESETS["protected"],
     "gt-flat-six-4000": ECU_PRESETS["protected"],
 }
 
@@ -2709,6 +2880,10 @@ _EGR: dict[str, EGRSystem] = {
     "mazda-b6ze-miata-1990": EGRSystem(has_egr=True, max_egr_frac=0.10),
     "springtail-i4-1600": EGRSystem(has_egr=True, max_egr_frac=0.10),
     "gt-flat-six-4000": EGRSystem(has_egr=True, max_egr_frac=0.08),
+    # Not a modern closed-loop system at all: a real 1975 smog-era
+    # backpressure EGR valve on a carbureted engine with no ECU. Same
+    # hardware, open-loop -- so it keeps the crude ECU default above.
+    "buick-231-oddfire-v6-1975": EGRSystem(has_egr=True, max_egr_frac=0.10),
 }
 
 _NITROUS = {"supercharged-drag-v8-8200"}
@@ -2727,6 +2902,12 @@ _CARBURETOR: dict[str, CarburetorProfile] = {
                                           choke_max_enrichment=0.20, main_jet_diameter_mm=2.21),
     "aircooled-flat-four-1584": CarburetorProfile(is_carbureted=True, has_choke=True, choke_warmup_s=9.0,
                                                     choke_max_enrichment=0.22, main_jet_diameter_mm=1.41),
+    # Rochester 2GC two-barrel with a slow period automatic choke. The
+    # real carb meters through a PAIR of ~0.062 in main jets; this field
+    # is one equivalent jet, so it carries their combined area
+    # (1.575 mm * sqrt(2)), not one jet's diameter.
+    "buick-231-oddfire-v6-1975": CarburetorProfile(is_carbureted=True, has_choke=True, choke_warmup_s=15.0,
+                                                    choke_max_enrichment=0.25, main_jet_diameter_mm=2.23),
 }
 
 # Real intake/exhaust hardware per engine. Anything not listed keeps the
@@ -2739,6 +2920,18 @@ _INTAKE: dict[str, IntakeSystem] = {
     "toyota-3sfe-camry-1990": IntakeSystem(filter_material="paper", filter_surface_area_cm2=260.0, plenum_volume_l=2.4, runner_length_m=0.42, runner_diameter_mm=40.0),
     "mazda-b6ze-miata-1990": IntakeSystem(filter_material="paper", filter_surface_area_cm2=200.0, plenum_volume_l=1.6, runner_length_m=0.30, runner_diameter_mm=38.0),
     "amc-258-jeep-i6": IntakeSystem(filter_material="paper", filter_surface_area_cm2=260.0, plenum_volume_l=2.5),
+    # big round open-element air cleaner over a cast-iron two-barrel manifold
+    "buick-231-oddfire-v6-1975": IntakeSystem(filter_material="paper", filter_surface_area_cm2=300.0,
+                                               plenum_volume_l=2.8, runner_length_m=0.22, runner_diameter_mm=42.0),
+    # the VR6's runners are genuinely unequal (one bank sits ahead of the
+    # other under a single plenum); this is the mean length, since
+    # IntakeSystem models one runner for the engine
+    "vw-vr6-2800-12v": IntakeSystem(filter_material="paper", filter_surface_area_cm2=300.0,
+                                     plenum_volume_l=3.0, runner_length_m=0.45, runner_diameter_mm=40.0),
+    # the Busso's six long equal-length runners over the vee -- the reason
+    # it sounds the way it does, and long enough to tune genuinely low
+    "alfa-busso-v6-3000-12v": IntakeSystem(filter_material="paper", filter_surface_area_cm2=280.0,
+                                            plenum_volume_l=3.2, runner_length_m=0.50, runner_diameter_mm=42.0),
     "supercharged-drag-v8-8200": IntakeSystem(filter_material="velocity_stack", filter_surface_area_cm2=500.0, plenum_volume_l=6.0),
     "monster-540-blown-methanol": IntakeSystem(filter_material="velocity_stack", filter_surface_area_cm2=500.0, plenum_volume_l=6.0),
     "radical-cam-bigblock-7400": IntakeSystem(filter_material="cotton_gauze", filter_surface_area_cm2=450.0, plenum_volume_l=5.5),
@@ -2754,6 +2947,10 @@ _EXHAUST: dict[str, ExhaustSystem] = {
     "toyota-3sfe-camry-1990": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=34.0),
     "mazda-b6ze-miata-1990": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=33.0),
     "amc-258-jeep-i6": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=35.0),
+    # cast log manifolds into a single exhaust -- restrictive, as built
+    "buick-231-oddfire-v6-1975": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=38.0),
+    "vw-vr6-2800-12v": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=40.0),
+    "alfa-busso-v6-3000-12v": ExhaustSystem(header_type="stock-manifold", primary_diameter_mm=36.0),
     "supercharged-drag-v8-8200": ExhaustSystem(header_type="open-header", primary_diameter_mm=54.0),
     "monster-540-blown-methanol": ExhaustSystem(header_type="open-header", primary_diameter_mm=54.0),
     "radical-cam-bigblock-7400": ExhaustSystem(header_type="long-tube-header", primary_diameter_mm=48.0),
@@ -2767,7 +2964,7 @@ _EXHAUST: dict[str, ExhaustSystem] = {
 def _build_catalogue() -> list[Engine]:
     engines = []
     for raw in _RAW:
-        arch = _arch(*raw["architecture"])
+        arch = _arch(*raw["architecture"], **raw.get("head", {}))
         engines.append(Engine(
             identity=raw["identity"], label=raw["label"], kind=raw["kind"],
             displacement_l=raw["displacement"], bmep_pa=raw["bmep"],
@@ -2808,16 +3005,50 @@ def _build_catalogue() -> list[Engine]:
             e.architecture.bore_m = bore_m
             e.architecture.stroke_m = stroke_m
             e.architecture.rod_length_m = rod_length_m
-    # a real, documented exception to the generic correlation above:
-    # the 1901-04 Curved Dash Oldsmobile's actual bore and stroke are
-    # historical record (4.5in x 6in), not something to approximate --
-    # genuinely undersquare (0.75 bore/stroke ratio), more so than the
-    # generic redline-only correlation would guess for this engine.
-    curved_dash = next((e for e in engines if e.identity == "curved-dash-1901-single"), None)
-    if curved_dash is not None:
-        curved_dash.architecture.bore_m = 4.5 * 0.0254
-        curved_dash.architecture.stroke_m = 6.0 * 0.0254
-        curved_dash.architecture.rod_length_m = curved_dash.architecture.stroke_m * _ROD_TO_STROKE_RATIO
+    # Real, documented exceptions to the generic correlation above:
+    # engines whose actual bore and stroke are historical record, not
+    # something to approximate. In millimetres, with the imperial engines
+    # written as the inch figures their sources actually give.
+    #   curved-dash-1901-single: 4.5 x 6.0 in -- genuinely undersquare
+    #     (0.75 bore/stroke), more so than a redline-only correlation
+    #     would guess for this engine.
+    #   buick-231-oddfire-v6-1975: 3.800 x 3.400 in, the Buick 300/340 V8
+    #     bore spacing it inherited.
+    #   vw-vr6-2800-12v: 81.0 x 90.3, genuinely undersquare for a modern
+    #     engine -- a long stroke is how you get 2.8 L out of a block
+    #     short enough to sit across a Golf bay.
+    #   alfa-busso-v6-3000-12v: 93.0 x 72.6, very oversquare (1.28),
+    #     which is the other half of why it revs the way it does.
+    # Each reproduces its own declared displacement to within 0.1%, so
+    # the geometry and the litres stay consistent.
+    _REAL_BORE_STROKE_MM = {
+        "curved-dash-1901-single": (4.5 * 25.4, 6.0 * 25.4),
+        "buick-231-oddfire-v6-1975": (3.800 * 25.4, 3.400 * 25.4),
+        "vw-vr6-2800-12v": (81.0, 90.3),
+        "alfa-busso-v6-3000-12v": (93.0, 72.6),
+    }
+    for e in engines:
+        spec = _REAL_BORE_STROKE_MM.get(e.identity)
+        if spec is None:
+            continue
+        bore_mm, stroke_mm = spec
+        e.architecture.bore_m = bore_mm / 1000.0
+        e.architecture.stroke_m = stroke_mm / 1000.0
+        e.architecture.rod_length_m = e.architecture.stroke_m * _ROD_TO_STROKE_RATIO
+    # Real static compression ratios where the engine's own figure is on
+    # record and materially different from EngineArchitecture's generic
+    # 10.0 naturally-aspirated gasoline default -- 8.0:1 is a smog-era
+    # low-compression head/piston choice, and it is what actually caps
+    # this engine's thermodynamic ceiling (derive_gross_bmep_pa) and its
+    # tolerance for a conversion (conversion.py reads it directly).
+    _REAL_COMPRESSION_RATIO = {
+        "buick-231-oddfire-v6-1975": 8.0,
+        "vw-vr6-2800-12v": 10.0,
+        "alfa-busso-v6-3000-12v": 9.5,
+    }
+    for e in engines:
+        if e.identity in _REAL_COMPRESSION_RATIO:
+            e.architecture.compression_ratio = _REAL_COMPRESSION_RATIO[e.identity]
     # real fuel-pump/tank sizing, one consistent pass -- FuelDeliverySystem's
     # own dataclass default (a car-engine-scale 0.02 kg/s pump) is not a
     # sane default across a catalogue spanning 9 orders of magnitude (the
@@ -2909,6 +3140,13 @@ def _build_catalogue() -> list[Engine]:
         "toyota-3sfe-camry-1990": Transmission(
             kind="automatic", gear_ratios=(2.810, 1.549, 1.000, 0.735),
             reverse_ratio=2.296, final_drive_ratio=3.944, fluid_capacity_l=7.2),
+        #   Buick 231 -> Turbo-Hydramatic 350, a 3-speed whose converter
+        #     has no lock-up clutch at all: it is fluid at every speed,
+        #     so it never stops slipping and never stops making heat --
+        #     2.52/1.52/1.00 behind a 2.73 rear axle.
+        "buick-231-oddfire-v6-1975": Transmission(
+            kind="automatic", gear_ratios=(2.52, 1.52, 1.00), reverse_ratio=1.93,
+            final_drive_ratio=2.73, fluid_capacity_l=9.5, lock_up_capable=False),
     }
     for e in engines:
         if e.identity in _AUTOMATICS:
@@ -2923,8 +3161,11 @@ def _build_catalogue() -> list[Engine]:
     _AIR_CONDITIONING_FITTED = {
         "honda-style-commuter-i4-1500",  # a real daily-driver commuter car
         "amc-258-jeep-i6",               # real Jeeps of this class commonly had factory AC
+        "buick-231-oddfire-v6-1975",     # a real Skylark/Century-class car, factory AC was common
         "gt-flat-six-4000",              # a real GT touring car -- AC is standard fare on the class
         "twin-rotor-13b",                # a real RX-7-class sports car, AC was a common factory option
+        "vw-vr6-2800-12v",               # a real Corrado/Passat-class car
+        "alfa-busso-v6-3000-12v",        # a real executive saloon
     }
     for e in engines:
         if e.identity in _AIR_CONDITIONING_FITTED:
@@ -2959,6 +3200,10 @@ def _build_catalogue() -> list[Engine]:
     _INSTALLATION = {
         "toyota-3sfe-camry-1990": "transverse",
         "honda-style-commuter-i4-1500": "transverse",
+        # the whole reason the VR6 exists: six cylinders across a bay
+        # sized for four. The 164 is transverse too.
+        "vw-vr6-2800-12v": "transverse",
+        "alfa-busso-v6-3000-12v": "transverse",
     }
     # real compression-release brakes: the C18's own Cat brake option,
     # the deuce's LDT-465 (a Jacobs-equipped multifuel in service)
@@ -2972,6 +3217,15 @@ def _build_catalogue() -> list[Engine]:
         "supercharged-drag-v8-8200": "hemi", "pw-r1340-wasp": "hemi",
         "monster-540-blown-methanol": "wedge", "monster-632-twin-turbo": "wedge", "radical-cam-bigblock-7400": "wedge",
         "amc-258-jeep-i6": "wedge", "aircooled-flat-four-1584": "wedge",
+        "buick-231-oddfire-v6-1975": "wedge",
+        # the 12-valve VR6 carries both banks' valves in one head, which
+        # makes its chambers asymmetric with the plug off to one side
+        "vw-vr6-2800-12v": "wedge",
+        # Alfa's own literature calls the Busso heads hemispherical. As
+        # everywhere else in this table the preset carries the
+        # catalogue's generic hemi geometry, not researched Busso
+        # figures -- the KIND is the claim, not the included angle.
+        "alfa-busso-v6-3000-12v": "hemi",
         "toyota-3sfe-camry-1990": "pent-roof", "mazda-b6ze-miata-1990": "pent-roof", "honda-style-commuter-i4-1500": "pent-roof",
         "springtail-i4-1600": "pent-roof", "superbike-i4-1340": "pent-roof", "gt-flat-six-4000": "pent-roof",
         "packard-merlin-v1650": "pent-roof",

@@ -676,9 +676,9 @@ class HoleEmitterField:
 
 
 def circuit_identity(circuit) -> str:
-    ids = sorted(str(e.get("circuit_identity")) for e in circuit.edges if e.get("circuit_identity"))
-    if ids:
-        return ids[0]
+    named = circuit.edge_identity          # computed once, see FluidCircuit
+    if named is not None:
+        return named
     names = " ".join(circuit.nodes)
     if "coolant" in names or "radiator" in names or "water_pump" in names:
         return "coolant"

@@ -33,6 +33,7 @@ import dataclasses
 import math
 import sys
 from pathlib import Path
+from rotational_friction import friction_impulse
 
 _TURING_ROOT = Path(__file__).resolve().parents[1] / "turing"
 if str(_TURING_ROOT) not in sys.path:
@@ -306,6 +307,87 @@ def _add_belt_driven_compressor(node, edge, identity: str, position: tuple[float
     edge(f"{crank_identity.split('.')[-1]}_to_{identity}_clutch", crank_identity, identity, "friction-clutch-shaft",
          stiffness_nm_per_rad_s=max_torque_nm * 8.0, max_torque_nm=max_torque_nm)
     return max_torque_nm
+
+
+def _apply_camshaft_count(engine, nodes, edges) -> None:
+    """The real number of camshafts, and what really drives them.
+
+    The shared powertrain subunit builds exactly ONE `powertrain.camshaft`
+    for every engine there has ever been, which is right for a cam-in-block
+    V8 and wrong for anything with heads on top of it: a SOHC vee engine
+    has a camshaft per bank and a DOHC one has two per bank, and those are
+    separate shafts with separate bearings and separate drives off the
+    crank, not one shaft counted once. `camshaft_count` on the architecture
+    declares how many there really are; this clones the subunit's camshaft
+    into that many, lays them over the banks they open, and gives each its
+    own bearings and its own drive.
+
+    Two disclosed choices. The subunit's single cam node carries a mass
+    sized for "this engine's camshaft", so the extra shafts SPLIT that
+    mass rather than multiplying it -- four cams that together weigh what
+    the graph already believed, rather than four times as much cam
+    invented out of a field that was never asked to mean one shaft. And
+    each drive keeps the subunit's own ratio and stiffness, scaled only by
+    what the drive is actually made of (engine_parts.TIMING_DRIVE_
+    STIFFNESS_FACTOR: a toothed belt is genuinely more compliant than a
+    roller chain, a gear train stiffer than both).
+    """
+    import engine_geometry
+    import engine_parts
+
+    arch = engine.architecture
+    count = max(1, int(getattr(arch, "camshaft_count", 1) or 1))
+    medium = str(getattr(arch, "timing_drive", "chain") or "chain")
+    factor = engine_parts.TIMING_DRIVE_STIFFNESS_FACTOR.get(medium, 1.0)
+    cam = next((n for n in nodes if n["identity"] == "powertrain.camshaft"), None)
+    if cam is None:
+        return
+    cam_edges = [e for e in edges
+                 if e.get("a") == "powertrain.camshaft" or e.get("b") == "powertrain.camshaft"]
+    # the medium's real compliance applies to the drive this engine
+    # already has, whether or not it has more than one camshaft
+    for e in cam_edges:
+        if e.get("stiffness_nm_per_rad"):
+            e["stiffness_nm_per_rad"] = float(e["stiffness_nm_per_rad"]) * factor
+    if count <= 1:
+        return
+    if cam.get("mass_kg"):
+        cam["mass_kg"] = float(cam["mass_kg"]) / count
+    # lay the shafts out over the banks, above the bores they open
+    sites = engine_geometry.cylinder_sites(engine)
+    bank_yz = []
+    for b in range(max(1, arch.banks)):
+        on_bank = [s.position for s in sites if s.bank == b]
+        if on_bank:
+            bank_yz.append((sum(p[1] for p in on_bank) / len(on_bank),
+                            sum(p[2] for p in on_bank) / len(on_bank)))
+    base = list(cam.get("reference_position") or [0.0, 0.0, 0.0])
+    if not bank_yz:
+        bank_yz = [(base[1], base[2])]
+    spread = engine_geometry.block_half_yz_m(engine) * 0.16
+    for i in range(1, count + 1):
+        y, z = bank_yz[(i - 1) % len(bank_yz)]
+        # two cams over the same bank sit either side of that bank's
+        # centreline -- an intake shaft and an exhaust shaft, not two
+        # shafts in the same hole
+        if count > len(bank_yz):
+            z += spread if ((i - 1) // len(bank_yz)) % 2 == 0 else -spread
+        position = [base[0], y, z]
+        if i == 1:
+            cam["reference_position"] = position
+            continue
+        ident = f"powertrain.camshaft_{i}"
+        extra = dict(cam)
+        extra["identity"] = ident
+        extra["reference_position"] = position
+        nodes.append(extra)
+        for e in cam_edges:
+            clone = dict(e)
+            clone["identity"] = f"{e['identity']}_{i}"
+            for side in ("a", "b"):
+                if clone.get(side) == "powertrain.camshaft":
+                    clone[side] = ident
+            edges.append(clone)
 
 
 def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) -> dict[str, Any]:
@@ -752,6 +834,8 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
         # rather than left in place pretending it exists
         nodes[:] = [n for n in nodes if n["identity"] != "powertrain.camshaft"]
         edges[:] = [e for e in edges if "camshaft" not in e["identity"]]
+    else:
+        _apply_camshaft_count(engine, nodes, edges)
     # The production subunit is a PISTON-engine subunit: it always builds a
     # camshaft, a piston intake plenum, a PCV port, and a wet-sump oil pan/
     # pump. None of those exist on an electric or servo drive unit, a gas
@@ -2039,6 +2123,12 @@ class _EdgeState:
     wear: float = 0.0
     glaze: float = 0.0
     missing_endpoint: bool = False
+    dissipated_heat_j: float = 0.0
+    unrejected_heat_j: float = 0.0
+
+
+# a distinct "not computed yet", so a cached None still counts as cached
+_UNSET = object()
 
 
 @dataclass
@@ -2052,6 +2142,37 @@ class FluidCircuit:
     kind_class: str        # "thermal-liquid" | "compressible-gas" | "incompressible-hydraulic"
     nodes: frozenset[str]
     edges: tuple[dict, ...]
+
+    @property
+    def has_splash(self) -> bool:
+        """Whether this circuit is splash-fed (a dipper in a trough)
+        rather than pumped. Fixed by topology, like edge_identity -- it
+        was being rediscovered by scanning every edge of every circuit on
+        every substep."""
+        cached = self.__dict__.get("_has_splash", _UNSET)
+        if cached is _UNSET:
+            cached = any(e.get("splash") for e in self.edges)
+            self.__dict__["_has_splash"] = cached
+        return cached
+
+    @property
+    def edge_identity(self) -> "str | None":
+        """The name this circuit's own edges give it -- the lowest
+        circuit_identity any of them carries, or None if none do.
+
+        Fixed by topology: `edges` is a tuple of dicts whose
+        circuit_identity never changes after discovery, so this is
+        computed once and kept. It used to be a full `sorted()` of every
+        edge's identity, thrown away after taking element [0], on every
+        caller on every substep -- a sort to find a minimum, repeated
+        thousands of times a frame for an answer that cannot change.
+        """
+        cached = self.__dict__.get("_edge_identity", _UNSET)
+        if cached is _UNSET:
+            cached = min((str(e["circuit_identity"]) for e in self.edges if e.get("circuit_identity")),
+                         default=None)
+            self.__dict__["_edge_identity"] = cached
+        return cached
     pump_node: str | None = None
     fan_nodes: tuple[str, ...] = ()
     thermal_mass_kj_per_k: float = 10.0
@@ -2410,13 +2531,9 @@ class DrivetrainSolver:
     # position-tracking spring/damper (backlash angle state, stiffness *
     # angle + damping * relative_speed) -- the only kinds an ODE
     # stability requirement even applies to. friction-clutch-shaft and
-    # rotational-bearing also carry a "stiffness_nm_per_rad_s"-shaped
-    # attribute, but only ever as a rate coefficient inside an already-
-    # unconditionally-stable saturating tanh formula (current relative
-    # speed only, no position state) -- they were never really "stiff
-    # ODEs" and must never be scanned for one, or (a real bug this used
-    # to have) an edge that was already cheap and stable forces a
-    # nonzero minimum substep count on the whole solver for nothing.
+    # rotational-bearing use velocity-only friction. Their impulses are
+    # limited by the connected inertias so they cannot overshoot sticking;
+    # a saturated torque alone does not provide that stability guarantee.
     SPRING_INTEGRATED_KINDS = ("geared-timing-drive", "accessory-drive-belt")
 
     def __post_init__(self) -> None:
@@ -2458,6 +2575,12 @@ class DrivetrainSolver:
         self._rigid_locked_edges: frozenset[str] = self._find_rigid_locked_edges()
         self._max_sub_dt_s = self._compute_stable_sub_dt()
         self.fluid_circuits: list[FluidCircuit] = _discover_fluid_circuits(self.graph)
+        # topology, resolved once: the node identity set, and the
+        # net-torque accumulator whose keys are exactly those nodes.
+        # Built in GRAPH ORDER, not set order -- the substep consumes
+        # net_torque by iteration, so the order is part of the result.
+        self._node_ids: frozenset = frozenset(n["identity"] for n in self.graph["nodes"])
+        self._net_torque: dict = {n["identity"]: 0.0 for n in self.graph["nodes"]}
         # Every real fan/rotor node in the graph, keyed by identity, with
         # its own declared aerodynamic spec -- one shared lookup used for
         # (a) the mechanical fan's real crank-reaction drag torque, (b)
@@ -2580,6 +2703,7 @@ class DrivetrainSolver:
                    "alternator_delivered_w": 0.0, "supercharger_belt_slack_frac": 0.0,
                    "cam_timing_slack_frac": 0.0, "dyno_absorber_omega": 0.0,
                    "dyno_locked": False, "ac_compressor_load_w": 0.0, "pneumatic_compressor_delivered_w": 0.0}
+        friction_heat_j = 0.0
         # A real compressor load: compressing air to any pressure ratio
         # costs real mechanical work (the same isentropic relation the
         # intake circuit's own charge-heating uses -- specific work
@@ -2593,7 +2717,7 @@ class DrivetrainSolver:
         # delivered_w below) from the intake circuit's own current
         # pressure, since the fluid circuits step once per outer call too.
         compressor_load_torque_nm = 0.0
-        if "supercharger_rotor" in {n["identity"] for n in self.graph["nodes"]}:
+        if "supercharger_rotor" in self._node_ids:
             intake_circuit = next((c for c in self.fluid_circuits
                                    if c.kind_class == "compressible-gas"
                                    and any("intake" in nid for nid in c.nodes)), None)
@@ -2641,7 +2765,13 @@ class DrivetrainSolver:
                 # against the crank's actual speed rather than a frozen
                 # reference.
                 self.omega["powertrain.crank_shaft.front"] = crank_omega
-            net_torque = {n["identity"]: 0.0 for n in self.graph["nodes"]}
+            # one accumulator, zeroed in place: the KEYS are the graph's
+            # nodes and never change, so rebuilding the dict every substep
+            # was rehashing several hundred identity strings per substep
+            # to arrive at the same layout each time
+            net_torque = self._net_torque
+            for _k in net_torque:
+                net_torque[_k] = 0.0
             if "dyno_absorber" in net_torque:
                 net_torque["dyno_absorber"] -= dyno_load_torque_nm
                 if self._propeller_rated_torque_nm > 0.0:
@@ -2671,6 +2801,7 @@ class DrivetrainSolver:
                 net_torque["electrical.alternator"] -= alternator_shaft_load_w / max(alt_omega, ALTERNATOR_TORQUE_OMEGA_FLOOR_RAD_S)
                 outputs["alternator_delivered_w"] = alternator_shaft_load_w
             crank_reaction = 0.0
+            friction_contacts = []
 
             for e in self.graph["edges"]:
                 if e["identity"] in disabled_edges:
@@ -2686,55 +2817,15 @@ class DrivetrainSolver:
                     st.missing_endpoint = True
                     continue
 
-                if kind == "friction-clutch-shaft":
-                    # the real game's clutch_torque formula exactly:
-                    # max_torque * tanh(stiffness * relative_speed / max_torque)
-                    relv = self.omega[a] - self.omega[b]
-                    max_t = float(e.get("max_torque_nm", 500.0))
-                    t = max_t * math.tanh(float(e.get("stiffness_nm_per_rad_s", 4000.0)) * relv / max(max_t, 1e-6))
-                    st.last_torque_nm, st.engaged = t, abs(t) < 0.02 * max_t
-                    net_torque[a] -= t
-                    net_torque[b] += t
-                    if a == "powertrain.engine" or a == "powertrain.crank_shaft.front":
-                        # crank_shaft.front is rigidly keyed to the crank
-                        # (omega forced equal every substep, see step()'s
-                        # own top) -- torque reacting on it IS torque
-                        # reacting on the crank, the same real rigid body
-                        crank_reaction += t
-                    if e["identity"] == "dyno_friction_clutch":
-                        outputs["dyno_locked"] = st.engaged
-                    elif e["identity"] == "front_to_ac_compressor_clutch":
-                        outputs["ac_compressor_load_w"] = abs(t) * abs(self.omega.get(b, 0.0))
-                    elif e["identity"] == "front_to_pneumatic_compressor_clutch":
-                        outputs["pneumatic_compressor_delivered_w"] = abs(t) * abs(self.omega.get(b, 0.0))
+                if kind in ("friction-clutch-shaft", "rolling-friction-contact",
+                            "rotational-bearing"):
+                    # Solve dissipative contacts after the applied torques.
+                    # Sequential impulses see the current velocity of each
+                    # part, including contacts already solved this substep.
+                    friction_contacts.append(e)
+                    continue
 
-                elif kind == "rolling-friction-contact":
-                    # a real chassis-dyno roller: dry Coulomb friction, not
-                    # a bolted shaft -- capped at mu * normal_force *
-                    # radius regardless of how much relative slip there is,
-                    # unlike the clutch's tanh (which keeps rising toward
-                    # its cap smoothly). Sign follows relative surface speed.
-                    relv = self.omega[a] - self.omega[b]
-                    cap = (float(e.get("friction_coefficient", 0.9))
-                           * float(e.get("normal_force_n", 1000.0))
-                           * float(e.get("contact_radius_m", 0.2)))
-                    t = cap * math.copysign(1.0, relv) if abs(relv) > 1e-3 else 0.0
-                    st.last_torque_nm = t
-                    net_torque[a] -= t
-                    net_torque[b] += t
-                    if a == "powertrain.engine":
-                        crank_reaction += t
-
-                elif kind == "rotational-bearing":
-                    relv = self.omega[a] - self.omega[b]
-                    drag = e.get("bearing_drag_nm", 0.0)
-                    t = drag * math.tanh(relv * 5.0)
-                    net_torque[a] -= t
-                    net_torque[b] += t
-                    if a == "powertrain.engine":
-                        crank_reaction += t
-
-                elif kind == "direct-torque-shaft":
+                if kind == "direct-torque-shaft":
                     # rigid, no belt, no compliance -- the driven node IS
                     # the crank's own speed, not a separately-integrated
                     # body; only its reaction torque matters
@@ -2808,7 +2899,7 @@ class DrivetrainSolver:
                         outputs["supercharger_belt_slack_frac"] = slack
 
             for identity, torque in net_torque.items():
-                if identity == "powertrain.engine":
+                if identity in ("powertrain.engine", "powertrain.crank_shaft.front"):
                     continue
                 inertia = self._inertia.get(identity, 0.01)
                 # no zero-floor here: a small driven mass under a stiff
@@ -2818,9 +2909,65 @@ class DrivetrainSolver:
                 # going negative in this sim's convention
                 self.omega[identity] = self.omega[identity] + torque / inertia * sub_dt
 
-            outputs["crank_reaction_torque_nm"] = crank_reaction
+            prescribed = {"powertrain.engine", "powertrain.crank_shaft.front"}
+            for e in friction_contacts:
+                a, b, kind = e["a"], e["b"], e["constraint"]
+                st = self._edge_state[e["identity"]]
+                slip = self.omega[a] - self.omega[b]
+                if kind == "friction-clutch-shaft":
+                    cap = max(0.0, float(e.get("max_torque_nm", 500.0)))
+                    limit = cap * abs(math.tanh(
+                        float(e.get("stiffness_nm_per_rad_s", 4000.0))
+                        * slip / max(cap, 1e-6)))
+                elif kind == "rolling-friction-contact":
+                    limit = (float(e.get("friction_coefficient", 0.9))
+                             * float(e.get("normal_force_n", 1000.0))
+                             * float(e.get("contact_radius_m", 0.2)))
+                else:
+                    limit = (float(e.get("bearing_drag_nm", 0.0))
+                             * abs(math.tanh(slip * 5.0))
+                             + float(e.get("viscous_drag_nm_per_rad_s", 0.0))
+                             * abs(slip))
+                ia = 0.0 if a in prescribed else 1.0 / self._inertia[a]
+                ib = 0.0 if b in prescribed else 1.0 / self._inertia[b]
+                impulse, heat_j = friction_impulse(slip, limit, ia + ib, sub_dt)
+                self.omega[a] -= impulse * ia
+                self.omega[b] += impulse * ib
+                t = impulse / sub_dt
+                st.last_torque_nm = t
+                st.engaged = abs(self.omega[a] - self.omega[b]) < 1e-6
+                st.dissipated_heat_j += heat_j
+                friction_heat_j += heat_j
+                # A declared sink or one unambiguous touching liquid circuit
+                # receives the heat. Otherwise retain it on this part's
+                # ledger; never discard it or send it to an unrelated fluid.
+                sink = e.get("heat_sink_node")
+                candidates = [c for c in self.fluid_circuits
+                              if c.kind_class == "thermal-liquid"
+                              and ((sink in c.nodes) if sink else
+                                   (a in c.nodes or b in c.nodes))]
+                if len(candidates) == 1:
+                    candidates[0].temp_k += heat_j / max(
+                        candidates[0].thermal_mass_kj_per_k * 1000.0, 1e-9)
+                else:
+                    st.unrejected_heat_j += heat_j
+                if a in prescribed:
+                    crank_reaction += t
+                if b in prescribed:
+                    crank_reaction -= t
+                if e["identity"] == "dyno_friction_clutch":
+                    outputs["dyno_locked"] = st.engaged
+                elif e["identity"] == "front_to_ac_compressor_clutch":
+                    outputs["ac_compressor_load_w"] = abs(t * self.omega[b])
+                elif e["identity"] == "front_to_pneumatic_compressor_clutch":
+                    outputs["pneumatic_compressor_delivered_w"] = abs(t * self.omega[b])
+
+            # The engine consumes one reaction for this whole outer tick.
+            # Returning only the final substep loses earlier friction work.
+            outputs["crank_reaction_torque_nm"] += crank_reaction / substeps
             outputs["dyno_absorber_omega"] = self.omega.get("dyno_absorber", 0.0)
 
+        outputs["friction_heat_w"] = friction_heat_j / dt
         # fluid circuits step once per outer call, not per torque substep
         # -- their own physics (thermal mass, line volume fill lag) is
         # genuinely far slower than the rotational dynamics above, so
@@ -3021,7 +3168,7 @@ class DrivetrainSolver:
         ambient_k = 293.15
         for c in self.fluid_circuits:
             pump_omega = self.omega.get(c.pump_node, 0.0) if c.pump_node else 0.0
-            if not c.pump_node and any(e.get("splash") for e in c.edges):
+            if not c.pump_node and c.has_splash:
                 # splash lubrication: no pump at all -- the rod's dipper
                 # throws oil out of the trough in proportion to crank
                 # speed (a disclosed 0.4 of crank speed as the equivalent

@@ -52,7 +52,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable
 import math
-import random
+import random as _random
+import hashlib as _hashlib
 
 import engines
 from engines import (
@@ -78,6 +79,12 @@ ELECTRIC_COMPRESSOR_MOTOR_EFFICIENCY = 0.80   # real small industrial DC motor
 from drivetrain_graph import (rotor_aero_load_torque_nm, COOLING_FAN_DISK_AREA_M2,
                               PNEUMATIC_RESERVE_PRESSURE_PA)
 from starter import StartingSystems
+import cylinder_ports
+
+
+def _identity_seed(identity: str) -> int:
+    """Same per-identity seeding valve_state/crankcase_state use."""
+    return int(_hashlib.sha1(identity.encode()).hexdigest()[:8], 16)
 from gas_turbine import SingleShaftGasTurbine
 from otto_langen import (OttoLangenCylinder, P_ATM_PA as OTTO_P_ATM_PA, T_ATM_K as OTTO_T_ATM_K,
                           GAMMA_COMBUSTION_GAS, IGNITION_PRESSURE_RATIO,
@@ -696,6 +703,7 @@ SHIFT_CLUTCH_OUT_S = 0.12
 SHIFT_CLUTCH_IN_S = 0.22
 DYNO_PULL_SETTLE_S = 1.0        # real dwell in neutral before shifting, letting rpm settle to idle first
 DYNO_PULL_MAX_DURATION_S = 20.0  # safety timeout if an engine's own real dynamics never quite reach redline
+DYNO_PULL_SHIFT_RPM_FRAC = 0.92  # WOT through each real ratio before the final redline pull
 # Real dyno software bins/smooths raw torque samples before plotting a
 # curve -- an instantaneous single-substep reading is dominated by
 # combustion-pulse ripple (worse for a low cylinder count), the same
@@ -740,6 +748,9 @@ class EngineCycleSim:
     throttle: float = 0.0
     brake_load_nm: float = 0.0
     clutch_frac: float = 1.0   # 0=pedal floored/disengaged, 1=fully released/locked -- ClutchPort.engagement
+    # None = seed from the engine's identity (reproducible per engine);
+    # set it to run the same engine down a different random path
+    seed: int | None = None
     gear_index: int = 0        # 0=neutral (every engine starts in N), negative=reverse, 1..N=forward gear (engine.transmission.gear_ratios)
     electrical_load_frac: float = 0.30
     # A load commanded by another graph controller (PTO pump, service
@@ -806,6 +817,18 @@ class EngineCycleSim:
     atmospheric_generator: object | None = None
 
     def __post_init__(self) -> None:
+        # THE SIM'S OWN RANDOM STREAM. The stochastic combustion events
+        # (misfire, pre-ignition, backfire, a soft limiter's cut) used
+        # the process-global `random`, which made two runs of the same
+        # engine from the same state disagree by a couple of percent and
+        # made an exact regression -- or a parity check against a
+        # compiled core -- impossible to write. Seeded per engine, the
+        # same convention valve_state and crankcase_state already use
+        # (_seed(identity)), so the randomness is still real and still
+        # per-engine, but reproducible. Pass `seed` to vary it
+        # deliberately; two sims with the same seed now agree exactly.
+        self._rng = _random.Random(
+            _identity_seed(self.engine.identity) if self.seed is None else int(self.seed))
         self._omega = 0.0
         self._total_crank_deg = 0.0
         self._map_frac_na = idle_map_base_frac(self.engine)  # ECU's per-engine idle calibration
@@ -1021,6 +1044,14 @@ class EngineCycleSim:
         return drivetrain
 
     def _sync_part_damage_pressures(self) -> None:
+        """Re-point every tracked part at its fluid circuit.
+
+        Topology, not state: this is only needed when the graph changes
+        or a part appears that was not in it. It used to run every tick
+        to keep a copied pressure fresh; parts now read their pressure
+        through the binding (damage_state.PartDamageState.pressure_pa),
+        so there is nothing to refresh per tick and nothing that can go
+        stale between ticks."""
         sync_part_pressures(self.state.part_damage, self._drivetrain.fluid_circuits)
 
     def apply_penetration(self, penetration) -> list[tuple[str, Puncture]]:
@@ -1643,7 +1674,8 @@ class EngineCycleSim:
         from automatic_transmission import AutomaticTransmission
         return AutomaticTransmission(
             fluid_l=float(getattr(tr, "fluid_l", 9.5)),
-            gear_ratios=tuple(tr.gear_ratios), final_drive_ratio=float(tr.final_drive_ratio))
+            gear_ratios=tuple(tr.gear_ratios), final_drive_ratio=float(tr.final_drive_ratio),
+            lock_up_capable=bool(getattr(tr, "lock_up_capable", True)))
 
     def _step_automatic(self, dt: float) -> None:
         """The converter and the packs, against what the crank and the
@@ -1802,13 +1834,14 @@ class EngineCycleSim:
 
     def ballistic_fluid_for_part(self, mesh_part: str, material: str) -> FluidLayer | None:
         """Return the live contained fluid seen behind a struck part wall."""
-        self._sync_part_damage_pressures()
         identity = mesh_part_identity(mesh_part, self._drivetrain.graph)
         state = self.state.part_damage.get(identity)
         if state is None and "water_jacket" in mesh_part:
+            # a jacket piece the graph has no node for: give it a record
+            # and bind that ONE record, rather than re-binding every part
             state = PartDamageState(identity=mesh_part)
             self.state.part_damage[mesh_part] = state
-            self._sync_part_damage_pressures()
+            sync_part_pressures({mesh_part: state}, self._drivetrain.fluid_circuits)
         pressure_pa = state.pressure_pa if state is not None else 101_325.0
         return inferred_fluid(mesh_part, material, pressure_pa)
 
@@ -2122,9 +2155,9 @@ class EngineCycleSim:
                 self._quick_shift_state = None
 
     def start_wot_dyno_pull(self) -> None:
-        """One button: neutral -> settle -> real quick-shift into the
-        transmission's own top ("H") gear -> wide open throttle, run to
-        redline. brake_load_nm goes to 0.0 for the whole pull -- a real
+        """One button: neutral -> settle -> first gear, then make a real
+        quick-shift through every transmission ratio at WOT and run the final
+        gear to redline. brake_load_nm goes to 0.0 for the whole pull -- a real
         inertia-dyno pull measures power from the drum's own known
         inertia accelerating (power = torque_at_drum * drum_omega, both
         already real/live via dyno_torque_nm/dyno_rpm), not against a
@@ -2160,8 +2193,7 @@ class EngineCycleSim:
         self._dyno_pull_timer_s += dt
         if self._dyno_pull_state == "settle":
             if self._dyno_pull_timer_s >= DYNO_PULL_SETTLE_S:
-                top_gear = len(self.engine.transmission.gear_ratios)
-                self._request_quick_shift(top_gear)
+                self._request_quick_shift(1)
                 self._dyno_pull_state = "shift"
                 self.state.dyno_pull_state = "shift"
         elif self._dyno_pull_state == "shift":
@@ -2198,9 +2230,18 @@ class EngineCycleSim:
                 if self._dyno_pull_power_ema > self.state.dyno_pull_peak_power_kw:
                     self.state.dyno_pull_peak_power_kw = self._dyno_pull_power_ema
                     self.state.dyno_pull_peak_power_rpm = self.state.rpm
-            redline_reached = self.state.rpm >= self.engine.redline_rpm * 0.98
+            top_gear = len(self.engine.transmission.gear_ratios)
+            target_fraction = (0.98 if self.gear_index >= top_gear
+                               else DYNO_PULL_SHIFT_RPM_FRAC)
+            redline_reached = self.state.rpm >= self.engine.redline_rpm * target_fraction
             timed_out = self._dyno_pull_timer_s >= DYNO_PULL_MAX_DURATION_S
             if redline_reached or timed_out:
+                if self.gear_index < top_gear:
+                    self.throttle = 0.15
+                    self._request_quick_shift(self.gear_index + 1)
+                    self._dyno_pull_state = "shift"
+                    self.state.dyno_pull_state = "shift"
+                    return
                 _saved_throttle, saved_brake, _saved_gear = self._dyno_pull_saved or (0.0, 0.0, self.gear_index)
                 self.throttle = 0.0
                 self.brake_load_nm = saved_brake
@@ -2246,16 +2287,17 @@ class EngineCycleSim:
 
     def _recompute_firing_angles(self) -> None:
         arch = self.engine.architecture
-        n = len(arch.firing_order)
-        step_deg = arch.cycle_degrees / max(n, 1)
+        # the architecture's own firing schedule -- evenly spaced for an
+        # ordinary crank, genuinely unequal for an odd-fire one
+        slot_angles = arch.slot_angles_deg()
         # real per-cylinder swept volume, for the parametric volume-
         # pressure exchange each firing event draws against the real
         # intake-air circuit with (drivetrain_graph.draw_cylinder_charge)
         self._cylinder_volume_m3 = (self.engine.displacement_l / 1000.0) / max(arch.cylinders, 1)
         self.ignition.reset(len(self.engine.rev_limiter.stages))
-        self._firing_angle_deg = {cyl: slot * step_deg for slot, cyl in enumerate(arch.firing_order)}
+        self._firing_angle_deg = {cyl: slot_angles[slot] for slot, cyl in enumerate(arch.firing_order)}
         self._slot_of_cyl = {cyl: slot for slot, cyl in enumerate(arch.firing_order)}
-        self.state.slot_angles_deg = [slot * step_deg for slot in range(len(arch.firing_order))]
+        self.state.slot_angles_deg = list(slot_angles)
         self.state.slot_records = [[0.0, 0.0, 0.0, 0.0] for _ in arch.firing_order]
         self._last_fire_total_deg = {cyl: -1e9 for cyl in arch.firing_order}
         self._last_strength = {cyl: 0.0 for cyl in arch.firing_order}
@@ -2677,7 +2719,7 @@ class EngineCycleSim:
             if (self.anti_lag_enabled and fi.anti_lag_capable and self._antilag_cooldown <= 0.0
                     and dthrottle_dt < ANTI_LAG_LIFT_THRESHOLD and st.boost_frac > 0.15):
                 self._antilag_cooldown = ANTI_LAG_COOLDOWN_S
-                for _ in range(random.randint(2, 4)):
+                for _ in range(self._rng.randint(2, 4)):
                     self.pending_backfires.append(BackfireEvent(kind="planned", strength=0.6 + 0.4 * st.boost_frac))
         # boost is folded into manifold_pressure_frac by the caller (step()),
         # added fresh each step on top of the lagged NA baseline -- this is
@@ -2736,7 +2778,6 @@ class EngineCycleSim:
             if (self.hole_emitters.emitters or self.state.absent_parts or any(
                     st.impacts for st in self.state.part_damage.values())) and self._effects_tick % EFFECTS_EVERY_TICKS == 0:
                 self._apply_node_effects()
-        self._sync_part_damage_pressures()
 
     def _step_once(self, dt: float) -> None:
         eng = self.engine
@@ -3207,7 +3248,8 @@ class EngineCycleSim:
             float_penalty = 1.0
         else:
             spring = eng.lifter_spring
-            valvetrain_drag_nm = spring.drag_torque_nm(arch.cylinders)
+            valvetrain_drag_nm = spring.drag_torque_nm(
+                arch.cylinders, valves_per_cylinder=cylinder_ports.valves_per_cylinder(self.engine))
             spring_safe_rpm = spring.max_safe_rpm()
             float_risk = self.state.rpm / max(spring_safe_rpm, 1.0)
             self.state.valve_float_flag = float_risk > 1.0
@@ -3306,8 +3348,8 @@ class EngineCycleSim:
             for cyl, firing_angle in self._firing_angle_deg.items():
                 spark_angle = (firing_angle - self.state.ignition_timing_deg) % arch.cycle_degrees
                 if self._crossed(prev_pos, new_pos, spark_angle, arch.cycle_degrees):
-                    limiter_cut = active_severity > 0.0 and random.random() < active_severity
-                    misfire = (not limiter_cut) and (not governor_skip) and random.random() < misfire_prob
+                    limiter_cut = active_severity > 0.0 and self._rng.random() < active_severity
+                    misfire = (not limiter_cut) and (not governor_skip) and self._rng.random() < misfire_prob
                     # ignition_cut: the key/kill-switch turning the
                     # ignition system off, not a stall -- every cylinder
                     # simply gets no spark, same real mechanism a misfire
@@ -3324,7 +3366,7 @@ class EngineCycleSim:
                     if (not cut) and hotspot > 0.0 and not eng.compression_ignition:
                         heat_factor = max(0.0, min(1.5, 0.3 + (self.state.intake_charge_temp_k - 300.0) / 120.0))
                         p_pre = PREIGNITION_BASE_PROB * hotspot * (0.2 + 0.8 * self.state.manifold_pressure_frac) * heat_factor
-                        preignition = random.random() < p_pre
+                        preignition = self._rng.random() < p_pre
 
                     # the real cylinder cycle integrating the slower
                     # fluid transfer: this event draws its own charge out
@@ -3389,7 +3431,7 @@ class EngineCycleSim:
                             backfire_prob = BACKFIRE_BASE_PROB + BACKFIRE_BOOST_GAIN * self.state.boost_frac
                             if limiter_cut:
                                 backfire_prob = max(backfire_prob, REV_LIMITER_BACKFIRE_PROB * active_severity)
-                        if random.random() < backfire_prob:
+                        if self._rng.random() < backfire_prob:
                             self.pending_backfires.append(
                                 BackfireEvent(kind="unplanned", strength=0.4 + 0.6 * base_strength))
 
