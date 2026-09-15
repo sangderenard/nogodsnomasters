@@ -123,14 +123,59 @@ def compression_discharge_k(intake_k: float, pressure_ratio: float, isentropic_e
 
 @dataclass
 class Contaminant:
-    """What a kilogram of dry air is carrying."""
+    """What a kilogram of dry air is carrying.
+
+    The first four are what a compressor's own air picks up. The rest is
+    what EXHAUST puts into a shared volume, and they are here rather than
+    in a separate model because once an engine is running in a bay the
+    air being treated is a mixture of both and nothing downstream can
+    tell them apart. A filter does not know whether the soot it is
+    holding came from a dusty intake or a rich cylinder.
+
+    They are separated by what REMOVES them, which is the only
+    distinction treatment hardware actually makes:
+      soot        a solid, so a filter takes it -- the same element that
+                  takes dust, and it blinds that element the same way
+      so2         soluble and acidic, so a WET scrubber takes it and a
+                  dry filter does nothing at all
+      nox         barely soluble; needs a reagent bed, not a filter
+      co, hc      gases a filter cannot touch, and the reason a sealed
+                  bay with a running engine is dangerous however clean
+                  its filters are
+    """
     water_kg_per_kg: float = 0.0       # vapour still in the stream
     liquid_kg_per_kg: float = 0.0      # condensed, not yet separated out
     oil_kg_per_kg: float = 0.0
     dust_kg_per_kg: float = 0.0
+    # -- what combustion adds --
+    soot_kg_per_kg: float = 0.0
+    so2_kg_per_kg: float = 0.0
+    nox_kg_per_kg: float = 0.0
+    co_kg_per_kg: float = 0.0
+    hc_kg_per_kg: float = 0.0
+
+    #: Every species, in one place, so a new one cannot be added to the
+    #: dataclass and quietly forgotten by the code that moves them about.
+    SPECIES = ("water", "liquid", "oil", "dust",
+               "soot", "so2", "nox", "co", "hc")
+
+    #: What each is removed BY. A stage consults this instead of naming
+    #: species itself, so adding a species is one line here.
+    SOLIDS = ("dust", "soot")
+    SOLUBLE_GASES = ("so2",)
+    INERT_GASES = ("nox", "co", "hc")
+
+    def get(self, species: str) -> float:
+        return float(getattr(self, f"{species}_kg_per_kg", 0.0))
+
+    def set(self, species: str, value: float) -> None:
+        setattr(self, f"{species}_kg_per_kg", max(0.0, float(value)))
 
     def copy(self) -> "Contaminant":
-        return Contaminant(self.water_kg_per_kg, self.liquid_kg_per_kg, self.oil_kg_per_kg, self.dust_kg_per_kg)
+        clone = Contaminant()
+        for species in self.SPECIES:
+            clone.set(species, self.get(species))
+        return clone
 
 
 @dataclass
@@ -638,3 +683,173 @@ def gunk_effects(gunk: GunkLedger, tank_capacity_l: float = 20.0) -> dict:
             f"reservoir corroding from standing water ({gunk.corrosion_frac * 100:.0f}%)" if gunk.corrosion_frac > 0.02 else None,
         ) if n],
     }
+
+
+# ---------------------------------------------------------------------
+# consumable elements, and where what they catch actually goes
+# ---------------------------------------------------------------------
+
+@dataclass
+class FilterElement:
+    """A consumable element: a part with a number, a life, and a price.
+
+    `Stage` already models loading and flooding correctly. What it does
+    not model is that the thing doing the filtering is a PART somebody
+    has to keep in stock and physically change. That is the difference
+    between a filter and a consumable, and it is the whole logistics
+    story of running a plant in a place with no supply chain.
+
+    An element does not fail by ceasing to filter. It fails by costing
+    more and more pressure drop until something upstream cannot push
+    through it -- and only then, if still ignored, by flooding and
+    releasing what it was holding. Both behaviours already live in
+    Stage.live_efficiency; this adds the identity and the life.
+    """
+
+    part_number: str
+    #: mass it can hold before it is blinded. The stage's own capacity.
+    capacity_kg: float = 0.25
+    #: clean pressure drop, and what it rises to when fully loaded. A
+    #: real element's dp roughly doubles across its service life before
+    #: anyone is expected to change it.
+    clean_dp_pa: float = 1_500.0
+    loaded_dp_pa: float = 6_000.0
+    #: service hours the maker rates it for, whatever its loading says --
+    #: media degrades on a shelf and in service regardless of dust
+    rated_hours: float = 2_000.0
+    hours_in_service: float = 0.0
+    loading_kg: float = 0.0
+    #: a coarse element protecting a finer one is expected to be changed
+    #: far more often, which is the entire reason to fit one
+    is_prefilter: bool = False
+
+    @property
+    def saturation_frac(self) -> float:
+        return min(1.0, self.loading_kg / max(self.capacity_kg, 1e-9))
+
+    @property
+    def life_frac(self) -> float:
+        """How used up it is, by whichever measure is worse."""
+        by_hours = self.hours_in_service / max(self.rated_hours, 1e-9)
+        return min(1.0, max(self.saturation_frac, by_hours))
+
+    @property
+    def pressure_drop_pa(self) -> float:
+        """What it costs to push through, now."""
+        span = self.loaded_dp_pa - self.clean_dp_pa
+        return self.clean_dp_pa + span * self.saturation_frac
+
+    @property
+    def due(self) -> bool:
+        return self.life_frac >= 1.0
+
+    def service(self, dt_hours: float, captured_kg: float) -> None:
+        self.hours_in_service += max(0.0, float(dt_hours))
+        self.loading_kg += max(0.0, float(captured_kg))
+
+    def replace(self) -> "SpentElement":
+        """Fit a new one. Returns the old one, which is now waste that
+        somebody has to do something with -- a loaded element is not
+        nothing, it is the concentrated form of everything it caught."""
+        spent = SpentElement(part_number=self.part_number,
+                             holding_kg=self.loading_kg,
+                             hours_run=self.hours_in_service)
+        self.loading_kg = 0.0
+        self.hours_in_service = 0.0
+        return spent
+
+
+@dataclass(frozen=True)
+class SpentElement:
+    """A used element, off the machine and still holding what it caught."""
+
+    part_number: str
+    holding_kg: float
+    hours_run: float
+
+
+@dataclass
+class CaptureLedger:
+    """What treatment pulled OUT of the air, by species, and its fate.
+
+    Scrubbing is not disposal. Everything a filter or a scrubber removes
+    is still somewhere -- in an element, in a sump, in scrubber liquor --
+    and it leaves the site either as waste somebody carries away or as a
+    release somebody is answerable for. This is the ledger that makes
+    those the only two exits, so a plant cannot quietly make a tonne of
+    soot disappear.
+    """
+
+    captured_kg: dict = field(default_factory=dict)
+    released_kg: dict = field(default_factory=dict)
+    spent_elements: list = field(default_factory=list)
+
+    def capture(self, species: str, kg: float) -> None:
+        if kg <= 0.0:
+            return
+        self.captured_kg[species] = self.captured_kg.get(species, 0.0) + float(kg)
+
+    def retire(self, element: SpentElement) -> None:
+        self.spent_elements.append(element)
+
+    def release(self, species: str, kg: float) -> float:
+        """Put some of it back into the environment, on purpose.
+
+        Draining a scrubber sump to the ground, venting a saturated bed,
+        burning off a loaded element. Returns what was actually released,
+        which cannot exceed what was held -- you can only release what
+        you caught.
+        """
+        held = self.captured_kg.get(species, 0.0)
+        out = min(held, max(0.0, float(kg)))
+        if out <= 0.0:
+            return 0.0
+        self.captured_kg[species] = held - out
+        self.released_kg[species] = self.released_kg.get(species, 0.0) + out
+        return out
+
+    @property
+    def held_kg(self) -> float:
+        return sum(self.captured_kg.values())
+
+    def receipt(self) -> dict:
+        return {
+            "held_kg": round(self.held_kg, 6),
+            "captured": {k: round(v, 6) for k, v in sorted(self.captured_kg.items()) if v > 0},
+            "released": {k: round(v, 6) for k, v in sorted(self.released_kg.items()) if v > 0},
+            "spent_elements": len(self.spent_elements),
+            "spent_holding_kg": round(sum(e.holding_kg for e in self.spent_elements), 6),
+        }
+
+
+def scrub(stream: "Stream", *, solids_efficiency: float = 0.0,
+          soluble_efficiency: float = 0.0, ledger: "CaptureLedger | None" = None,
+          dt: float = 1.0) -> dict:
+    """Remove what this piece of hardware can actually remove.
+
+    Solids and soluble gases are separated because the hardware is: a dry
+    element takes solids and does NOTHING to SO2, a wet scrubber takes
+    SO2 and is a poor filter. Neither touches CO, NOx or unburned fuel --
+    those leave in the stream, which is exactly why a filtered bay is
+    still a dangerous bay.
+
+    Whatever is removed goes to the ledger, because it has not left the
+    world, only the air.
+    """
+    removed: dict = {}
+    flow = max(stream.mass_flow_kg_s, 0.0)
+    for group, efficiency in ((Contaminant.SOLIDS, solids_efficiency),
+                              (Contaminant.SOLUBLE_GASES, soluble_efficiency)):
+        if efficiency <= 0.0:
+            continue
+        for species in group:
+            present = stream.carried.get(species)
+            if present <= 0.0:
+                continue
+            taken = present * min(max(efficiency, 0.0), 1.0)
+            stream.carried.set(species, present - taken)
+            mass_kg = taken * flow * max(dt, 0.0)
+            removed[species] = mass_kg
+            if ledger is not None:
+                ledger.capture(species, mass_kg)
+    return removed
