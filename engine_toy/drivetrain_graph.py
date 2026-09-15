@@ -1855,22 +1855,45 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
     # the design intent above (light enough that the engine dominates)
     # while actually scaling across the same 9 orders of magnitude the
     # rest of this catalogue already spans.
-    drum_radius_m = 0.16 + 0.09 * min(1.0, engine.peak_torque_nm / 400.0)
-    target_drum_inertia_kg_m2 = max(1e-8, engine.inertia_kg_m2 * 3.0)
-    drum_mass_kg = target_drum_inertia_kg_m2 / max(0.75 * drum_radius_m * drum_radius_m, 1e-9)
+    # SIZED TO THE WHOLE ENVELOPE (dyno_sizing.py), not to peak torque
+    # alone. A dyno has three independent limits -- torque at the torque
+    # peak, POWER at the power peak, and speed at redline -- and an
+    # engine can exceed any one without touching the others. The radius
+    # rule here used to saturate at 400 Nm, so a 255 Nm road V6 and a
+    # 7851 Nm aero radial got nearly the same drum across a 30x span,
+    # and nothing sized what the absorber has to turn into heat at all.
+    # It is now torque-driven but CAPPED BY DRUM SURFACE SPEED, so a
+    # fast engine correctly gets a SMALLER drum rather than a bigger one.
+    from dyno_sizing import size_dyno
+
+    sizing = size_dyno(engine)
+    drum_radius_m = sizing.drum_radius_m
+    target_drum_inertia_kg_m2 = sizing.drum_inertia_kg_m2
+    drum_mass_kg = sizing.drum_mass_kg
     # Shifted by the same driveline_shift_x the clutch/transmission/
     # transfer-case chain above got, so the dyno stays beyond that real
     # chain's own new end instead of drifting back inside it once the
     # chain moved out to clear the real cylinder bank.
     node("dyno_absorber", (0.6 + driveline_shift_x, 0.0, 0.0), "rotating-mass",
          mass_kg=drum_mass_kg, inertia_kg_m2=target_drum_inertia_kg_m2,
-         drum_radius_m=drum_radius_m)
+         drum_radius_m=drum_radius_m,
+         # what this absorber is actually rated for, so anything reading
+         # the graph can see whether the rig covers the engine
+         absorber_power_rating_w=sizing.absorber_power_rating_w,
+         speed_rating_rpm=sizing.speed_rating_rpm,
+         peak_power_w=sizing.peak_power_w,
+         peak_power_rpm=sizing.peak_power_rpm)
     peak = max(engine.peak_torque_nm, 1.0)
 
     edge("dyno_friction_clutch", "powertrain.engine", "dyno_absorber", "friction-clutch-shaft",
          stiffness_nm_per_rad_s=peak * 8.0, max_torque_nm=peak * 3.0)
+    # normal force from the REAL contact geometry: friction torque is
+    # mu * N * r, so the force needed falls as the drum grows. Scaling it
+    # off torque alone (peak * 45) ignored the radius entirely and so
+    # over-clamped a big drum and under-clamped a small one.
     edge("dyno_roller_contact", "powertrain.engine", "dyno_absorber", "rolling-friction-contact",
-         friction_coefficient=0.9, normal_force_n=peak * 45.0, contact_radius_m=drum_radius_m)
+         friction_coefficient=0.9, normal_force_n=sizing.contact_normal_force_n,
+         contact_radius_m=drum_radius_m)
 
     if engine.accessories.electric_fan and engine.accessories.water_pump:
         # A real electric cooling fan: its own small BLDC motor, no
