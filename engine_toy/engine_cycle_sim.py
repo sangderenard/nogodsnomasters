@@ -2075,6 +2075,12 @@ class EngineCycleSim:
         if c is None:
             return self._brake_junction.step(dt, omega_drive, omega_load)
         c.engagement = self.clutch_frac
+        # A SPEED-DEPENDENT COUPLING NEEDS THE SPEED. `Coupling.step` sets
+        # this itself, but the friction path below never calls it -- the
+        # port does the integrating and only `set_apply` is consulted --
+        # so a centrifugal clutch would be asked for its capacity with a
+        # drive speed of zero and answer "disengaged" forever.
+        c.drive_omega_rad_s = abs(omega_drive)
         apply_pa = self._coupling_apply_pa()
         if c.kind in ("fluid-coupling", "torque-converter"):
             torque = c.step(dt, omega_drive, omega_load, 0.0, apply_pa)
@@ -2112,7 +2118,16 @@ class EngineCycleSim:
         peak = max(self.engine.peak_torque_nm, 1.0)
         self.coupling_spec = couplings.recommended_for(self.engine)
         self.coupling = self.coupling_spec.build(peak)
-        cap = max(self.coupling.torque_capacity_nm() or peak * 3.0, peak * 0.2)
+        # NOT `or`. A centrifugal clutch at rest reports a capacity of
+        # exactly 0.0 -- which is the truth, and is falsy, so `or` read it
+        # as "no opinion" and substituted three times peak torque. The
+        # clutch that cannot stall its engine was being built as one that
+        # could hold anything.
+        resting = self.coupling.torque_capacity_nm()
+        if self.coupling.kind == "centrifugal":
+            cap = max(self.coupling.rated_torque_nm, peak * 0.2)
+        else:
+            cap = max(resting if resting > 0.0 else peak * 3.0, peak * 0.2)
         # the port's "stiffness" is the SLOPE of the tanh that stands in
         # for friction, so it is capacity over the coupling's own real
         # transition width -- not a number picked off peak torque

@@ -88,8 +88,13 @@ class Coupling:
     # rating fallback for a dry plate, which is normally quoted as a torque
     rated_torque_nm: float = 500.0
     stiffness_nm_per_rad_s: float = 4000.0
+    # centrifugal only: the speed the shoes start to grip at, and the
+    # speed `rated_torque_nm` is quoted at
+    engage_rad_s: float = 0.0
+    rated_rad_s: float = 0.0
     # live
     apply_pressure_pa: float = 0.0
+    drive_omega_rad_s: float = 0.0        # centrifugal: what throws the shoes
     engagement: float = 1.0               # 0..1 the operator's pedal / apply command
     locked: bool = False
     slipping: bool = False
@@ -112,6 +117,25 @@ class Coupling:
             return clamp_n * WET_PLATE_MU * self.mean_radius_m * max(1, self.plate_count)
         if self.kind == "dry-friction":
             return self.rated_torque_nm * max(0.0, min(1.0, self.engagement))
+        if self.kind == "centrifugal":
+            # THE SHOES ARE THROWN OUTWARD BY ROTATION, and a spring holds
+            # them in until there is enough of it. Net grip force goes as
+            # `m*r*w**2 - F_spring`, so capacity goes as `w**2 -
+            # w_engage**2` and is exactly ZERO below the engagement speed.
+            #
+            # That is the whole point of the thing and the reason a
+            # trimmer cannot be stalled by its load: below engagement the
+            # clutch transmits nothing at all, so the engine idles on
+            # while the head sits still. There is no operator pedal --
+            # `engagement` is not consulted, because there is nothing to
+            # press.
+            omega = abs(self.drive_omega_rad_s)
+            engage = max(self.engage_rad_s, 0.0)
+            rated = max(self.rated_rad_s, engage + 1.0)
+            if omega <= engage:
+                return 0.0
+            span = rated * rated - engage * engage
+            return self.rated_torque_nm * (omega * omega - engage * engage) / span
         return 0.0      # a fluid coupling has no static capacity at all
 
     # How much relative speed this coupling takes to go from stuck to
@@ -124,7 +148,8 @@ class Coupling:
     # it saturates within a couple of rpm and then chatters around zero
     # relative speed, which is the classic stick-slip problem and shows
     # up as a permanently saturated clutch alternating sign.
-    TRANSITION_SLIP_RAD_S = {"wet-multi-plate": 2.0, "dry-friction": 0.8}
+    TRANSITION_SLIP_RAD_S = {"wet-multi-plate": 2.0, "dry-friction": 0.8,
+                             "centrifugal": 0.8}
 
     @property
     def transition_slip_rad_s(self) -> float:
@@ -160,6 +185,9 @@ class Coupling:
             0.0, min(1.0, self.engagement))
         slip = omega_drive - omega_load
         self.slip_rad_s = slip
+        # the centrifugal capacity is a function of the DRIVING speed, so
+        # it has to be recorded before the capacity is asked for
+        self.drive_omega_rad_s = abs(omega_drive)
 
         if self.kind in ("fluid-coupling", "torque-converter"):
             # a lock-up plate bridges it once the two sides are close
@@ -236,12 +264,22 @@ class CouplingSpec:
     # where the apply pressure comes from: the engine's own hydraulic
     # reservoir when it has one, else a dedicated pump on the rig
     apply_source: str = "engine-hydraulics"     # | "rig-pump" | "mechanical-spring"
+                                                # | "none" for a centrifugal
+    # centrifugal only: the speeds that decide when it grips and what it
+    # holds. Zero elsewhere, and unread by every other kind.
+    engage_rad_s: float = 0.0
+    rated_rad_s: float = 0.0
+    #: a centrifugal clutch is rated by its own shoes, not by the rig's
+    #: request, so the spec may override what `build` is handed
+    rated_torque_nm: float = 0.0
 
     def build(self, rated_torque_nm: float) -> Coupling:
+        rating = self.rated_torque_nm or rated_torque_nm
         return Coupling(kind=self.kind, plate_count=self.plate_count, mean_radius_m=self.mean_radius_m,
                         piston_area_m2=self.piston_area_m2, max_apply_pressure_pa=self.apply_pressure_pa,
                         diameter_m=self.diameter_m, stall_torque_ratio=self.stall_torque_ratio,
-                        lockup_fitted=self.lockup_fitted, rated_torque_nm=rated_torque_nm)
+                        lockup_fitted=self.lockup_fitted, rated_torque_nm=rating,
+                        engage_rad_s=self.engage_rad_s, rated_rad_s=self.rated_rad_s)
 
 
 def recommended_for(engine) -> CouplingSpec:
@@ -264,6 +302,28 @@ def recommended_for(engine) -> CouplingSpec:
         # something that will let it come up to speed
         return CouplingSpec(kind="torque-converter", lockup_fitted=True, diameter_m=0.34,
                             apply_source="rig-pump")
+    # A SMALL TWO-STROKE HAS A CENTRIFUGAL CLUTCH, and until now that was
+    # a claim in a comment: `engines.py` says the trimmer has "a real
+    # centrifugal clutch (engages above idle to spin the cutting head)"
+    # while nothing in this file, the sim, or the port had ever heard of
+    # one. It got a plain dry plate, which can be stalled by its load --
+    # measured, the trimmer died 31 times in 90 seconds and sat across
+    # the track as a wall for everyone behind it.
+    #
+    # Derived from what the engine DECLARES rather than from its name:
+    # two-stroke, and small enough that a clutch is the only thing between
+    # the crank and the tool.
+    architecture = getattr(engine, "architecture", None)
+    if (architecture is not None and getattr(architecture, "two_stroke", False)
+            and float(getattr(engine, "displacement_l", 1.0)) <= 0.10):
+        idle = float(getattr(engine, "idle_rpm", 2800) or 2800)
+        peak = float(getattr(engine, "torque_peak_rpm", idle * 2.0) or idle * 2.0)
+        rpm_to_rad = math.pi / 30.0
+        return CouplingSpec(
+            kind="centrifugal", apply_source="none",
+            rated_torque_nm=float(getattr(engine, "clutch_torque_nm", 3.5) or 3.5),
+            engage_rad_s=idle * 1.45 * rpm_to_rad,
+            rated_rad_s=peak * rpm_to_rad)
     if engine.kind in ("electric", "servo"):
         return CouplingSpec(kind="dry-friction", apply_source="mechanical-spring")
     if peak >= 2000.0 or getattr(engine, "compression_ignition", False) and peak >= 1200.0:

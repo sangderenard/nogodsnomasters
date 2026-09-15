@@ -2245,7 +2245,95 @@ def _build_radial_engines() -> list[Engine]:
         intake_system=_INTAKE.get("pw-r1340-wasp", IntakeSystem()),
         exhaust_system=_EXHAUST.get("pw-r1340-wasp", ExhaustSystem()),
     )
-    return [wasp]
+
+    # THE REST OF THE WASP FAMILY. Every one of these is the same idea
+    # grown: air-cooled, dual magnetos, a gear-driven centrifugal blower,
+    # a carburettor, and a propeller reduction gear. What changes is how
+    # many cylinders Pratt & Whitney were willing to stack behind each
+    # other before the back rows stopped getting cooling air -- which is
+    # the whole story of the R-4360, and why it looks like a corncob.
+    #
+    # Each ROW still needs an odd cylinder count for its firing walk to
+    # close (crank_phase explains why), so the family is built out of
+    # odd rows: 14 is two sevens, 18 is two nines, 28 is four sevens.
+    def _wasp(identity, label, *, displacement_l, per_row, rows, bmep,
+              braking_bmep, idle, torque_peak, power_peak, redline,
+              inertia, mass, boost, blades, note=""):
+        cylinders = per_row * rows
+        return Engine(
+            identity=identity, label=label, kind="combustion",
+            displacement_l=displacement_l, bmep_pa=bmep,
+            braking_bmep_pa=braking_bmep, idle_rpm=idle,
+            torque_peak_rpm=torque_peak, power_peak_rpm=power_peak,
+            redline_rpm=redline, inertia_kg_m2=inertia, mass_kg=mass,
+            clutch_torque_nm=bmep * displacement_l / 1000.0 / (4 * math.pi) * 1.4,
+            combustion_efficiency=0.86, coupling_efficiency=0.91,
+            architecture=EngineArchitecture(
+                layout=f"radial-{cylinders}-{rows}row", cylinders=cylinders,
+                banks=per_row, bank_angle_degrees=0.0,
+                firing_order=crank_phase.generate_multirow_radial_firing_order(
+                    per_row, rows),
+                radial=True, rows=rows, wobble_amt=0.0,
+                valvetrain="pushrod", valves_per_cylinder=2,
+                # one cam RING per row, driven off the crank at the nose
+                camshaft_count=rows, timing_drive="gear", timing_drive_at="front",
+            ),
+            accessories=Accessories(water_pump=False, mechanical_fan=False,
+                                    alternator=True),
+            preferred_fuel_profile="aviation-gasoline-100-130",
+            fuel_compatibility={"aviation-gasoline-100-130": 1.0,
+                                 "pump-gasoline-93": .50, "nitromethane-race": .60},
+            forced_induction=ForcedInduction(
+                kind="supercharger", max_boost_frac=boost, lobe_count=1,
+                belt_ratio=8.5, blower_type="centrifugal",
+                impeller_blades=blades, stages=1),
+            lifter_spring=LIFTER_SPRING_PRESETS["stock"],
+            carburetor=CarburetorProfile(
+                is_carbureted=True, has_choke=True, choke_warmup_s=8.0,
+                choke_max_enrichment=0.25,
+                # a real pressure carburettor's metering, scaled off this
+                # engine's own displacement rather than typed per engine
+                main_jet_diameter_mm=3.72 * (displacement_l / 22.0) ** 0.5),
+        )
+
+    # R-1830 TWIN WASP. 1,830 cu in, two rows of seven. The most-produced
+    # American aircraft engine ever built: B-24, C-47, PBY, F4F. Bore and
+    # stroke both 5.5 in -- perfectly square.
+    twin_wasp = _wasp(
+        "pw-r1830-twin-wasp", 'Pratt & Whitney R-1830 "Twin Wasp" 14-cyl radial',
+        displacement_l=29.98, per_row=7, rows=2, bmep=1_240_000,
+        braking_bmep=200_000, idle=500, torque_peak=2000, power_peak=2700,
+        redline=2900, inertia=3.2, mass=567, boost=0.45, blades=12)
+
+    # R-2000 TWIN WASP. The R-1830 bored out to 2,000 cu in (5.75 x 5.5)
+    # for the C-54/DC-4 -- same architecture, more cylinder.
+    twin_wasp_2000 = _wasp(
+        "pw-r2000-twin-wasp", 'Pratt & Whitney R-2000 "Twin Wasp" 14-cyl radial',
+        displacement_l=32.77, per_row=7, rows=2, bmep=1_290_000,
+        braking_bmep=205_000, idle=500, torque_peak=2050, power_peak=2700,
+        redline=2900, inertia=3.8, mass=700, boost=0.48, blades=12)
+
+    # R-2800 DOUBLE WASP. 2,804 cu in, two rows of NINE, 5.75 x 6.0. The
+    # engine of the P-47, F4U, F6F and A-26, and later the DC-6. Late
+    # water-injected versions made well over twice their early rating.
+    double_wasp = _wasp(
+        "pw-r2800-double-wasp", 'Pratt & Whitney R-2800 "Double Wasp" 18-cyl radial',
+        displacement_l=45.95, per_row=9, rows=2, bmep=1_400_000,
+        braking_bmep=215_000, idle=500, torque_peak=2100, power_peak=2700,
+        redline=2900, inertia=6.0, mass=1070, boost=0.60, blades=14)
+
+    # R-4360 WASP MAJOR. 4,362 cu in, TWENTY-EIGHT cylinders in four rows
+    # of seven, each row clocked round from the last so the back rows get
+    # air at all -- which is what earned it the name "corncob". B-36,
+    # C-124, B-50. The largest-displacement piston aero engine ever put
+    # into mass production.
+    wasp_major = _wasp(
+        "pw-r4360-wasp-major", 'Pratt & Whitney R-4360 "Wasp Major" 28-cyl radial',
+        displacement_l=71.49, per_row=7, rows=4, bmep=1_380_000,
+        braking_bmep=225_000, idle=450, torque_peak=2100, power_peak=2700,
+        redline=2800, inertia=9.0, mass=1579, boost=0.65, blades=16)
+
+    return [wasp, twin_wasp, twin_wasp_2000, double_wasp, wasp_major]
 
 
 def _build_rotary_engines() -> list[Engine]:
@@ -2939,6 +3027,11 @@ _INTAKE: dict[str, IntakeSystem] = {
     # WWII-era big radial: a large updraft carburetor feeding a genuinely
     # big induction manifold for 9 cylinders, no tight paper element
     "pw-r1340-wasp": IntakeSystem(filter_material="foam", filter_surface_area_cm2=600.0, plenum_volume_l=8.0),
+    # a blower case feeding a big induction manifold, sized off the engine
+    "pw-r1830-twin-wasp": IntakeSystem(filter_material="foam", filter_surface_area_cm2=800.0, plenum_volume_l=11.0),
+    "pw-r2000-twin-wasp": IntakeSystem(filter_material="foam", filter_surface_area_cm2=850.0, plenum_volume_l=12.0),
+    "pw-r2800-double-wasp": IntakeSystem(filter_material="foam", filter_surface_area_cm2=1100.0, plenum_volume_l=16.0),
+    "pw-r4360-wasp-major": IntakeSystem(filter_material="foam", filter_surface_area_cm2=1500.0, plenum_volume_l=24.0),
     # compact, high-revving, wants to breathe well and smoothly
     "twin-rotor-13b": IntakeSystem(filter_material="cotton_gauze", filter_surface_area_cm2=280.0, plenum_volume_l=2.0),
 }
@@ -2957,6 +3050,12 @@ _EXHAUST: dict[str, ExhaustSystem] = {
     "superbike-i4-1340": ExhaustSystem(header_type="shorty-header", primary_diameter_mm=40.0),
     # individual short exhaust stacks collected into a ring -- minimal backpressure
     "pw-r1340-wasp": ExhaustSystem(header_type="shorty-header", primary_diameter_mm=50.0),
+    # short stacks into a collector ring -- minimal backpressure, and on
+    # the later installations a real source of thrust in its own right
+    "pw-r1830-twin-wasp": ExhaustSystem(header_type="shorty-header", primary_diameter_mm=52.0),
+    "pw-r2000-twin-wasp": ExhaustSystem(header_type="shorty-header", primary_diameter_mm=54.0),
+    "pw-r2800-double-wasp": ExhaustSystem(header_type="shorty-header", primary_diameter_mm=58.0),
+    "pw-r4360-wasp-major": ExhaustSystem(header_type="shorty-header", primary_diameter_mm=64.0),
     "twin-rotor-13b": ExhaustSystem(header_type="shorty-header", primary_diameter_mm=42.0),
 }
 
@@ -3026,6 +3125,14 @@ def _build_catalogue() -> list[Engine]:
         "buick-231-oddfire-v6-1975": (3.800 * 25.4, 3.400 * 25.4),
         "vw-vr6-2800-12v": (81.0, 90.3),
         "alfa-busso-v6-3000-12v": (93.0, 72.6),
+        # The Wasp family, in the inches Pratt & Whitney built them to.
+        # The R-1830 is perfectly square; the R-2000 is it bored out; the
+        # R-2800 and R-4360 share a cylinder entirely and differ only in
+        # how many of them there are.
+        "pw-r1830-twin-wasp": (5.5 * 25.4, 5.5 * 25.4),
+        "pw-r2000-twin-wasp": (5.75 * 25.4, 5.5 * 25.4),
+        "pw-r2800-double-wasp": (5.75 * 25.4, 6.0 * 25.4),
+        "pw-r4360-wasp-major": (5.75 * 25.4, 6.0 * 25.4),
     }
     for e in engines:
         spec = _REAL_BORE_STROKE_MM.get(e.identity)
@@ -3114,6 +3221,13 @@ def _build_catalogue() -> list[Engine]:
         "dual-motor-ev-reference": 9.0, "servo-direct-drive-400": 9.0,
         "wartsila-rta96c-14cyl-marine-diesel": 4.5, "pw-r1340-wasp": 2.0,
         "fairbanks-morse-z-oilfield-hit-and-miss": 1.0,
+        # Propeller reduction gears: a real radial turns its prop far
+        # slower than its crank, because a propeller tip that goes
+        # supersonic stops being a propeller.
+        "pw-r1830-twin-wasp": 1.78,     # 16:9
+        "pw-r2000-twin-wasp": 2.0,
+        "pw-r2800-double-wasp": 2.0,
+        "pw-r4360-wasp-major": 2.67,    # 0.375:1, the slowest of the family
         # a real handheld string trimmer: a centrifugal clutch straight
         # to the cutting head, no shiftable gearbox of any kind
         "25cc-two-stroke-trimmer": 1.0,
@@ -3182,6 +3296,10 @@ def _build_catalogue() -> list[Engine]:
     _IGNITION_PROFILE = {
         "packard-merlin-v1650": "aircraft-dual-magneto",
         "pw-r1340-wasp": "aircraft-dual-magneto",
+        "pw-r1830-twin-wasp": "aircraft-dual-magneto",
+        "pw-r2000-twin-wasp": "aircraft-dual-magneto",
+        "pw-r2800-double-wasp": "aircraft-dual-magneto",
+        "pw-r4360-wasp-major": "aircraft-dual-magneto",
         "supercharged-drag-v8-8200": "nitromethane-magneto",
         "monster-540-blown-methanol": "nitromethane-magneto",
         "25cc-two-stroke-trimmer": "flywheel-magneto",
@@ -3215,6 +3333,8 @@ def _build_catalogue() -> list[Engine]:
     # and the hit-and-miss are flatheads; the trimmer's is an open dome
     _CHAMBER = {
         "supercharged-drag-v8-8200": "hemi", "pw-r1340-wasp": "hemi",
+        "pw-r1830-twin-wasp": "hemi", "pw-r2000-twin-wasp": "hemi",
+        "pw-r2800-double-wasp": "hemi", "pw-r4360-wasp-major": "hemi",
         "monster-540-blown-methanol": "wedge", "monster-632-twin-turbo": "wedge", "radical-cam-bigblock-7400": "wedge",
         "amc-258-jeep-i6": "wedge", "aircooled-flat-four-1584": "wedge",
         "buick-231-oddfire-v6-1975": "wedge",
@@ -3236,6 +3356,13 @@ def _build_catalogue() -> list[Engine]:
     _LUBRICATION = {
         "packard-merlin-v1650": "dry-sump",
         "pw-r1340-wasp": "dry-sump",
+        # a radial must work inverted at the bottom of the circle: the
+        # lower cylinders are UNDER the crank, which is the whole reason
+        # a cold radial has to be pulled through by hand before start
+        "pw-r1830-twin-wasp": "dry-sump",
+        "pw-r2000-twin-wasp": "dry-sump",
+        "pw-r2800-double-wasp": "dry-sump",
+        "pw-r4360-wasp-major": "dry-sump",
         "gt-flat-six-4000": "dry-sump",
         "25cc-two-stroke-trimmer": "total-loss",
         # a crosshead two-stroke: no wet sump, a separate lube-oil tank

@@ -101,6 +101,39 @@ def generate_radial_firing_order(cylinders_per_row: int) -> list[int]:
     return order
 
 
+def generate_multirow_radial_firing_order(cylinders_per_row: int, rows: int) -> list[int]:
+    """The firing order of a twin- or four-row radial.
+
+    A multi-row radial is not a bigger single row: each row keeps its own
+    forced 1,3,5,... walk (see above, it is geometry, not a search), and
+    the rows fire ALTERNATELY so that consecutive power strokes land in
+    different rows. That is what keeps the firing impulses spread around
+    the crankshaft instead of hammering one throw, and it is why the rows
+    are angularly staggered from each other.
+
+    Numbering follows aircraft practice: consecutive cylinder numbers
+    alternate rows, so a 14-cylinder twin row has its front row at
+    1,3,5,7,9,11,13 and its rear row at 2,4,6,8,10,12,14. A 28-cylinder
+    four-row Wasp Major walks all four rows in turn the same way.
+
+    Each row still needs an odd cylinder count for its own walk to close,
+    which is why every real multi-row radial is a stack of odd rows --
+    14 is two sevens, 18 is two nines, 28 is four sevens.
+    """
+    per_row = generate_radial_firing_order(cylinders_per_row)
+    rows = max(1, int(rows))
+    if rows == 1:
+        return per_row
+    order: list[int] = []
+    for step, position in enumerate(per_row):
+        for row in range(rows):
+            # rotate which row leads each time round so the alternation
+            # advances rather than pairing the same two cylinders
+            source = per_row[(step + row) % len(per_row)]
+            order.append((source - 1) * rows + row + 1)
+    return order[:cylinders_per_row * rows]
+
+
 def generate_firing_order(cylinders: int, banks: int, generations: int = 400, seed: int = 0) -> tuple[list[int], float]:
     """Returns (firing order as cylinder numbers, final evaluation score).
     Cylinder numbering matches engine_geometry.cylinder_sites: cylinder

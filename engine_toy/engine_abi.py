@@ -166,6 +166,177 @@ class EngineGraphABI:
         }
 
 
+#: EVERY MUTABLE SCALAR THE SIM CARRIES ON ITSELF. Measured, not guessed:
+#: 53 of them, and leaving them out is why a span could round-trip
+#: perfectly and still fail to reproduce a trajectory. Accumulators
+#: (`_physics_accum_s`), rate estimators (`_rpm_rate_per_s`), timers
+#: (`_surge_timer`) and the driver's own controls all live here.
+SIM_SCALARS = (
+    '_antilag_cooldown', '_auxiliary_injection_cooling_kw', '_cascade_depth',
+    '_charge_energy_factor', '_crank_assist_nm', '_cylinder_volume_m3',
+    '_dyno_drum_radius_m', '_dyno_inertia_kg_m2', '_dyno_mass_kg',
+    '_dyno_pull_power_ema', '_dyno_pull_timer_s', '_dyno_pull_torque_ema',
+    '_effects_tick', '_electric_fan_cmd', '_exhaust_demand_kg_s',
+    '_flashback_accum', '_fuel_cooling_kw', '_fuel_demand_kg_s',
+    '_fuel_rack_frac', '_fuel_starvation_frac', '_intake_demand_kg_s',
+    '_intake_source_temp_k', '_intake_supply_pressure_pa',
+    '_last_dyno_torque_nm', '_load_omega', '_map_frac_na', '_omega',
+    '_physics_accum_s', '_pneumatic_idle_assist_area_m2',
+    '_pneumatic_idle_assist_trip_rpm', '_power_ms', '_prev_throttle',
+    '_quick_shift_target_gear', '_quick_shift_timer_s', '_ring_escalation',
+    '_ring_escalation_ticks', '_rpm_rate_per_s', '_surge_timer',
+    '_time_since_last_ignition_s', '_time_since_start_s', '_torque_ms',
+    '_total_crank_deg', '_waste_heat_kw', 'brake_load_nm', 'cell_fan_m3_s',
+    'clutch_frac', 'electrical_load_frac', 'external_crank_torque_nm',
+    'gear_index', 'hydraulic_flow_frac', 'hydraulic_load_frac',
+    'known_accessory_shaft_load_w', 'throttle',
+)
+
+#: The per-edge torsional state of the drivetrain solver. `relative_angle_rad`
+#: is where a torsion spring's ENERGY lives, so a declaration that carries
+#: node speeds and not edge angles has declared the driveline's momentum and
+#: thrown away its potential.
+EDGE_FIELDS = (
+    ("edge_relative_angle_rad", "relative_angle_rad", "rad"),
+    ("edge_last_torque_nm", "last_torque_nm", "Nm"),
+    ("edge_wear", "wear", "frac"),
+    ("edge_glaze", "glaze", "frac"),
+    ("edge_dissipated_heat_j", "dissipated_heat_j", "J"),
+    ("edge_unrejected_heat_j", "unrejected_heat_j", "J"),
+    ("edge_engaged", "engaged", "flag"),
+)
+
+#: Mersenne Twister: 624 words of state, an index, and the spare gaussian.
+#: The sim is seeded per identity so that the same inputs give bit-identical
+#: output -- which is what makes a predicted result checkable by digest
+#: rather than by trust. That guarantee only holds if the generator's
+#: POSITION is part of the state too.
+RNG_SLOTS = 626
+
+#: THE OTHER GENERATORS. `bursts` and `ordnance` each carry their own
+#: numpy `Generator`, and neither was declared. Carrying `sim._rng` alone
+#: leaves those two free-running, which is the residual noise a replay
+#: test cannot get below however much else is carried.
+#:
+#: A PCG64 state is two 128-bit integers plus two small flags. A span
+#: holds doubles, and a double carries 53 bits exactly, so each integer is
+#: split into four 32-bit limbs rather than stored whole -- storing a
+#: 128-bit value in a float64 silently rounds it, and a rounded generator
+#: state is a different generator.
+NUMPY_RNG_PATHS = (("bursts", "rng"), ("ordnance", "rng"))
+NUMPY_RNG_LIMBS = 4
+NUMPY_RNG_SLOTS = 2 * NUMPY_RNG_LIMBS + 2
+
+
+#: EVERY scalar field the state dataclass carries. Enumerated from a
+#: running sim rather than curated: hand-picking "the ones that matter"
+#: is how a checkpoint ends up almost right, and almost right is the
+#: failure that looks like noise. Derived readings ride along harmlessly
+#: because a step overwrites them anyway.
+STATE_SCALARS = (
+    'ac_compressor_load_w', 'accessory_drag_nm', 'alternator_current_a',
+    'alternator_output_frac', 'battery_soc_frac', 'battery_voltage',
+    'bay_air_temp_k', 'bay_co_ppm', 'bay_o2_frac', 'blowby_l_per_min',
+    'boiler_water_frac', 'boost_frac', 'cam_phase_lag_deg',
+    'catalyst_brick_temp_k', 'catalyst_co_efficiency',
+    'catalyst_nox_efficiency', 'charge_equivalence_ratio',
+    'charge_gas_volume_fraction', 'co_emitted_indoors_kg',
+    'co_engine_out_g_s', 'co_tailpipe_g_s',
+    'compression_brake_torque_nm', 'coolant_flow_lpm', 'coolant_lost_l',
+    'coolant_temp_k', 'coupling_capacity_nm', 'coupling_heat_w',
+    'crank_angle_deg', 'crankcase_pressure_kpa', 'current_torque_nm',
+    'dyno_absorbed_kw', 'dyno_kinetic_energy_j',
+    'dyno_pull_peak_power_kw', 'dyno_pull_peak_power_rpm',
+    'dyno_pull_peak_torque_nm', 'dyno_pull_peak_torque_rpm', 'dyno_rpm',
+    'dyno_torque_nm', 'electrical_load_w', 'exhaust_flow_demand_frac',
+    'exhaust_open_frac', 'exhaust_pressure_frac',
+    'exhaust_tailpipe_temp_k', 'exhaust_temp_k',
+    'expander_chest_pressure_pa', 'expander_cylinder_temp_k',
+    'expander_ice_frac', 'expander_mep_pa', 'fire_event_count',
+    'fire_heat_release_w', 'fires_burning', 'fuel_availability_frac',
+    'fuel_fill_frac', 'fuel_supply_pressure_pa', 'fuel_temp_k',
+    'gasholder_composition_frac', 'hc_tailpipe_g_s',
+    'hydraulic_oil_temp_k', 'ignition_timing_deg', 'injector_duty_frac',
+    'intake_charge_temp_k', 'intake_flashback_risk',
+    'intake_flow_demand_frac', 'intake_o2_factor',
+    'intake_runner_temp_k', 'junction_ring_events', 'junction_substeps',
+    'knock_intensity', 'manifold_pressure_frac', 'mixture_phi',
+    'mounts_lost', 'nitrous_boost_frac', 'nitrous_fill_frac',
+    'nox_tailpipe_g_s', 'occupant_cohb_pct', 'oil_consumption_ml_per_h',
+    'oil_flow_lpm', 'oil_fuel_dilution_frac', 'oil_pickup_air_frac',
+    'oil_pressure_pa', 'oil_temp_k', 'plant_dewpoint_k',
+    'plant_gunk_kg', 'pneumatic_idle_assist_boost_frac',
+    'pneumatic_idle_assist_delivered_kg_s', 'power_kw', 'power_rms_kw',
+    'preignition_count', 'preignition_intensity', 'real_fire_hz',
+    'room_co_ppm', 'room_o2_frac', 'room_temp_k', 'rpm', 'smoke_factor',
+    'spark_energy_frac', 'starter_current_a', 'sump_oil_l',
+    'supercharger_drag_nm', 'throttle_plate_angle_deg', 'torque_rms_nm',
+    'turbo_spool_frac', 'valve_float_risk',
+)
+
+#: The per-cylinder lists, each `n_cyl` long.
+STATE_LISTS = (
+    'cylinder_block_temps_k', 'cylinder_breathing_frac', 'cylinder_carbon_frac', 'cylinder_float_rpm', 'cylinder_hotspot_risk', 'cylinder_oil_film_mg', 'cylinder_valve_factor', 'slot_angles_deg',
+)
+
+#: The crankcase's own two masses, the only sub-object scalars measured
+#: to move during a run.
+CRANKCASE_SCALARS = ('oil_kg', 'case_gas_kg')
+
+#: The bay and the room the machine sits in. Air is state: it holds heat,
+#: oxygen and carbon monoxide between steps, and a restore that leaves it
+#: behind restarts in a different atmosphere than it stopped in.
+AIR_VOLUME_SCALARS = (
+    'co_ppm', 'draw_m3_s', 'exchange_m3_s', 'exhaust_co_kg_s', 'exhaust_m3_s',
+    'exhaust_o2_frac', 'exhaust_temp_k', 'heat_in_w', 'o2_frac', 'temp_k',
+    'volume_m3',
+)
+AIR_VOLUMES = ('bay', 'garage')
+AIR_STACK_SCALARS = ('extractor_capture_frac', 'cell_fan_m3_s',
+                     'vehicle_speed_mps')
+
+#: Hole emitters. An undamaged engine carries one splash emitter per
+#: cylinder (`cylinder_N.bore_bottom.splash.dipper`), so the baseline
+#: count is `n_cyl`. DAMAGE CREATES MORE, and that is a topology change
+#: rather than a parameter change -- a holed engine has a different
+#: stride and therefore cannot share an assembly with an intact one,
+#: which is the ABI's own rule applied to damage.
+EMITTER_SCALARS = (
+    'contained_head_m', 'contained_l', 'deposit_kg_s', 'deposited_kg',
+    'dip_depth_m', 'drip_phase', 'drip_rate_hz', 'drop_mass_kg', 'flow_m3_s',
+    'gas_temp_k', 'height_above_low_m', 'ingest_kg_s', 'ingested_kg',
+    'jet_speed_m_s', 'mass_flow_kg_s', 'radius_m', 'spilled_kg',
+    'throw_radius_m',
+)
+#: NOT declared. `HoleEmitters.lost_l`, `.ingest_kg_s` and `.mix` are
+#: dicts keyed by fluid circuit, empty on an intact engine and created
+#: entry by entry as fluid is actually lost. They are damage
+#: accumulators, so like the emitter count itself they are a topology
+#: matter rather than a slot in a fixed stride. Declaring them as two
+#: scalars -- which was tried -- writes a float over a mapping and the
+#: next step dies in `hole_emitters.step` on `lost_l.get`.
+EMITTER_BANK_SCALARS = ()
+
+#: The catalyst brick: a real accumulator, not a reading.
+CATALYST_SCALARS = ('brick_temp_k', 'co_efficiency', 'converted_co_kg',
+                    'nox_efficiency')
+
+#: The electrical reading LOOKS derived and is not: the next step consumes
+#: `reading.alternator_shaft_load_w` when it solves the drivetrain, so a
+#: stale reading changes the trajectory.
+ELECTRICAL_READING_SCALARS = (
+    'alternator_current_a', 'alternator_shaft_load_w', 'battery_current_a',
+    'battery_soc_frac', 'load_current_a', 'load_w', 'voltage_v',
+)
+
+#: The solver's last published readings. Numeric entries only: the
+#: mapping also carries booleans and nested dicts, and a span holds
+#: doubles. Also consumed by the following step, not merely reported.
+DRIVETRAIN_OUT_KEYS = (
+    'ac_compressor_load_w', 'alternator_delivered_w', 'auxiliary_injection_delivered_kg_s', 'auxiliary_injection_fill_frac', 'cam_phase_lag_rad', 'cam_timing_slack_frac', 'coolant_flow_lpm', 'coolant_temp_k', 'cooling_fan_flow_m3_s', 'crank_reaction_torque_nm', 'dyno_absorber_omega', 'exhaust_backpressure_frac', 'exhaust_flow_capacity_kg_s', 'exhaust_temp_k', 'friction_heat_w', 'fuel_availability_frac', 'fuel_composition_frac', 'fuel_delivered_kg_s', 'fuel_fill_frac', 'fuel_pump_flow_capacity_kg_s', 'fuel_temp_k', 'intake_charge_temp_k', 'intake_flow_capacity_kg_s', 'intake_manifold_pressure_pa', 'nitrous_delivered_kg_s', 'nitrous_fill_frac', 'oil_flow_lpm', 'oil_pressure_pa', 'oil_temp_k', 'pneumatic_compressor_delivered_w', 'pneumatic_compressor_running_w', 'pneumatic_idle_assist_delivered_kg_s', 'pneumatic_reserve_fill_frac', 'pneumatic_reserve_pressure_pa', 'supercharger_belt_slack_frac',
+)
+
+
 def topology_signature(engine, graph=None) -> str:
     """What makes two engines shareable in one compiled assembly.
 
@@ -248,14 +419,67 @@ def engine_graph_abi(engine, *, lanes: int = 1) -> EngineGraphABI:
     add("cyl_burned_frac", n_cyl, "frac")
     add("cyl_valve_factor", n_cyl, "frac", "valve/carbon flow derate")
     add("cyl_wall_temp_k", n_cyl, "K")
+    # `state.slot_records` is n_cyl rows of four floats. The four
+    # `cyl_last_*` spans above were written expecting named fields on a
+    # record; there is no record, so the block is carried WHOLE rather
+    # than split into names whose meaning this file cannot verify.
+    add("cyl_flame_radius_m", n_cyl, "m", "the kernel front, mid-burn")
+    add("slot_record", n_cyl * 4, "mixed", "state.slot_records, flattened")
+    add("battery_soc_frac", 1, "frac")
+    add("air_volume", len(AIR_VOLUMES) * len(AIR_VOLUME_SCALARS), "mixed",
+        "bay then garage, in AIR_VOLUME_SCALARS order")
+    add("air_stack", len(AIR_STACK_SCALARS), "mixed")
+    add("emitter", n_cyl * len(EMITTER_SCALARS), "mixed",
+        "one splash emitter per cylinder, in EMITTER_SCALARS order")
+    add("catalyst", len(CATALYST_SCALARS), "mixed")
+    add("electrical_reading", len(ELECTRICAL_READING_SCALARS), "mixed")
+    add("net_torque", n_node, "Nm", "the solver's last net torque per node")
+    add("drivetrain_out", len(DRIVETRAIN_OUT_KEYS), "mixed",
+        "the solve's published readings, in DRIVETRAIN_OUT_KEYS order")
+    # `_drivetrain_out["fluid_circuits"]` is a NESTED mapping, one entry
+    # per circuit, and it was skipped when the outer mapping was filtered
+    # to numeric values. The next step reads it. Leaving it out was worth
+    # 8.96e-06 rpm of replay divergence and nothing else was: every other
+    # span could be exact while this one quietly carried the solve's last
+    # circuit pressures forward from whatever ran most recently.
+    add("out_circuit_pressure_pa", n_circ, "Pa")
+    add("out_circuit_temp_k", n_circ, "K")
 
     # ---- per fluid circuit ------------------------------------------
+    # Every field of `FluidCircuit` measured to move during a run. The
+    # first three were declared from the start; the rest were found by
+    # diffing a restored sim against the original, which is the only way
+    # to be sure a checkpoint is complete rather than merely plausible.
     add("circuit_pressure_pa", n_circ, "Pa")
     add("circuit_temp_k", n_circ, "K")
     add("circuit_fill_frac", n_circ, "frac")
+    add("circuit_flow_lpm", n_circ, "L/min")
+    add("circuit_supply_pressure_pa", n_circ, "Pa")
+    add("circuit_target_pressure_pa", n_circ, "Pa")
+    add("circuit_delivered_flow_kg_s", n_circ, "kg/s")
 
     # ---- per graph node ---------------------------------------------
     add("node_omega", n_node, "rad/s", "the torque solver's own shaft speeds")
+
+    # ---- per drivetrain edge ----------------------------------------
+    edges = graph["edges"] if isinstance(graph, dict) else graph[1]
+    n_edge = len(edges)
+    for span_name, _attribute, unit in EDGE_FIELDS:
+        add(span_name, n_edge, unit)
+
+    # ---- the whole state record, and the crankcase -------------------
+    add("state_scalar", len(STATE_SCALARS), "mixed",
+        "every scalar field of the state record, in STATE_SCALARS order")
+    add("state_list", len(STATE_LISTS) * n_cyl, "mixed",
+        "the per-cylinder lists, in STATE_LISTS order")
+    add("crankcase_scalar", len(CRANKCASE_SCALARS), "kg")
+
+    # ---- the sim's own scalars, and its generator --------------------
+    add("sim_scalar", len(SIM_SCALARS), "mixed",
+        "every mutable scalar the sim carries, in SIM_SCALARS order")
+    add("rng_word", RNG_SLOTS, "word", "the generator's position")
+    add("numpy_rng", len(NUMPY_RNG_PATHS) * NUMPY_RNG_SLOTS, "word",
+        "PCG64 state for each generator in NUMPY_RNG_PATHS")
 
     # ---- lumped subsystems ------------------------------------------
     add("crankcase_pressure_pa", 1, "Pa")
