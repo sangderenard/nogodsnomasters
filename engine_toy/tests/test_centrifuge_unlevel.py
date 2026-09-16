@@ -2,11 +2,13 @@
 freedom one short foot gives it.
 
 THE NUMBERS ARE SMALL BECAUSE THE FREEDOM IS SMALL. On firm soil a foot
-carrying 240 N of this machine sinks a tenth of a millimetre, so the
-whole of "one foot slightly short" happens inside a quarter of a
-millimetre: below that the foot is partly unloaded and lifts sooner,
-past it the foot is off the floor and the machine is a three-footed one
-with lower modes. Both are in the table, and both are damage.
+carrying 250 N of this machine sinks a tenth of a millimetre, and the
+other three redistribute as it is wound up, so the whole of "one foot
+slightly short" happens inside half a millimetre: below that the foot
+is partly unloaded and lifts sooner, at the point it lets go the frame
+strikes it on every crossing, and past that the foot is out of reach
+and the machine is a three-footed one with lower modes. On a slab the
+same band is three microns wide. All of it is in the table.
 """
 import pytest
 
@@ -14,8 +16,10 @@ import centrifuge_production as cp
 import feet
 import mode_table as mt
 
-#: a sludge cake that has thrown unevenly: two grams at the bowl wall
-CAKE_KG_M = 0.002
+#: a sludge cake that has thrown unevenly: a gram at the bowl wall --
+#: enough to lift a foot that has been unloaded, not enough to lift one
+#: carrying its share, which is what makes levelling the variable
+CAKE_KG_M = 0.001
 UNDER = 0.06
 
 
@@ -72,7 +76,7 @@ def test_a_short_foot_unloads_and_the_hammering_grows_with_the_shortfall(doc):
     """Commensurate: the short foot's static load falls linearly with the
     shortfall, the alternating force exceeds it sooner, and the energy of
     each landing grows continuously from nothing."""
-    shorts_um = (0, 25, 50, 100, 150, 250)
+    shorts_um = (0, 100, 150, 250, 350, 400)
     powers, statics = [], []
     for um in shorts_um:
         t = table(doc, um * 1e-6)
@@ -80,10 +84,10 @@ def test_a_short_foot_unloads_and_the_hammering_grows_with_the_shortfall(doc):
         statics.append(t.rows[0].stance.forces[fl])
         powers.append(hammering(t))
     assert all(a > b for a, b in zip(statics, statics[1:]))
+    assert powers[0] == 0.0
     assert all(b > a for a, b in zip(powers, powers[1:]))
-    # a quarter of a millimetre is three orders of magnitude, not a flag
-    assert powers[-1] > 1000.0 * powers[0]
-    assert powers[1] < 0.05 * powers[-1]
+    # four tenths of a millimetre is two orders of magnitude, not a flag
+    assert powers[1] < 0.01 * powers[-1]
 
 
 def test_the_worst_is_the_moment_the_foot_lets_go(doc):
@@ -94,7 +98,7 @@ def test_the_worst_is_the_moment_the_foot_lets_go(doc):
     reach and the machine is a quieter three-footed one. The freedom is
     tiny and so is the band, and the damage peaks inside it."""
     level = table(doc, 0.0)
-    nearly = table(doc, 420e-6)
+    nearly = table(doc, 440e-6)
     just_off = table(doc, 460e-6)
     well_off = table(doc, 1000e-6)
     assert not nearly.rows[0].stance.lifted
@@ -106,7 +110,7 @@ def test_the_worst_is_the_moment_the_foot_lets_go(doc):
     assert not any("struck" in h for r in well_off.rows for h in r.hazards)
     # and the rate peaks at the point of letting go
     assert hammering(nearly) > hammering(just_off) > hammering(well_off) > 0.0
-    assert hammering(nearly) > 10.0 * hammering(well_off)
+    assert hammering(nearly) > 4.0 * hammering(well_off)
 
 
 def test_on_a_slab_a_millimetre_is_two_feet_and_the_table_says_it_rocks(doc):

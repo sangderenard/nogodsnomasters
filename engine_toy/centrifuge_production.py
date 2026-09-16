@@ -116,10 +116,13 @@ def build(identity: str = "plant.centrifuge", *, unit: Centrifuge | None = None,
                 material=section.material, mass_kg=frame_mass,
                 attributes={"in_view": "plant", "frame": frame,
                             "section": section.designation})
-    feet = {"foot_fl": box.face_point("-y", across=(-hx * 0.9, -hz * 0.9)),
-            "foot_fr": box.face_point("-y", across=(-hx * 0.9, +hz * 0.9)),
-            "foot_rl": box.face_point("-y", across=(+hx * 0.9, -hz * 0.9)),
-            "foot_rr": box.face_point("-y", across=(+hx * 0.9, +hz * 0.9)),
+    # `across` is a FRACTION of the half-extent, not a distance: the
+    # first draft passed metres and put the feet at a third of the
+    # stance the frame has, which the numbers accepted without comment
+    feet = {"foot_fl": box.face_point("-y", across=(-0.9, -0.9)),
+            "foot_fr": box.face_point("-y", across=(-0.9, +0.9)),
+            "foot_rl": box.face_point("-y", across=(+0.9, -0.9)),
+            "foot_rr": box.face_point("-y", across=(+0.9, +0.9)),
             # THE BOWL AND THE MOTOR BALANCE EACH OTHER ACROSS THE FRAME.
             # With the motor hung out at 220 mm and the bowl near the
             # middle the CG sat 90 mm aft and the front feet carried 47 N
@@ -127,8 +130,8 @@ def build(identity: str = "plant.centrifuge", *, unit: Centrifuge | None = None,
             # gram of unbalance, and every levelling result was buried
             # under a layout fault. A real purifier puts the bowl and the
             # motor either side of the frame's centre, and so does this.
-            "spindle": box.face_point("+y", across=(bowl_offset_m, 0.0)),
-            "motor_pad": box.face_point("+y", across=(motor_offset_m, 0.0)),
+            "spindle": box.face_point("+y", across=(bowl_offset_m / hx, 0.0)),
+            "motor_pad": box.face_point("+y", across=(motor_offset_m / hx, 0.0)),
             "clad_l": box.face_point("-z"), "clad_r": box.face_point("+z")}
     f_nodes = emit_prism(g, box, feet, assembly="centrifuge",
                          port_kwargs={"bolt_radius_m": 0.008})

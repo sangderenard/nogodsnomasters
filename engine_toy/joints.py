@@ -728,6 +728,10 @@ for _k in ("coolant-line", "oil-line", "exhaust-flow-path", "fuel-line",
     _mc(_k, WELDED, routed=True, material="steel-pipe")
 _mc("port-face-seal", WELDED, routed=True, zero_length=True,
     material="steel-pipe")
+# An electrical conduit carries wire, not fluid, and no load unless it
+# says so -- a steel conduit declared `load_bearing` on the edge holds
+# its junction box up by its own bending, which is what conduit does.
+_mc("electrical-conduit", WELDED, routed=True, material="steel-pipe")
 
 
 #: The tokens, by name: `joints.T.single_axis_slider`, `joints.T.coolant_line`.
