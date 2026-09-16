@@ -61,12 +61,29 @@ from dataclasses import dataclass
 class ScavengeType:
     key: str
     label: str
-    #: Fraction of delivered air still aboard when the ports close, at
-    #: a delivery ratio of 1.0. The single most important number here.
-    trapping_at_unity: float
-    #: How fast trapping falls as more air is pushed through. Shove
-    #: harder and a greater share of it short-circuits straight out.
-    short_circuit_slope: float
+    #: WHERE THIS GEOMETRY SITS BETWEEN THE TWO EXACT LIMITS, 0 to 1.
+    #:
+    #: Trapping efficiency is not something to fit a slope to. Hopkinson
+    #: solved it in closed form in 1914 by bounding it between two ideal
+    #: cases, and every real engine lies between them:
+    #:
+    #:   perfect displacement   the fresh charge pushes the burnt gas
+    #:                          ahead of it like a piston, with no
+    #:                          mixing at all. Nothing fresh can leave
+    #:                          until everything burnt has, so
+    #:                          TE = min(1, 1/DR) -- exactly.
+    #:
+    #:   perfect mixing         the incoming charge mixes instantly and
+    #:                          uniformly with the cylinder contents, so
+    #:                          what leaves is always the current mixture
+    #:                          and some fresh charge always escapes.
+    #:                          Integrating that gives
+    #:                          TE = (1 - e^-DR)/DR -- exactly.
+    #:
+    #: So the only thing a scavenge geometry contributes is how close to
+    #: plug flow it manages to be. One number, physically meaningful,
+    #: replacing a pair of fitted constants.
+    plug_flow: float
     #: What the incoming air is carrying. If the fuel is mixed in
     #: upstream, everything that short-circuits takes fuel with it.
     fuel_in_scavenge: bool
@@ -75,24 +92,24 @@ class ScavengeType:
 
 SCAVENGE_TYPES: dict[str, ScavengeType] = {
     "uniflow": ScavengeType(
-        "uniflow", "uniflow, liner ports and head valve", 0.97, 0.10, False,
+        "uniflow", "uniflow, liner ports and head valve", 0.92, False,
         why="ports all round the bottom of the liner, one big poppet valve in the "
             "head, and the gas goes one way. The fresh charge pushes the burnt gas "
             "ahead of it instead of mixing with it, which is why trapping is near "
             "perfect -- and the fuel is injected after the ports shut, so none of it "
             "can leave unburnt"),
     "loop": ScavengeType(
-        "loop", "loop (Schnuerle) scavenged", 0.78, 0.30, True,
+        "loop", "loop (Schnuerle) scavenged", 0.55, True,
         why="transfer ports aimed so the incoming charge sweeps up one side of the "
             "bore, across the head and down the other to the exhaust. Far better than "
             "a deflector piston and still mixing with what it is trying to expel"),
     "cross": ScavengeType(
-        "cross", "cross scavenged, deflector piston", 0.65, 0.38, True,
+        "cross", "cross scavenged, deflector piston", 0.30, True,
         why="a hump on the piston crown meant to steer the incoming charge upward. It "
             "steers some of it. The deflector also wrecks the chamber shape and adds "
             "mass exactly where a two-stroke wants none"),
     "crankcase": ScavengeType(
-        "crankcase", "crankcase scavenged", 0.70, 0.34, True,
+        "crankcase", "crankcase scavenged", 0.40, True,
         why="the underside of the piston is the pump. Beautifully simple, nothing "
             "extra to drive, and it means the crankcase is full of fuel-air mixture "
             "rather than oil -- so the engine has to be lubricated by oil mixed into "
@@ -139,32 +156,80 @@ def port_open_deg(port_height_frac: float = DEFAULT_PORT_HEIGHT_FRAC,
     return 2.0 * lo
 
 
+#: Crankcase compression ratio: (crankcase volume + swept) / crankcase
+#: volume. A real, measurable geometric property of the casting, and the
+#: thing that decides how well the underside of the piston pumps. Small
+#: engines run 1.4 to 1.5; any higher and the case gets so small that
+#: pumping losses and heat outweigh the delivery gained.
+DEFAULT_CRANKCASE_COMPRESSION = 1.45
+
+
 def delivery_ratio(boost_frac: float = 0.0, crankcase: bool = False,
-                   rpm_frac: float = 1.0) -> float:
+                   crankcase_compression: float = DEFAULT_CRANKCASE_COMPRESSION,
+                   transfer_pressure_ratio: float = 1.25) -> float:
     """Air offered to the cylinder, over what its swept volume holds.
 
-    A blown engine can offer far more than its own displacement; a
-    crankcase-scavenged one cannot even manage its own, because the
-    pump is a piston underside with a large dead volume and no valves
-    worth the name."""
-    if crankcase:
-        # the crankcase is a poor pump and gets worse away from the
-        # speed its transfer ports and reed were tuned for
-        f = max(0.0, min(1.5, float(rpm_frac)))
-        return 0.62 + 0.28 * math.exp(-((f - 0.75) / 0.42) ** 2)
-    return 1.0 + max(0.0, float(boost_frac))
+    A BLOWN ENGINE simply offers what the blower delivers: one
+    atmosphere plus the boost.
+
+    A CRANKCASE-SCAVENGED ONE is pumped by the underside of its own
+    piston, which is a reciprocating pump with a very large clearance
+    volume -- and the exact relation for that is already in this
+    project. compressors.volumetric_efficiency is the standard
+    clearance-re-expansion result:
+
+        eta_v = 1 + c - c . r^(1/n)
+
+    where c is clearance volume over swept volume and r the pressure
+    ratio. A crankcase's clearance ratio is 1/(CCR - 1), which for a
+    typical 1.45 crankcase compression is well over two -- an enormous
+    dead volume by pump standards, and exactly why a crankcase-scavenged
+    engine cannot deliver even its own displacement.
+
+    This replaces a fitted bell curve over rpm. The rpm dependence a
+    real one shows is not a property of the pump at all -- it comes from
+    the tuned expansion chamber on the exhaust reflecting escaped charge
+    back in, which belongs to the exhaust and not here."""
+    if not crankcase:
+        return 1.0 + max(0.0, float(boost_frac))
+    import compressors as _cp
+    ccr = max(1.05, float(crankcase_compression))
+    clearance = 1.0 / (ccr - 1.0)
+    return max(0.05, _cp.volumetric_efficiency(
+        max(1.001, float(transfer_pressure_ratio)), clearance, 1.3))
+
+
+def perfect_displacement_trapping(dr: float) -> float:
+    """The upper bound. Exact.
+
+    No mixing at all: fresh charge sweeps burnt gas ahead of it, so
+    until the cylinder is full nothing fresh can escape. Past a delivery
+    ratio of one, everything extra goes straight out."""
+    d = max(1e-9, float(dr))
+    return min(1.0, 1.0 / d)
+
+
+def perfect_mixing_trapping(dr: float) -> float:
+    """The lower bound. Also exact.
+
+    The incoming charge mixes instantly with the cylinder contents, so
+    what leaves is always the current mixture and some fresh charge
+    always escapes -- even at a delivery ratio well under one. The
+    integral of that is (1 - e^-DR)/DR, which is why a badly scavenged
+    engine cannot be fixed by simply blowing harder."""
+    d = max(1e-9, float(dr))
+    return (1.0 - math.exp(-d)) / d
 
 
 def trapping_efficiency(scavenge: str, dr: float) -> float:
-    """Share of delivered air still aboard when the ports close.
+    """Where this geometry actually lands between the two exact limits.
 
-    Falls as delivery ratio rises: pushing more air through a cylinder
-    that is already full means the extra goes out of the exhaust. This
-    is the term that makes "just add more boost" stop working on a
-    two-stroke long before it does on a four-stroke."""
+    Not a fitted curve: both bounds are closed-form, and the scavenge
+    type contributes only how close to plug flow it manages to be."""
     s = scavenge_type(scavenge)
-    excess = max(0.0, float(dr) - 1.0)
-    return max(0.15, min(0.99, s.trapping_at_unity - s.short_circuit_slope * excess))
+    k = max(0.0, min(1.0, s.plug_flow))
+    return (k * perfect_displacement_trapping(dr)
+            + (1.0 - k) * perfect_mixing_trapping(dr))
 
 
 @dataclass
@@ -186,7 +251,7 @@ def charge(scavenge: str, *, boost_frac: float = 0.0, rpm_frac: float = 1.0,
     place -- not multiplied by it."""
     s = scavenge_type(scavenge)
     crank = (scavenge == "crankcase")
-    dr = delivery_ratio(boost_frac, crankcase=crank, rpm_frac=rpm_frac)
+    dr = delivery_ratio(boost_frac, crankcase=crank)
     tr = trapping_efficiency(scavenge, dr)
     lost = (1.0 - tr) if s.fuel_in_scavenge else 0.0
     # THE CYLINDER IS NOT FULL SIZE WHEN IT SHUTS. Scavenge ports are
@@ -200,6 +265,10 @@ def charge(scavenge: str, *, boost_frac: float = 0.0, rpm_frac: float = 1.0,
     #
     # Leaving this out gave the Wartsila a charging efficiency of 2.52
     # and nearly three times its real torque.
+    # Exact, not chosen: ports cut at height h above bottom dead centre
+    # close when the piston reaches h, so the volume sealed in is the
+    # swept volume less that height. 1 - h/stroke, by definition of
+    # where the holes are.
     trapped_frac = max(0.35, 1.0 - float(port_height_frac))
     return ScavengeResult(
         delivery_ratio=dr, trapping=tr, charging=dr * tr * trapped_frac,
