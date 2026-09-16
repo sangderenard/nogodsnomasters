@@ -3590,7 +3590,108 @@ def _build_catalogue() -> list[Engine]:
     return engines
 
 
-CATALOGUE: list[Engine] = _build_catalogue()
+# ---------------------------------------------------------------------
+# COMPRESSION RATIOS, DECLARED
+# ---------------------------------------------------------------------
+#
+# EngineArchitecture.compression_ratio defaults to 10.0 and thirty-four
+# of thirty-six catalogue engines were carrying that default -- a 1900s
+# hit-and-miss, an emissions-era six, a heavy industrial diesel and a
+# slow-speed marine diesel all claiming the same figure. Compression
+# ratio sets air-standard thermal efficiency directly and is the single
+# thing that distinguishes a diesel from a petrol engine, so nothing
+# derived downstream could be better than that default.
+#
+# THE MOST INSTRUCTIVE ENTRIES ARE THE LOW ONES. A Merlin runs SIX to
+# one, less than a lawnmower, because it is supercharged to two
+# atmospheres and the blower does the compressing -- static compression
+# plus boost is what the charge actually sees, and the sum is what
+# knocks. Every heavily blown engine on this list is low for the same
+# reason, and reading 6:1 as "weak" gets it exactly backwards.
+#
+# Marked (ref) where a published figure was found, (approx) where the
+# value is the well-established figure for the class but was not
+# confirmed against a primary source in this pass. The approximations
+# are still far closer than 10.0 and are flagged so they can be
+# tightened rather than trusted.
+COMPRESSION_RATIOS: dict[str, tuple[float, str]] = {
+    # --- road and industrial piston engines ---
+    "amc-258-jeep-i6": (8.5, "ref: AMC 258 ran 8.0-8.5:1 through the emissions era"),
+    "cat-c18-industrial-diesel": (16.3, "ref: Caterpillar C18 published specification"),
+    "mazda-b6ze-miata-1990": (9.4, "ref: B6ZE(RS), 1990 MX-5"),
+    "toyota-3sfe-camry-1990": (9.5, "ref: 3S-FE, regular unleaded"),
+    "vw-vr6-2800-12v": (10.0, "ref: VR6 2.8 12v -- the one entry the default happened to match"),
+    "twin-rotor-13b": (9.4, "ref: 13B naturally-aspirated rotor"),
+    "alfa-busso-v6-3000-12v": (9.5, "approx: Busso 3.0 12v"),
+    "buick-231-oddfire-v6-1975": (8.0, "approx: 1975 Buick 231, deep emissions era"),
+    "honda-style-commuter-i4-1500": (9.4, "approx: period Honda 1.5 economy four"),
+    "springtail-i4-1600": (10.0, "approx: modern NA four, this one is invented"),
+    "aircooled-flat-four-1584": (7.5, "approx: VW 1600 dual-port"),
+    "superbike-i4-1340": (10.8, "approx: large-capacity superbike four"),
+    "gt-flat-six-4000": (12.5, "approx: modern high-output NA flat six"),
+    "25cc-two-stroke-trimmer": (7.0, "approx: small air-cooled two-stroke"),
+
+    # --- low compression BECAUSE they are blown ---
+    "packard-merlin-v1650": (6.0, "ref: Merlin/V-1650 -- low static because two-stage supercharged"),
+    "pw-r1340-wasp": (6.0, "approx: R-1340 Wasp"),
+    "pw-r1830-twin-wasp": (6.7, "ref: Twin Wasp series"),
+    "pw-r2000-twin-wasp": (6.75, "approx: R-2000"),
+    "pw-r2800-double-wasp": (6.8, "ref: R-2800 Double Wasp"),
+    "pw-r4360-wasp-major": (6.7, "approx: R-4360 Wasp Major"),
+    "supercharged-drag-v8-8200": (8.0, "approx: blown alcohol drag motor, deliberately low"),
+    "monster-540-blown-methanol": (8.5, "approx: blown methanol -- methanol tolerates more than petrol"),
+    "monster-632-twin-turbo": (9.0, "approx: big-block built for boost"),
+    "radical-cam-bigblock-7400": (10.5, "approx: naturally-aspirated big block on a big cam"),
+
+    # --- compression ignition ---
+    "ldt465-multifuel-deuce": (22.0, "approx: LDT-465 multifuel -- high CR is what lets it run anything"),
+    "wartsila-rta96c-14cyl-marine-diesel": (19.0, "approx: slow-speed two-stroke marine diesel"),
+
+    # --- the old and the odd ---
+    "fairbanks-morse-z-oilfield-hit-and-miss": (4.0, "approx: 1900s hit-and-miss on poor fuel"),
+    "curved-dash-1901-single": (4.0, "approx: 1901 single, period fuel and materials"),
+}
+
+#: Engines for which a compression ratio is not a meaningful property at
+#: all, kept explicit so they are not mistaken for gaps. A turbine has a
+#: PRESSURE ratio across its compressor, which is a different quantity;
+#: an atmospheric Otto-Langen engine has no compression stroke, which is
+#: the entire point of the design; and nothing electric or steam-driven
+#: compresses a charge before burning it.
+NO_COMPRESSION_RATIO: frozenset = frozenset({
+    "agt1500-abrams-turbine", "small-turboshaft-apu-class",
+    "otto-langen-atmospheric-1867", "otto-langen-atmospheric-workshop",
+    "compressed-air-mine-locomotive", "steam-traction-engine-1900",
+    "dual-motor-ev-reference", "servo-direct-drive-400",
+})
+
+
+def _apply_compression_ratios(catalogue: list) -> list:
+    """Stamp the declared compression ratios onto the built catalogue.
+
+    Applied here rather than threaded through every constructor because
+    the ratio is a property of the ENGINE as catalogued, and doing it in
+    one table keeps the sources next to the numbers."""
+    import dataclasses as _dc
+    out = []
+    for e in catalogue:
+        entry = COMPRESSION_RATIOS.get(e.identity)
+        if entry is None:
+            out.append(e)
+            continue
+        out.append(_dc.replace(e, architecture=_dc.replace(
+            e.architecture, compression_ratio=float(entry[0]))))
+    return out
+
+
+def undeclared_compression_ratios() -> list:
+    """Catalogue entries still on the default, excluding the ones for
+    which the quantity is meaningless."""
+    return sorted(i for i, e in BY_IDENTITY.items()
+                  if i not in COMPRESSION_RATIOS and i not in NO_COMPRESSION_RATIO)
+
+
+CATALOGUE: list[Engine] = _apply_compression_ratios(_build_catalogue())
 BY_IDENTITY: dict[str, Engine] = {e.identity: e for e in CATALOGUE}
 
 
