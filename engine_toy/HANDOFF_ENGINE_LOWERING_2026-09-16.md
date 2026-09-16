@@ -303,3 +303,85 @@ invalidate the batched kernel cache; the first `time_trials` start after
 them rebuilds the contact and body kernels, and the body lowering itself
 has not been rerun. The expected outcome is that the aggregate mismatch
 is gone; a different shortfall would be a different defect.
+
+## Continuation, later still: the dot operator, and the contract
+
+### The edge that was missing, and where
+
+Source pursuit at ingestion (`graph_express2._expand_unresolved_ast_parents`)
+resolves a call's target by bindings, name to Python object: `self.field.step`
+is `bindings["self"]`, then `getattr(owner, "field")`, then the class's own
+`self.field = Cls()` from source when that fails (`_class_field_reference`),
+then `getattr(Cls, "step")`. The pursued method's class is admitted as a
+`ClassDef` in the module, which is how a class enters the reducer's
+`class_definitions` and class table. That is the `.` edge that populates the
+class system.
+
+For a class supplied as a Python object, `self` is bound to the class. For a
+class that exists only in the submitted text -- `Sim` in the repro,
+`EngineCycleSim` in the engine -- `self` was bound to nothing (measured:
+`self=None` while `Field` resolved fine), so the chain broke at its first
+link, every `self.<field>.<method>()` was reported `dynamic_or_primitive`,
+and the field's class never entered the table. Turing `e40c6df9` binds
+`self`/`cls` of a source-text class's methods to the `ast.ClassDef` and
+navigates a field on it through the class body: `self.x = Cls()`,
+`self.x: T = ...`, class-level `x: T`, and `setattr(self, "x", ...)` with a
+literal name. Method names resolve to nothing on this path; the reducer
+links those through the class table as before. The AST-valued binding is
+kept out of the `_python_bindings` the reducer reads as static values, and
+the contract's occurrence decision is never asked about an AST node.
+Pinned in `tests/test_field_object_receiver_class.py` (the resolver step in
+isolation, the declared source lowering with the imported method linked,
+and the undeclared source named by the refusal). The ast-parent file
+passes except `test_ingestion_leaves_source_less_parent_unresolved`, which
+was already stale: `builtins.len` has carried a declarative identity
+program since `f79e3448`, and such calls are skipped before the unresolved
+list is written.
+
+### What the resolved call then hit: the contract's boundary
+
+With the receiver resolved the reason became `declared_boundary`. The
+sheet's roots are relative to the sheet, i.e. the turing tree, and
+engine_toy sits beside it. Measured under the engine's own contract:
+`ordnance.OrdnanceField.step` and `burst.BurstField.step` classify
+`unknown` and are rejected `provenance_not_declared`. So once the `.` step
+works, the contract itself refuses to pursue the engine's field classes.
+Before the resolver fix that question was never reached.
+
+The contract had no way to be told about source outside its roots. It now
+has one, and deliberately not a directory root: `with_sources` (turing,
+second commit after `e40c6df9`) admits ONE module per entry, by name and by
+file path, and only when both match; siblings stay unknown, and what a
+declared module imports is not admitted by the entry. `compile_contract.py`
+lists ordnance, burst and hole_emitters. The loop refusal reads the
+decision the rejected call node already carries and says: the identity,
+the origin file, the classification, the rule, the reason, and that the
+one file should be declared if the program is meant to use it, otherwise
+the program is using something it should not.
+
+Measured with the ingestion tally (`_expand_unresolved_ast_parents` on the
+engine source, about sixty seconds):
+
+    directory root:   40 definitions admitted; 13 submitted source,
+                      ordnance 12, hole_emitters 8, burst 3,
+                      ballistics 2, engine_rays 2
+    selective list:   36 admitted; the same minus ballistics/engine_rays,
+                      which now surface by name as rejected `unknown`:
+                      ballistics.material_profile, ballistics.ProjectileState,
+                      engine_rays.Ray.from_points
+
+Also visible in the tally, and worth deciding on: the engine step path
+reaches `numpy.asarray`, `numpy.zeros` (rejected under full-native as a
+native extension without a declared ABI) and `numpy.random` Generator
+methods (`normal`, `uniform`, `lognormal`, classified unknown). Whether the
+engine should be reaching those from the compiled step is a program
+question, not a compiler one.
+
+### What is still unverified
+
+The engine lowering itself under the selective contract. The probe run
+during this work used the directory-root contract and takes about thirty
+minutes; its verdict, when it lands, says whether the loop lowers once the
+three field classes are ingested, not what the selective contract does
+with ballistics and engine_rays. Expect the next refusal, if any, to name
+one of those by file.
