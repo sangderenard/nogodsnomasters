@@ -163,6 +163,10 @@ class HoleEmitter:
     drip_rate_hz: float = 0.0
     drop_mass_kg: float = 0.0
     gas_temp_k: float = 293.15
+    #: Pressure this emitter last discharged FROM. Recorded rather than
+    #: recomputed because the throttling drop needs it and the field has
+    #: already worked it out -- see thermal_emission.emission_thermals.
+    source_pressure_pa: float = ATM_PA
     spilled_kg: float = 0.0
     drip_phase: float = 0.0
     drips_this_step: int = 0
@@ -195,6 +199,46 @@ class HoleEmitter:
     target_position: tuple = ()
     deposited_kg: float = 0.0
     deposit_kg_s: float = 0.0
+    # WHAT THIS ONE DISCHARGES INTO, and the cheapest honest idea of
+    # that volume: the identity of the casing it sprays inside.
+    #
+    # Almost everything an engine sprays, it sprays INTO ITSELF. A rod
+    # throwing oil off the big end, a squirter aimed at a piston crown, a
+    # cam lobe flinging it round the box: none of that is lost, it hits a
+    # wall and runs back to the sump. Only oil that reaches the outside
+    # world is gone. Without this every internal emitter was billed to
+    # `on_loss`, so an engine idling with a healthy oil bath drained its
+    # own sump through the bottom of the block -- the fluid fell out of
+    # the casting under gravity because nothing said the casting was
+    # there.
+    #
+    # No geometry, deliberately: containment is a yes/no about one named
+    # part, not a mesh test per droplet. It stops being yes the moment
+    # that part is breached or taken off, which is the same question
+    # engine_mesh.breached_casings already answers for the renderer.
+    # A declared hint for where it sprays, used only when nothing has
+    # asked the geometry yet.
+    discharges_into: str = ""
+    # WHERE THE SPRAY ACTUALLY LANDS, found by casting a few rays out of
+    # the hole in its own cone and seeing what they hit: ((part, frac),
+    # ...) plus the fraction that hit nothing at all and left the engine.
+    # Resolved once against the ray mesh (the same one a projectile uses)
+    # and re-resolved when the geometry changes, not per droplet.
+    spray_hits: tuple = ()
+    # WHERE IT LANDED, in world space: one impact point and surface
+    # normal per ray that hit something, paired with the part it hit.
+    # The part name alone is a coarse tally; a wetting engine puts fluid
+    # on TRIANGLES, so it needs the point to find them. Keeping only the
+    # name threw away the one thing that handoff actually needs.
+    spray_points: tuple = ()
+    escaped_frac: float = 1.0   # until something resolves it, assume it all leaves
+    spray_resolved: bool = False
+    # WETTING IS A MODE, not something every emitter does. A liquid jet
+    # wets what it lands on; a gas leak reaches the same surfaces and
+    # wets nothing. An emitter stays an emitter either way -- this says
+    # whether the wetting engine should be handed anything at all.
+    wets_surfaces: bool = True
+    returned_l: float = 0.0     # running tally of what landed inside and drained back
 
     @property
     def area_m2(self) -> float:
@@ -234,6 +278,7 @@ class HoleEmitter:
             return 0.0
         if self.fluid == "gas":
             self.gas_temp_k = gas_temp_k
+            self.source_pressure_pa = pressure_pa
             m = choked_orifice_mass_flow_kg_s(a, pressure_pa, gas_temp_k, DISCHARGE_COEFF)
             if m <= 0.0 and pressure_pa > ATM_PA * 1.02:
                 # sub-critical venting: incompressible estimate on the small dp
@@ -338,9 +383,31 @@ class HoleEmitter:
         ang = rng.uniform(0.0, 2 * np.pi, n)
         off = np.abs(rng.normal(0.0, spread, n))
         dirs = (d[None, :] * np.cos(off)[:, None] + (u[None, :] * np.cos(ang)[:, None] + w[None, :] * np.sin(ang)[:, None]) * np.sin(off)[:, None])
+        # THE HOLE HAS A MOUTH, and the stream is as wide as it is.
+        #
+        # Every droplet used to start at the same point, so a burst core
+        # plug and a pinhole produced identically thin threads and only
+        # the individual drops got fatter. That is wrong for anything
+        # bigger than a weep: fluid leaves across the WHOLE opening, so
+        # the stream starts at the hole's diameter and only then breaks
+        # up. Offsetting each droplet's origin by a random point on the
+        # mouth disc costs one extra sample and is the difference
+        # between a thread and a gush.
+        #
+        # sqrt of a uniform gives an even area distribution rather than
+        # a crowd down the middle.
+        mouth = float(getattr(self, "radius_m", 0.0) or 0.0)
+        if mouth > 1e-4:
+            m_r = mouth * np.sqrt(rng.uniform(0.0, 1.0, n))
+            m_a = rng.uniform(0.0, 2 * np.pi, n)
+            p0 = p0[None, :] + (u[None, :] * np.cos(m_a)[:, None]
+                                + w[None, :] * np.sin(m_a)[:, None]) * m_r[:, None]
+            p0 = p0.reshape(n, 3)
+        else:
+            p0 = p0[None, :]
         if self.regime == "ingest":
             v = min(self.jet_speed_m_s, 4.0)
-            pos = p0[None, :] + dirs * (INGEST_REACH_M - np.minimum(INGEST_REACH_M, v * t))
+            pos = p0 + dirs * (INGEST_REACH_M - np.minimum(INGEST_REACH_M, v * t))
             vel = -dirs * v
             return pos, vel
         if self.fluid == "gas":
@@ -348,12 +415,12 @@ class HoleEmitter:
             # a plume slows as it entrains the bay air: v(t) = v0 / (1 + t/tau)
             tau = 0.08
             s = v * tau * np.log1p(t / tau)
-            pos = p0[None, :] + dirs * s
+            pos = p0 + dirs * s
             vel = dirs * (v / (1.0 + t / tau))
             return pos, vel
         v = self.jet_speed_m_s
         g = np.array([0.0, -G, 0.0])[None, :]
-        pos = p0[None, :] + dirs * v * t + 0.5 * g * t * t
+        pos = p0 + dirs * v * t + 0.5 * g * t * t
         vel = dirs * v + g * t
         return pos, vel
 
@@ -400,6 +467,179 @@ class HoleEmitterField:
     on_loss = None           # (circuit_id, litres) -> None, applied to the real reservoir
     mix: dict[str, FluidMix] = field(default_factory=dict)       # circuit identity -> its contents
     ingest_kg_s: dict[str, float] = field(default_factory=dict)  # circuit identity -> mass drawn in this tick
+    # part identity -> mass of fluid laid on it by spray that landed
+    # inside the engine. Not a loss: this is oil on the inside of the
+    # castings, on its way back to the sump.
+    wetted_kg: dict[str, float] = field(default_factory=dict)
+
+    # A real jet is a cone, not a line: a handful of rays across it is
+    # enough to say what it is pointed at and how much of it clears the
+    # engine, which is the only question that changes the oil level.
+    SPRAY_CONE_DEG = 18.0
+    SPRAY_RAYS = 9
+    SPRAY_REACH_M = 1.2              # past this, treat it as having left
+    SPRAY_START_CLEARANCE_M = 0.004  # clear of the hole's own lip before testing
+
+    @staticmethod
+    def _is_self_hit(em: HoleEmitter, part: str) -> bool:
+        """Whether this hit is the emitter's own hole or its own part.
+
+        Mesh part names are the node identity with separators flattened
+        (`node_powertrain_head_bank1_oil_fill`), so the comparison is
+        made on that flattened form of the emitter's own identities
+        rather than by looking for words inside a name."""
+        def flat(x: str) -> str:
+            return "node_" + str(x).replace("/", "_").replace(".", "_")
+        own = {flat(em.part)}
+        base = em.identity.rsplit(".", 1)[0] if "." in em.identity else em.identity
+        own.add(flat(base))
+        own.add(flat(em.identity))
+        # the port's own drawn geometry is named for the port, not the node
+        own.add("port_" + str(base).replace("powertrain.", "").replace(".", "_"))
+        return part in own
+
+    def resolve_spray(self, ray_mesh, only_unresolved: bool = True) -> int:
+        """Cast each emitter's spray cone and record what it lands on.
+
+        The engine already carries a ray mesh for projectiles; a jet of
+        oil is asking the same question a bullet does -- what is in front
+        of me, and do I get out. So this uses it, rather than inventing a
+        second idea of where the inside of the engine is.
+
+        Call it once after the graph is built, and again whenever the
+        geometry changes (a cover comes off, a casing is holed): an
+        emitter that used to spray onto the inside of a valve cover
+        starts spraying at the sky the moment the cover is gone, and the
+        oil it throws genuinely does start leaving the engine."""
+        from engine_rays import Ray
+        if ray_mesh is None:
+            return 0
+        done = 0
+        half = math.radians(self.SPRAY_CONE_DEG) * 0.5
+        for em in self.emitters:
+            if only_unresolved and em.spray_resolved:
+                continue
+            origin = np.asarray(em.position, dtype=float)
+            axis = np.asarray(em.direction, dtype=float)
+            n = float(np.linalg.norm(axis))
+            if n < 1e-9:
+                continue
+            axis = axis / n
+            # any two directions across the axis, to fan the cone over
+            tmp = np.array([0.0, 0.0, 1.0]) if abs(axis[2]) < 0.9 else np.array([1.0, 0.0, 0.0])
+            u = np.cross(axis, tmp); u /= max(np.linalg.norm(u), 1e-9)
+            v = np.cross(axis, u)
+            tally: dict[str, int] = {}
+            points: list = []
+            escaped = 0
+            for k in range(self.SPRAY_RAYS):
+                if k == 0:
+                    d = axis
+                else:
+                    ang = 2.0 * math.pi * (k - 1) / max(1, self.SPRAY_RAYS - 1)
+                    d = axis * math.cos(half) + (u * math.cos(ang) + v * math.sin(ang)) * math.sin(half)
+                    d = d / max(np.linalg.norm(d), 1e-9)
+                # START CLEAR OF THE HOLE ITSELF. A port has its own
+                # geometry in the mesh, and a ray launched from its
+                # centre hits it immediately -- which reported every jet
+                # as landing on the very hole it came out of, and so as
+                # perfectly contained no matter what was really in front
+                # of it.
+                hit = ray_mesh.pick(Ray(origin + d * self.SPRAY_START_CLEARANCE_M, d))
+                if hit is not None and self._is_self_hit(em, hit.part):
+                    hit = None
+                if hit is None or float(getattr(hit, "t", 0.0)) > self.SPRAY_REACH_M:
+                    escaped += 1
+                else:
+                    tally[hit.part] = tally.get(hit.part, 0) + 1
+                    points.append((hit.part,
+                                   tuple(float(v) for v in hit.point),
+                                   tuple(float(v) for v in hit.normal)))
+            total = float(self.SPRAY_RAYS)
+            em.spray_hits = tuple(sorted(((p, c / total) for p, c in tally.items()),
+                                          key=lambda t: -t[1]))
+            em.spray_points = tuple(points)
+            em.escaped_frac = escaped / total
+            em.spray_resolved = True
+            done += 1
+        return done
+
+    def deposit_spray(self, em: HoleEmitter, litres: float) -> None:
+        """Lay what landed onto the parts the rays actually hit.
+
+        Kept as a running mass per part so anything that cares -- a
+        thermal model asking which surfaces are oil-wetted, a view
+        drawing wet castings -- reads it off one tally instead of
+        tracking droplets."""
+        if litres <= 0.0:
+            return
+        kg = litres / 1000.0 * DENSITY_KG_M3.get(em.fluid, 900.0)
+        if not em.spray_hits:
+            self.wetted_kg[em.part] = self.wetted_kg.get(em.part, 0.0) + kg
+            return
+        inside = sum(f for _, f in em.spray_hits) or 1.0
+        for part, frac in em.spray_hits:
+            self.wetted_kg[part] = self.wetted_kg.get(part, 0.0) + kg * (frac / inside)
+
+    # Which declared fluid roles are a PUMPED LIQUID that will come out
+    # of an open hole. Intake, exhaust and ignition ports are open by
+    # design -- they are valve seats and plug holes, not leaks -- and a
+    # crankcase breather is supposed to breathe.
+    PUMPED_LIQUID_ROLES = {"oil": "oil", "coolant": "coolant", "fuel": "fuel"}
+
+    def sync_open_ports(self, graph: dict) -> tuple[int, int]:
+        """An emitter for every fluid port that is open RIGHT NOW.
+
+        A line port is not a leak because of what it is called; it is a
+        leak when the thing that closes it is not there. Every port
+        declares its `closure` -- an oil filler's screw cap, a sump's
+        drain plug, a gallery plug, the dipstick -- and this makes a hole
+        out of any port that has a pumped liquid behind it and nothing in
+        it. Take the cap off a running engine and oil comes out of the
+        filler at whatever the gallery is making, which is exactly what
+        happens if you do that to a real one.
+
+        LIVE and idempotent: call it whenever the configuration changes.
+        Putting the cap back takes the emitter away again, so a build
+        that is reconfigured, hacked, or assembled wrong behaves the same
+        way as one that was shot -- there is no separate code path for
+        "the user did this on purpose".
+
+        Where the oil GOES is not decided here. These emitters resolve
+        their spray against the geometry like any other, so a filler
+        under an intact valve cover sprays onto the inside of that cover
+        and drains back, and the same filler with the cover off sprays
+        into the engine bay and is gone."""
+        want: dict[str, dict] = {}
+        for n in graph.get("nodes", ()):
+            circuit = self.PUMPED_LIQUID_ROLES.get(str(n.get("fluid_role") or ""))
+            if circuit is None:
+                continue
+            if n.get("connected") or n.get("plugged"):
+                continue
+            want[f"{n['identity']}.open_port"] = dict(node=n, circuit=circuit)
+        have = {em.identity: em for em in self.emitters if em.kind == "open-port"}
+        # ports that have just been opened
+        added = 0
+        for ident, spec in want.items():
+            if ident in have:
+                continue
+            n = spec["node"]
+            d = n.get("port_direction") or (0.0, 1.0, 0.0)
+            self.emitters.append(HoleEmitter(
+                identity=ident, part=str(n.get("part") or n["identity"]), circuit=spec["circuit"],
+                fluid={"oil": "engine-oil", "coolant": "coolant", "fuel": "fuel"}[spec["circuit"]],
+                position=tuple(float(v) for v in n.get("reference_position", (0.0, 0.0, 0.0))),
+                direction=tuple(float(v) for v in d),
+                radius_m=float(n.get("port_radius_m") or 0.004), through=True, kind="open-port"))
+            added += 1
+        # ports that have just been closed again
+        removed = 0
+        for ident, em in have.items():
+            if ident not in want:
+                self.emitters.remove(em)
+                removed += 1
+        return added, removed
 
     def add_splash_from_graph(self, graph: dict) -> list[HoleEmitter]:
         """One splash emitter per `oil-splash-path` edge dressing.py
@@ -604,11 +844,24 @@ class HoleEmitterField:
                 head = 0.05 * fill
             removed = em.step(dt, p, head, remaining, 293.15)
             if removed > 0.0:
-                self.lost_l[em.circuit] = self.lost_l.get(em.circuit, 0.0) + removed
-                if self.on_loss is not None:
-                    self.on_loss(em.circuit, removed)          # the REAL reservoir loses it
-                if c is not None:
-                    self.contents(em.circuit, c, em.fluid).remove(removed / 1000.0 * DENSITY_KG_M3.get(em.fluid, 900.0))
+                # SPLIT IT BY WHERE IT WENT. Whatever the spray rays
+                # landed on inside the engine drains back to the sump --
+                # real flow out of the hole, real pressure drop, no oil
+                # gone from the machine. Only the fraction that found its
+                # way out is actually lost. Billing the whole lot to
+                # `on_loss` is what let a healthy engine drain its own
+                # sump through the bottom of the block while idling.
+                escaped = removed * max(0.0, min(1.0, em.escaped_frac))
+                landed = removed - escaped
+                if landed > 0.0:
+                    em.returned_l += landed
+                    self.deposit_spray(em, landed)
+                if escaped > 0.0:
+                    self.lost_l[em.circuit] = self.lost_l.get(em.circuit, 0.0) + escaped
+                    if self.on_loss is not None:
+                        self.on_loss(em.circuit, escaped)      # the REAL reservoir loses it
+                    if c is not None:
+                        self.contents(em.circuit, c, em.fluid).remove(escaped / 1000.0 * DENSITY_KG_M3.get(em.fluid, 900.0))
             elif em.regime == "ingest" and c is not None:
                 self._ingest(em, c, dt)
 
@@ -683,3 +936,81 @@ def circuit_identity(circuit) -> str:
     if "coolant" in names or "radiator" in names or "water_pump" in names:
         return "coolant"
     return circuit.kind_class
+
+
+# ---------------------------------------------------------------------
+# THE HANDOFF TO A WETTING ENGINE
+# ---------------------------------------------------------------------
+#
+# An emitter is an emitter: it has a hole, a pressure behind it, a
+# direction, and a rate. Where the fluid GOES once it lands is somebody
+# else's problem, and a much bigger one -- spreading over map triangles,
+# running downhill, pooling, drying, catching fire. This is the seam.
+#
+# What is handed over is deliberately small: the impact points the spray
+# rays already found, the surface normal at each, and the mass arriving
+# there per second. A wetting engine resolves those to triangles itself,
+# because it owns the map and this module does not.
+#
+# Splash deposits come through the same seam. The dipper emitters
+# already carry a `target` and a running `deposited_kg` on a bore wall,
+# which is the same statement -- fluid, arriving somewhere, at a rate --
+# so a wetting engine that can take one can take the other.
+
+
+def wetting_deposits(field: "HoleEmitterField", dt: float = 1.0) -> list:
+    """Every point taking fluid right now, for a wetting engine.
+
+    One entry per impact point: the part hit, the world position, the
+    surface normal there, the fluid, and the mass landing on it this
+    tick. Emitters that do not wet anything (a gas leak) are left out,
+    and so are emitters whose spray has not been resolved against the
+    geometry yet -- an unresolved one has no idea where it is pointing
+    and should not be guessed at."""
+    out: list = []
+    for em in field.emitters:
+        if not getattr(em, "wets_surfaces", True) or not em.spray_resolved:
+            continue
+        if em.regime in ("none", "gas"):
+            continue
+        landed_kg_s = max(0.0, em.mass_flow_kg_s) * (1.0 - em.escaped_frac)
+        if landed_kg_s <= 0.0 or not em.spray_points:
+            continue
+        share = landed_kg_s / float(len(em.spray_points))
+        for part, point, normal in em.spray_points:
+            out.append({
+                "emitter": em.identity,
+                "part": part,
+                "position": point,
+                "normal": normal,
+                "fluid": em.fluid,
+                "kg": share * float(dt),
+                "source": em.kind,
+            })
+    return out
+
+
+def splash_deposits(field: "HoleEmitterField", dt: float = 1.0) -> list:
+    """The same statement for the splash dippers.
+
+    A dipper lays film on a bore wall rather than spraying at whatever
+    is in front of it, so its target is declared rather than ray-found
+    -- but it is still fluid arriving somewhere at a rate, which is all
+    a wetting engine needs."""
+    out: list = []
+    for em in field.emitters:
+        if em.kind != "splash" or not em.target:
+            continue
+        rate = max(0.0, float(getattr(em, "deposit_kg_s", 0.0)))
+        if rate <= 0.0:
+            continue
+        out.append({
+            "emitter": em.identity,
+            "part": em.target,
+            "position": tuple(em.target_position) if em.target_position else em.position,
+            "normal": (),
+            "fluid": em.fluid,
+            "kg": rate * float(dt),
+            "source": "splash",
+        })
+    return out

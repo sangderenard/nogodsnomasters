@@ -824,3 +824,441 @@ def route_shared_storage(g, packages: dict, storage: dict, *,
                        source_port=f"{conduit['engine_end']}.{channels[medium]}",
                        sink_port=f"{sink}.{medium}_in",
                        routed_through_metaconduit=conduit["jacket"])
+
+
+# ---------------------------------------------------------------------
+# ON-SITE FLUID RECYCLING
+# ---------------------------------------------------------------------
+#
+# A station that runs engines makes dirty fluid, and hauling it away is
+# the expensive answer. The cheap one is a separator bank: drain the
+# sump into a dirty tank, run it through a purifier, and put it back.
+# That is what every real installation with more than one engine does,
+# and it is why a ship can run one oil charge for months.
+#
+# THREE SEPARATE MACHINES, NOT ONE WITH A VALVE. Oil, fuel and coolant
+# each get their own unit, because cross-contaminating any two of them
+# is worse than never cleaning either: a litre of coolant in the oil
+# emulsifies the whole charge, and a litre of oil in the fuel fouls
+# every injector downstream. Real installations keep them physically
+# apart for exactly that reason, and so does this.
+#
+# All three are ELECTRIC. That is not incidental -- a separator bowl
+# holds megajoules at speed and takes minutes to run up (see
+# centrifuges.spin_up_time_s), so it wants a motor it can leave running,
+# not something started and stopped with a shift. The station's own
+# generation has to carry that: the bank's standing load is small, but
+# starting three of them together is not.
+
+#: The bank's units, each sized for what it cleans. Bowl dimensions and
+#: motor ratings are the real range for a small industrial separator.
+RECYCLING_UNITS = (
+    # (service, fluid, bowl radius, bowl height, rpm, motor kW, tank litres)
+    ("oil", "engine-oil", 0.150, 0.180, 8000.0, 5.5, 400.0),
+    ("fuel", "diesel", 0.130, 0.160, 9000.0, 4.0, 600.0),
+    ("coolant", "coolant-water-glycol", 0.120, 0.140, 7000.0, 3.0, 300.0),
+)
+
+
+def fluid_recycling_bank(centre=(0.0, -0.35, 0.0), spacing_m: float = 0.95) -> Machine:
+    """The station's separator bank: three electric purifiers, each with
+    a dirty tank in front of it and a clean tank behind, sharing one
+    sludge receiver.
+
+    The sludge tank is the part worth having: it is where everything
+    taken out of every fluid ends up, it has a real capacity, and when
+    it is full the bowls keep ejecting into it anyway (see
+    centrifuges.SludgeReceiver) -- so a station that never empties it
+    ends up wearing what it was trying to recycle."""
+    import centrifuges as cf
+    cx, cy, cz = centre
+    parts: list = []
+    lines: list = []
+    for i, (service, fluid, r_bowl, h_bowl, rpm, kw, tank_l) in enumerate(RECYCLING_UNITS):
+        x = cx + (i - 1) * spacing_m
+        unit = cf.Centrifuge(kind="disc-stack-self-cleaning", bowl_radius_m=r_bowl,
+                             inner_radius_m=r_bowl * 0.40, bowl_height_m=h_bowl,
+                             speed_rpm=rpm, drive="electric-belt", motor_kw=kw)
+        sep_id = f"station.recycle.{service}.separator"
+        # the separator itself: a real rotating mass, declared as one
+        parts.append(MachinePart(
+            sep_id, "centrifugal-separator", (x, cy, cz),
+            (r_bowl * 1.5, h_bowl * 1.6, r_bowl * 1.5),
+            mass_kg=cf._bowl_inertia(unit) / max(1e-6, 0.6 * r_bowl ** 2) + 40.0,
+            material="steel-plate", fluid=fluid, fluid_volume_l=r_bowl * 40.0,
+            part_role=f"{service}-separator",
+            ports=[_port(f"{sep_id}.feed", sep_id, f"{service}-dirty-in",
+                         (x - 0.25, cy, cz), (-1, 0, 0), 0.012, fluid=fluid),
+                   _port(f"{sep_id}.clean", sep_id, f"{service}-clean-out",
+                         (x + 0.25, cy, cz), (1, 0, 0), 0.012, fluid=fluid),
+                   _port(f"{sep_id}.eject", sep_id, "sludge-discharge",
+                         (x, cy - 0.20, cz), (0, -1, 0), 0.018, fluid="sludge",
+                         connected_to="station.recycle.sludge_tank")],
+            thermal_capacity_j_k=120.0 * 500.0))
+        for side, sign, role in (("dirty", -1.0, "waste"), ("clean", 1.0, "service")):
+            t_id = f"station.recycle.{service}.{side}_tank"
+            parts.append(MachinePart(
+                t_id, "storage-tank", (x, cy - 0.55, cz + sign * 0.55),
+                (0.32, 0.30, 0.32), mass_kg=tank_l * 0.12, material="steel-plate",
+                fluid=fluid, fluid_volume_l=tank_l,
+                part_role=f"{service}-{role}-tank",
+                thermal_capacity_j_k=tank_l * 0.12 * 500.0))
+            lines.append(MachineLine(
+                f"station.recycle.{service}.{side}_line",
+                t_id if side == "dirty" else sep_id,
+                sep_id if side == "dirty" else t_id,
+                constraint="oil-line" if service == "oil" else (
+                    "fuel-supply-line" if service == "fuel" else "coolant-line"),
+                radius=0.012, circuit_identity=f"recycle-{service}"))
+    # one sludge receiver for the whole bank: everything taken out of
+    # every fluid ends up in here, and it is a real vessel with a limit
+    parts.append(MachinePart(
+        "station.recycle.sludge_tank", "sludge-receiver",
+        (cx, cy - 0.95, cz), (0.45, 0.35, 0.45), mass_kg=90.0,
+        material="steel-plate", fluid="sludge", fluid_volume_l=500.0,
+        capacity_kg=550.0, part_role="sludge-receiver",
+        thermal_capacity_j_k=90.0 * 500.0))
+    return Machine(
+        "station.recycle", "on-site fluid recycling bank",
+        power="shore-supplied", medium="multi-service", parts=parts, lines=lines,
+        note="three electric separators kept physically apart -- oil, fuel and coolant "
+             "never share a bowl -- discharging to one sludge receiver")
+
+
+# ---------------------------------------------------------------------
+# THE PLANT SHELTER, AND HOW FUEL GETS TO IT
+# ---------------------------------------------------------------------
+#
+# The separators and the dehydrator want to be out of the weather and
+# near each other, and they do not want a building. What they get is
+# what a real field installation gets: a frame with a canvas over it.
+#
+# CANVAS IS NOT A WALL and that is the whole point of choosing it. It
+# keeps rain off a bowl that is open for a strip-down and keeps the
+# light off at night; it stops nothing that is shot at it, it tears
+# rather than holes, and it burns. A steel room would be a different
+# decision with different consequences, and pretending a tent is one is
+# how an installation ends up feeling safer than it is.
+#
+# FUEL: PIPED OR CARRIED, and real practice is both. Bulk goes down a
+# hose line -- that is what a tactical petroleum system IS, six-inch
+# hose over ground with pump stations, because hand-moving bulk fuel
+# destroys throughput. The last hundred metres is drums, because a line
+# is a fixed target that needs pumps and a crew and cannot follow
+# anything around. The deciding factors are duration, throughput and
+# vulnerability, so a semi-permanent plant like this one is piped, with
+# drum handling at the margins and as the fallback when the line is cut.
+#
+# Which makes the line worth cutting, and makes the fallback a real
+# labour problem: a 205 litre drum is about 180 kg full, and somebody
+# has to move it.
+
+DRUM_CAPACITY_L = 205.0
+DRUM_FULL_MASS_KG = 180.0
+#: Minutes for one crew member to move and decant one drum. Portering is
+#: the expensive answer and the numbers should say so.
+DRUM_PORTER_MINUTES = 12.0
+
+
+def plant_shelter(centre=(0.0, -0.35, 0.0), span_m: float = 3.4,
+                  depth_m: float = 2.6, height_m: float = 2.3) -> Machine:
+    """A frame-and-canvas enclosure over the fluid plant.
+
+    Steel tube frame, canvas panels, open at one end for access. The
+    frame is structure and the canvas is weather -- declared as
+    different materials because they behave completely differently when
+    anything happens to them."""
+    cx, cy, cz = centre
+    parts: list = []
+    # the frame: four legs and a ridge, in tube
+    for i, (dx, dz) in enumerate(((-1, -1), (1, -1), (-1, 1), (1, 1))):
+        parts.append(MachinePart(
+            f"station.shelter.leg_{i + 1}", "frame-tube",
+            (cx + dx * span_m / 2.0, cy + height_m / 2.0, cz + dz * depth_m / 2.0),
+            (0.03, height_m / 2.0, 0.03), mass_kg=11.0, material="steel-tube",
+            part_role="shelter-frame", thermal_capacity_j_k=11.0 * 500.0))
+    parts.append(MachinePart(
+        "station.shelter.ridge", "frame-tube", (cx, cy + height_m, cz),
+        (span_m / 2.0, 0.035, 0.035), mass_kg=16.0, material="steel-tube",
+        part_role="shelter-frame", thermal_capacity_j_k=16.0 * 500.0))
+    # the canvas: a roof and three sides, the fourth left open to work
+    panels = (("roof", (cx, cy + height_m, cz), (span_m / 2.0, 0.002, depth_m / 2.0)),
+              ("side_a", (cx - span_m / 2.0, cy + height_m / 2.0, cz),
+               (0.002, height_m / 2.0, depth_m / 2.0)),
+              ("side_b", (cx + span_m / 2.0, cy + height_m / 2.0, cz),
+               (0.002, height_m / 2.0, depth_m / 2.0)),
+              ("back", (cx, cy + height_m / 2.0, cz - depth_m / 2.0),
+               (span_m / 2.0, height_m / 2.0, 0.002)))
+    for name, pos, half in panels:
+        area = 4.0 * half[0] * half[1] if name != "roof" else 4.0 * half[0] * half[2]
+        parts.append(MachinePart(
+            f"station.shelter.{name}", "canvas-panel", pos, half,
+            mass_kg=max(2.0, area * 0.6), material="canvas",
+            part_role="shelter-canvas", thermal_capacity_j_k=area * 0.6 * 1400.0))
+    return Machine(
+        "station.shelter", "frame-and-canvas plant shelter",
+        power="none", medium="structure", parts=parts,
+        note="weather cover over the fluid plant; canvas stops rain and nothing else, "
+             "and the open end is the working face")
+
+
+def fuel_supply_route(piped: bool = True, distance_m: float = 400.0,
+                      demand_l_per_day: float = 1800.0) -> dict:
+    """How fuel actually reaches this plant, and what it costs to do it.
+
+    Returns both answers so a caller can compare them, because the real
+    decision is a comparison: a hose line is laid once and then costs
+    almost nothing per litre, and a drum party costs the same labour
+    every single day. The line is also one cut from nothing, which is
+    why the drum figure is worth keeping in front of you."""
+    drums_per_day = demand_l_per_day / DRUM_CAPACITY_L
+    porter_minutes = drums_per_day * DRUM_PORTER_MINUTES * max(1.0, distance_m / 100.0)
+    return {
+        "mode": "piped" if piped else "portered",
+        "distance_m": distance_m,
+        "demand_l_per_day": demand_l_per_day,
+        "drums_per_day": drums_per_day,
+        # WHAT IT COSTS PER DAY, and what it would cost if the line went.
+        # A piped route costs a pump and nothing else per litre; the
+        # portering figure is what you fall back TO, not what you pay
+        # while the line is up. Reporting the same number for both made
+        # the comparison say the line was worthless.
+        "porter_crew_hours_per_day": 0.0 if piped else porter_minutes / 60.0,
+        "fallback_crew_hours_per_day": porter_minutes / 60.0,
+        # laying it is a one-off; after that a pump does the work
+        "line_setup_crew_hours": distance_m / 100.0 * 1.5 if piped else 0.0,
+        "pump_kw": 4.0 if piped else 0.0,
+        "single_point_of_failure": piped,
+        "note": ("a hose line: cheap per litre once laid, and one cut from nothing"
+                 if piped else
+                 "drums by hand: survivable, dispersed, and expensive every single day"),
+    }
+
+
+# ---------------------------------------------------------------------
+# HOSE, SPIGOT AND DRUMS
+# ---------------------------------------------------------------------
+#
+# Real military bulk fuel is collapsible hose in sections, coupled with
+# cam-lock or grooved fittings and laid over the ground -- that is what
+# a tactical petroleum system is. The sizes below are the real ones: a
+# six-inch main for bulk, four-inch for distribution around a site, and
+# two-inch at the dispensing end where somebody is holding it.
+#
+# THE SECTIONS ARE THE POINT. A hose run is not one object, it is a
+# string of sections that each have to be carried out and coupled, and
+# a six-inch section full of nothing is already a two-man lift. That
+# makes laying a line a real job of work with a real duration -- which
+# is exactly the sort of thing a crew that has got around to it can be
+# sent to do, and exactly what has to be redone when somebody cuts it.
+#
+# A run that is not fully laid still carries fuel through the sections
+# that ARE coupled, up to wherever the string stops. It just does not
+# reach the far end yet.
+
+@dataclass(frozen=True)
+class HoseSpec:
+    key: str
+    label: str
+    bore_mm: float
+    section_m: float
+    section_mass_kg: float
+    working_bar: float
+    crew: int
+    minutes_per_section: float
+    why: str
+
+
+MILITARY_HOSE: dict[str, HoseSpec] = {
+    "bulk-6in": HoseSpec(
+        "bulk-6in", "6 inch collapsible bulk hose", 152.0, 15.0, 62.0, 10.0, 2, 10.0,
+        why="the size a tactical petroleum line is actually run in; a section is a "
+            "two-man lift empty and immovable full, which is why it is laid once"),
+    "distribution-4in": HoseSpec(
+        "distribution-4in", "4 inch distribution hose", 102.0, 15.0, 28.0, 10.0, 1, 6.0,
+        why="around a site, between a main and the equipment that uses it"),
+    "dispensing-2in": HoseSpec(
+        "dispensing-2in", "2 inch dispensing hose", 51.0, 10.0, 9.0, 14.0, 1, 3.0,
+        why="the end somebody holds: short, light, and the only one moved often"),
+}
+
+
+@dataclass
+class HoseRun:
+    """A string of hose sections between two points, part-laid or whole."""
+    identity: str
+    spec: str
+    sections_required: int
+    sections_laid: int = 0
+    from_part: str = ""
+    to_part: str = ""
+    position: tuple = (0.0, 0.0, 0.0)
+    cut_sections: int = 0
+
+    @property
+    def hose(self) -> HoseSpec:
+        return MILITARY_HOSE[self.spec]
+
+    @property
+    def length_m(self) -> float:
+        return self.sections_required * self.hose.section_m
+
+    @property
+    def complete(self) -> bool:
+        return self.sections_laid >= self.sections_required and self.cut_sections == 0
+
+    @property
+    def reach_m(self) -> float:
+        """How far the fuel actually gets. A part-laid run delivers to
+        wherever the string stops, and a cut one stops at the cut."""
+        good = self.sections_laid - self.cut_sections
+        return max(0, good) * self.hose.section_m
+
+    @property
+    def outstanding_sections(self) -> int:
+        return max(0, self.sections_required - self.sections_laid) + self.cut_sections
+
+    def need(self):
+        """What laying or repairing this run would take, as a crew need."""
+        import servicing as sv
+        n = self.outstanding_sections
+        if n <= 0:
+            return None
+        h = self.hose
+        return sv.Need(
+            identity=self.identity, want="hose-section", position=tuple(self.position),
+            quantity=float(n), unit="sections", matches=h.key,
+            urgency=1.0 + n / max(1, self.sections_required),
+            minutes=n * h.minutes_per_section, skill="operator",
+            label=f"{self.identity} ({h.label})",
+            why=("a cut line is a line that stops at the cut" if self.cut_sections
+                 else "an unlaid run delivers only as far as it has been coupled"))
+
+
+def fuel_hose_set(centre=(0.0, -0.35, 0.0), main_distance_m: float = 400.0) -> tuple:
+    """The station's fuel hose, spigot and drum stock.
+
+    Returns (machine, runs): the hardware, and the hose runs as live
+    objects a crew can work on. The main is deliberately NOT laid to
+    begin with -- somebody has to go and do it, and until they have,
+    the plant is on drums."""
+    cx, cy, cz = centre
+    parts: list = []
+    # the spigot: where a hose is coupled and a drum is filled
+    parts.append(MachinePart(
+        "station.fuel.spigot", "fuel-manifold", (cx + 1.9, cy + 0.4, cz),
+        (0.18, 0.30, 0.18), mass_kg=26.0, material="steel-plate",
+        fluid="diesel", fluid_volume_l=8.0, part_role="dispensing-spigot",
+        ports=[_port("station.fuel.spigot.inlet", "station.fuel.spigot",
+                     "fuel-bulk-in", (cx + 1.9, cy + 0.2, cz - 0.2), (0, 0, -1),
+                     0.076, fluid="diesel"),
+               _port("station.fuel.spigot.outlet", "station.fuel.spigot",
+                     "fuel-dispense-out", (cx + 1.9, cy + 0.55, cz), (1, 0, 0),
+                     0.025, fluid="diesel")],
+        thermal_capacity_j_k=26.0 * 500.0))
+    # drum stock on a rack beside it
+    for i in range(6):
+        row, col = divmod(i, 3)
+        parts.append(MachinePart(
+            f"station.fuel.drum_{i + 1}", "fuel-drum",
+            (cx + 2.5 + col * 0.62, cy + 0.44, cz - 0.7 + row * 0.62),
+            (0.29, 0.44, 0.29),
+            mass_kg=DRUM_FULL_MASS_KG, material="steel-plate",
+            fluid="diesel", fluid_volume_l=DRUM_CAPACITY_L,
+            capacity_kg=DRUM_FULL_MASS_KG, part_role="fuel-drum",
+            thermal_capacity_j_k=22.0 * 500.0))
+    machine = Machine(
+        "station.fuel", "fuel spigot, drum stock and hose", power="none",
+        medium="fuel", parts=parts,
+        note="the main is coupled at the spigot; drums are the fallback and the margin")
+    spec = MILITARY_HOSE["bulk-6in"]
+    runs = [
+        HoseRun("station.fuel.main_line", "bulk-6in",
+                sections_required=max(1, int(main_distance_m / spec.section_m)),
+                sections_laid=0, from_part="depot", to_part="station.fuel.spigot",
+                position=(cx + 1.9, cy, cz - 0.4)),
+        HoseRun("station.fuel.plant_feed", "distribution-4in", sections_required=3,
+                sections_laid=3, from_part="station.fuel.spigot",
+                to_part="station.recycle.fuel.dirty_tank",
+                position=(cx + 0.8, cy, cz)),
+    ]
+    return machine, runs
+
+
+def bunk_shelter(centre=(-4.2, -0.35, 0.0), span_m: float = 3.0,
+                 depth_m: float = 4.2, height_m: float = 2.0) -> Machine:
+    """Crew quarters: the same frame-and-canvas as the plant shelter,
+    closed on all four sides.
+
+    SEALED FOR NOW, DELIBERATELY. There is nobody to put in it yet, so
+    it is built as real geometry with real materials and no way in --
+    `sealed=True` on the machine and no open face in the panels. When
+    there are agents to occupy it, the door is a panel that opens, not a
+    rebuild: the hardware is already here and already the right size for
+    two people to live in.
+
+    A CANVAS TENT IN A DESERT IS AN OVEN, which is why real practice is
+    a double skin: a fly sheet over the tent with an air gap between,
+    so the sun heats the fly and the gap carries it away rather than the
+    inner wall. That is declared here as a separate panel set rather
+    than thicker canvas, because it is a different mechanism -- shade
+    and a ventilated gap, not insulation."""
+    cx, cy, cz = centre
+    parts: list = []
+    for i, (dx, dz) in enumerate(((-1, -1), (1, -1), (-1, 1), (1, 1))):
+        parts.append(MachinePart(
+            f"station.bunk.leg_{i + 1}", "frame-tube",
+            (cx + dx * span_m / 2.0, cy + height_m / 2.0, cz + dz * depth_m / 2.0),
+            (0.028, height_m / 2.0, 0.028), mass_kg=9.0, material="steel-tube",
+            part_role="bunk-frame", thermal_capacity_j_k=9.0 * 500.0))
+    parts.append(MachinePart(
+        "station.bunk.ridge", "frame-tube", (cx, cy + height_m, cz),
+        (0.03, 0.03, depth_m / 2.0), mass_kg=13.0, material="steel-tube",
+        part_role="bunk-frame", thermal_capacity_j_k=13.0 * 500.0))
+    # four walls and a roof: no working face, because there is nobody to
+    # work in it yet
+    walls = (("roof", (cx, cy + height_m, cz), (span_m / 2.0, 0.002, depth_m / 2.0)),
+             ("side_a", (cx - span_m / 2.0, cy + height_m / 2.0, cz),
+              (0.002, height_m / 2.0, depth_m / 2.0)),
+             ("side_b", (cx + span_m / 2.0, cy + height_m / 2.0, cz),
+              (0.002, height_m / 2.0, depth_m / 2.0)),
+             ("front", (cx, cy + height_m / 2.0, cz + depth_m / 2.0),
+              (span_m / 2.0, height_m / 2.0, 0.002)),
+             ("back", (cx, cy + height_m / 2.0, cz - depth_m / 2.0),
+              (span_m / 2.0, height_m / 2.0, 0.002)))
+    for name, pos, half in walls:
+        area = 4.0 * half[0] * (half[2] if name == "roof" else half[1])
+        parts.append(MachinePart(
+            f"station.bunk.{name}", "canvas-panel", pos, half,
+            mass_kg=max(2.0, area * 0.6), material="canvas",
+            part_role="bunk-canvas", thermal_capacity_j_k=area * 0.6 * 1400.0))
+    # the fly sheet: shade with an air gap, which is what makes a tent
+    # survivable in a desert rather than thicker canvas
+    parts.append(MachinePart(
+        "station.bunk.fly", "canvas-panel", (cx, cy + height_m + 0.35, cz),
+        (span_m / 2.0 + 0.4, 0.002, depth_m / 2.0 + 0.4),
+        mass_kg=7.0, material="canvas", part_role="bunk-fly-sheet",
+        thermal_capacity_j_k=7.0 * 1400.0))
+    # what is actually in it, so the volume is not empty when it opens
+    for i, dz in enumerate((-1, 1)):
+        parts.append(MachinePart(
+            f"station.bunk.cot_{i + 1}", "cot",
+            (cx + dz * 0.75, cy + 0.25, cz), (0.35, 0.22, 0.95),
+            mass_kg=11.0, material="steel-tube", part_role="crew-bunk",
+            thermal_capacity_j_k=11.0 * 500.0))
+        parts.append(MachinePart(
+            f"station.bunk.locker_{i + 1}", "footlocker",
+            (cx + dz * 0.75, cy + 0.20, cz - depth_m / 2.0 + 0.45),
+            (0.30, 0.20, 0.22), mass_kg=18.0, material="steel-plate",
+            capacity_kg=40.0, part_role="crew-stowage",
+            thermal_capacity_j_k=18.0 * 500.0))
+    machine = Machine(
+        "station.bunk", "crew bunk shelter", power="none", medium="structure",
+        parts=parts,
+        note="sealed until there are agents to occupy it; double-skinned, because a "
+             "single-skin canvas tent in a desert is an oven")
+    # not a field on Machine, and deliberately explicit: anything that
+    # offers entry has to look for this and find it True
+    setattr(machine, "sealed", True)
+    setattr(machine, "berths", 2)
+    return machine

@@ -79,7 +79,7 @@ from drivetrain_graph import build_drivetrain_graph, engine_mesh_view_graph
 from engine_gl_view import EngineGLView, thermal_groups_from_state
 from engine_rays import RayMesh
 from calibres import get_calibre
-from engine_mesh import build_engine_mesh
+from engine_mesh import build_engine_mesh, enclosed_bodies, breached_casings
 from combustion_kernel import visual_for, combustion_state_from_sim
 from gl_text import TextLayer
 from toy_shared import (
@@ -182,7 +182,14 @@ def main() -> None:
     mesh_viz_engine = sim.engine
     # the shrapnel cascade (burst.py) fires fragments through the same
     # live geometry a right-click uses
-    sim.ray_mesh_factory = lambda: RayMesh(*build_engine_mesh(view._graph, crank_angle_deg=sim.state.crank_angle_deg, covers_off=True))
+    # covers_off=False deliberately, and NOT view.covers_off: what the
+    # player has chosen to see through does not change what is bolted to
+    # the engine. With covers_off=True here, every shot and every
+    # shrapnel fragment was resolved against an engine that had no valve
+    # cover, no cam case and no valley cover -- a round came down onto
+    # the valvetrain through open air and the cover neither holed nor
+    # took any energy out of it.
+    sim.ray_mesh_factory = lambda: RayMesh(*build_engine_mesh(view._graph, crank_angle_deg=sim.state.crank_angle_deg, covers_off=False))
     # the combustion kernel: per-cylinder burn/residue frames baked off
     # the sim's OWN firing angles and the live fuel's own visual family
     mesh_viz_fuel = sim.fuel_choice or sim.engine.preferred_fuel_profile
@@ -483,6 +490,13 @@ def main() -> None:
             # leaking hole and every crank dipper, re-uploaded per tick
             view.set_emitter_particles([e for e in sim.hole_emitters.emitters if e.regime != "none"] + sim.bursts.clouds())
             view.set_absent_parts(sim.state.absent_parts)
+            # and the parts that are merely out of sight: anything
+            # sealed inside a casing nothing has holed yet. Recomputed
+            # per tick because a single through-hole reveals everything
+            # behind it, and the set is cheap -- set_hidden_parts is a
+            # no-op unless it actually changed.
+            view.set_hidden_parts(enclosed_bodies(
+                view._graph, breached_casings(sim.hole_emitters.emitters)))
             sim.drain_events()
             poll_engine_events(sim, log)
 

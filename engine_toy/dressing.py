@@ -454,6 +454,12 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
                 fc = sum(ch["centre"] for ch in plan["chambers"]) / len(plan["chambers"]) + plan["up"] * (bore * 1.3)
             span = (max(xs) - min(xs)) / 2.0 + bore * 0.9
             node("powertrain.air_filter", [float(v) for v in fc], "air-filter", filter=spec.air_filter, mass_kg=1.5,
+                 # a filter blocks because it is working: what it catches stays on it
+                 # real dirt-holding capacity, in the mode's own units: an air
+                 # filter sees a couple of hundred cubic metres of air an HOUR,
+                 # so a service life of a few hundred hours is tens of thousands
+                 # of cubic metres -- four orders off an oil filter
+                 fouling_mode="filter-cake", blocked_frac=0.0, fouling_capacity=60_000.0,
                  body_half_extent_m=[span, bore * 0.22, bore * 0.9] if len(xs) > 1 else None,
                  drum_axis=None if len(xs) > 1 else [float(v) for v in plan["up"]],
                  drum_radius_m=bore * 1.0, drum_length_m=bore * 0.45)
@@ -564,6 +570,9 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
         if spec.oil_filter == "spin-on":
             fpos = np.array(pump["reference_position"]) + np.array([0.0, bore * 0.6, bore * 1.1])
             node("powertrain.oil_filter", [float(v) for v in fpos], "oil-filter", mass_kg=0.8,
+                 # an engine circulates a few cubic metres of oil an hour, so a
+                 # few hundred cubic metres is one oil-change interval
+                 fouling_mode="filter-cake", blocked_frac=0.0, fouling_capacity=450.0,
                  drum_axis=[0.0, 0.0, 1.0], drum_radius_m=bore * 0.38, drum_length_m=bore * 0.75)
             for e in edges:
                 if e["identity"] == "powertrain.oil_pump_to_gallery":
@@ -663,6 +672,7 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
         mag_x = (x1 + bore * 1.4) if dual else (x0 - bore * 1.4)
         mpos = np.array([mag_x, y0 + bore * 0.5, 0.0 if not dual else -bore * 0.45])
         node("powertrain.magneto", [float(v) for v in mpos], "magneto", mass_kg=2.0,
+             rotor_class="magneto",
              drum_axis=[1.0, 0.0, 0.0], drum_radius_m=bore * 0.28, drum_length_m=bore * 0.6)
         edge("powertrain.magneto_drive", "powertrain.engine", "powertrain.magneto", "geared-timing-drive", ratio=0.5)
         srcs = ["powertrain.magneto"]
@@ -672,6 +682,7 @@ def emit_dressing_graph(engine, layout, spec: DressingSpec, nodes, edges, node, 
             # demands: lose one system, keep flying on the other
             m2 = mpos + np.array([0.0, 0.0, bore * 0.9])
             node("powertrain.magneto_2", [float(v) for v in m2], "magneto", mass_kg=2.0,
+                 rotor_class="magneto",
                  drum_axis=[1.0, 0.0, 0.0], drum_radius_m=bore * 0.28, drum_length_m=bore * 0.6)
             edge("powertrain.magneto_2_drive", "powertrain.engine", "powertrain.magneto_2", "geared-timing-drive", ratio=0.5)
             srcs.append("powertrain.magneto_2")

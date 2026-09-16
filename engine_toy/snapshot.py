@@ -148,7 +148,10 @@ def render_snapshot(engine_id: str, *, rpm: float | None = None, throttle: float
     log = []
     # the shrapnel cascade and the firing squad both need the live geometry
     def ray_mesh_factory():
-        s_m, m_m = build_engine_mesh(view._graph, crank_angle_deg=sim.state.crank_angle_deg, covers_off=True)
+        # the whole engine, covers on -- see RayMesh.from_graph: what is
+        # rendered see-through or taken off for the view is not a
+        # statement about what a projectile has to get through
+        s_m, m_m = build_engine_mesh(view._graph, crank_angle_deg=sim.state.crank_angle_deg, covers_off=False)
         return RayMesh(s_m, m_m)
     sim.ray_mesh_factory = ray_mesh_factory
     if charges:

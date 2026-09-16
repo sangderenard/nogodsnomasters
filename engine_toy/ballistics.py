@@ -116,6 +116,15 @@ class ImpactResult:
 
 
 MATERIAL_PROFILES: dict[str, MaterialProfile] = {
+    # CANVAS IS NOT A WALL. A proofed cotton or polyester shelter keeps
+    # weather off equipment and stops nothing else: a round crosses it
+    # having lost effectively none of its energy, and what it leaves is
+    # a TEAR that runs, not a neat hole that stays the size of the
+    # projectile. Toughness three orders below sheet steel is the point
+    # of the material, not an approximation of one -- an enclosure like
+    # this is cover from rain and from being seen, and from nothing at
+    # all that is being shot at it.
+    "canvas": MaterialProfile(2.0e6, 30e6, 4.0e6, 380.0, 0.95, 88.0, 0.0006),
     "flame": MaterialProfile(1.0e3, 1.0e3, 1.0e3, 0.8, 1.0, 90.0),
     "smoke": MaterialProfile(1.0e3, 1.0e3, 1.0e3, 1.2, 1.0, 90.0),
     "cover": MaterialProfile(0.4e9, 180e6, 0.7e9, 2700.0, 0.75, 68.0, 0.0015),

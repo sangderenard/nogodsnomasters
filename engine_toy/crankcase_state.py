@@ -57,6 +57,73 @@ def _seed(identity: str) -> int:
     return int(hashlib.sha1((identity + ":rings").encode()).hexdigest()[:8], 16)
 
 
+# HOW MUCH OIL AN ENGINE ACTUALLY HOLDS.
+#
+# This was `displacement_l * 1.1` for every engine ever built, which is
+# about right for a small petrol car and badly wrong for anything that
+# works for a living: a Cat C18 is 18.1 litres of displacement and holds
+# close to sixty litres of oil, not twenty. The ratio is not a constant,
+# it is a property of what the engine is for --
+#
+#   petrol car        ~1 litre of oil per litre swept. A shallow sump,
+#                     short drain intervals, and a sump designed around
+#                     ground clearance more than oil life.
+#   heavy diesel      ~3. A deep sump because the drain interval is
+#                     measured in hundreds of hours and the oil has to
+#                     carry soot and acid for all of it.
+#   large/marine      ~4 and up, often with a separate tank; the oil is
+#                     a system, not a fill.
+#
+# It matters well beyond a dipstick reading: every wear metal
+# concentration is grams divided by this mass, so getting it wrong by
+# three scales an entire oil analysis by three and makes a healthy
+# engine read like a failing one.
+# IT DOES NOT SCALE LINEARLY, and a ratio cannot be made to fit. A
+# 1.6 litre Miata holds about 3.8 litres of oil -- well over twice its
+# displacement -- while a 4.2 litre AMC six holds about 5.7, which is
+# barely more than one. Sump volume grows much more slowly than swept
+# volume, because a small engine still needs a usable depth of oil under
+# the pickup, a pump that will not suck air on a corner, and enough mass
+# to carry heat. Fitting those two real engines gives an exponent near
+# 0.45, and the same exponent lands a modern 2.0 litre four at about
+# 4.2 litres, which is what they hold.
+#
+# The coefficient is what the class changes: a heavy diesel carries far
+# more oil for the same exponent, because its drain interval is hundreds
+# of hours and the oil has to hold that much soot and acid for all of
+# them.
+#
+# This matters well past a dipstick reading: every wear metal
+# concentration is grams divided by this mass, so being wrong by three
+# scales an entire oil analysis by three and makes a healthy engine read
+# like a failing one.
+OIL_CAPACITY_EXPONENT = 0.45
+OIL_CAPACITY_COEFFICIENT = {
+    "light-petrol": 3.1,       # fits the Miata at 3.8 L and the AMC six at 5.9 L
+    "heavy-diesel": 14.0,      # fits the Cat C18 near its real ~57 L
+    "large-slow-speed": 40.0,  # a circulating tank, not a sump: its own architecture
+}
+
+
+def derive_oil_capacity_l(engine) -> float:
+    """Sump capacity in litres, from what kind of engine this is.
+
+    An engine that declares `oil_capacity_l` is believed; everything
+    else is classed by the things that actually decide a sump's depth --
+    compression ignition and sheer size -- and scaled sub-linearly."""
+    declared = float(getattr(engine, "oil_capacity_l", 0.0) or 0.0)
+    if declared > 0.0:
+        return declared
+    disp = max(0.05, float(getattr(engine, "displacement_l", 0.0) or 0.0))
+    if disp >= 100.0:
+        k = OIL_CAPACITY_COEFFICIENT["large-slow-speed"]
+    elif bool(getattr(engine, "compression_ignition", False)) or disp >= 8.0:
+        k = OIL_CAPACITY_COEFFICIENT["heavy-diesel"]
+    else:
+        k = OIL_CAPACITY_COEFFICIENT["light-petrol"]
+    return max(0.35, k * disp ** OIL_CAPACITY_EXPONENT)
+
+
 @dataclass
 class CrankcaseState:
     n_cyl: int
@@ -87,9 +154,76 @@ class CrankcaseState:
         n = max(1, int(arch.cylinders or 1))
         rng = np.random.default_rng(_seed(engine.identity) if seed is None else seed)
         ring = np.clip(0.03 + TOL_RING_SEAL_FRAC * np.abs(rng.standard_normal(n)) * 0.5, 0.01, 0.3)
-        cap_l = oil_capacity_l if oil_capacity_l is not None else max(0.5, engine.displacement_l * 1.1)
+        cap_l = (oil_capacity_l if oil_capacity_l is not None
+                 else derive_oil_capacity_l(engine))
         return cls(n_cyl=n, cylinder_litres=engine.displacement_l / n, ring_leak=ring,
                    oil_kg=cap_l * OIL_DENSITY_KG_L, oil_capacity_kg=cap_l * OIL_DENSITY_KG_L, identity=engine.identity)
+
+    # A worn ring pack leaks. `from_engine` draws `ring_leak` once, from
+    # build scatter, and nothing moved it afterwards -- so an engine with
+    # its rings 90% gone blew by exactly like a new one, and the wear
+    # ledger that knew better was never consulted.
+    #
+    # The chain is real and it is short: the rings lose radial thickness
+    # (which wear_debris.py now accounts for in grams), the pack stops
+    # sealing, blow-by rises, and the charge that leaks past is charge
+    # that never gets compressed -- so effective compression falls out of
+    # the same number rather than being tracked separately.
+    #
+    # A thoroughly worn pack reaching about 30% leak is the top of the
+    # range `from_engine` already clips to, so wear takes a ring from
+    # wherever it was built to that same ceiling and no further.
+    WORN_RING_LEAK = 0.30
+
+    def apply_ring_wear(self, ring_damage_frac: float) -> None:
+        """Open the rings up by how far gone they actually are."""
+        d = max(0.0, min(1.0, float(ring_damage_frac)))
+        if d <= 0.0:
+            return
+        base = getattr(self, "_built_ring_leak", None)
+        if base is None:
+            base = self.ring_leak.copy()
+            self._built_ring_leak = base
+        self.ring_leak = np.clip(base + (self.WORN_RING_LEAK - base) * d, 0.01, 1.0)
+
+    #: A recessed seat leaks past the VALVE, which is a different path
+    #: from past the rings and has a different fix -- the head comes off
+    #: and the seats are re-cut, rather than a rebore. Tracked separately
+    #: for that reason, and because a compression test that shows loss
+    #: which a wet test does NOT restore is exactly how a mechanic tells
+    #: the two apart.
+    WORN_SEAT_LEAK = 0.22
+
+    def apply_valve_seat_wear(self, seat_damage_frac: float) -> None:
+        """Let a recessed seat stop sealing."""
+        d = max(0.0, min(1.0, float(seat_damage_frac)))
+        if not hasattr(self, "valve_leak"):
+            self.valve_leak = np.zeros_like(self.ring_leak)
+        self.valve_leak = np.clip(
+            np.zeros_like(self.ring_leak) + self.WORN_SEAT_LEAK * d, 0.0, 1.0)
+
+    @property
+    def seat_leak_mean(self) -> float:
+        v = getattr(self, "valve_leak", None)
+        return 0.0 if v is None else float(np.mean(v))
+
+    def effective_compression_ratio(self, geometric_ratio: float) -> float:
+        """What the engine actually compresses to, past the rings AND
+        past the valves.
+
+        Charge that goes by the rings is charge that is not there at top
+        dead centre, so the trapped mass falls with blow-by and the ratio
+        the cylinder really achieves falls with it. This is the same leak
+        number, read the other way round -- not a second wear model.
+
+        A recessed valve seat loses charge the same way and adds to it,
+        but through a path the rings never see. The two are combined as
+        independent leaks rather than added, because neither can take
+        more than what is left after the other."""
+        leak = float(np.mean(self.ring_leak))
+        seat = self.seat_leak_mean
+        combined = 1.0 - (1.0 - leak) * (1.0 - seat)
+        return max(1.5, float(geometric_ratio) * (1.0 - combined))
 
     @property
     def crankcase_pressure_pa(self) -> float:

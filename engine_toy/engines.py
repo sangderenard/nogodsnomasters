@@ -58,6 +58,29 @@ class EngineArchitecture:
     # two-stroke that still has a real cam-actuated exhaust valve (a big
     # uniflow-scavenged marine diesel).
     has_poppet_valves: bool = True
+    # HARDENED EXHAUST VALVE SEATS, and the reason this is a field at all.
+    #
+    # For fifty years the valve seat's lubricant was TETRAETHYL LEAD. It
+    # was in the fuel for its octane, but the lead oxide it left behind
+    # did a second job nobody designed for: it plated the seat face with
+    # a soft solid film that let the valve close onto a sacrificial layer
+    # instead of onto iron. Engines of that era were built with plain
+    # cast-iron seats because they did not need anything better.
+    #
+    # Take the lead away -- unleaded petrol, or ANY dry gaseous fuel --
+    # and the film stops being replenished. The valve then micro-welds to
+    # the seat on every closing and tears a little metal away as it
+    # reopens. That is valve seat RECESSION, and it is not a slow drift:
+    # the seat sinks into the head, the valve follows it, the clearance
+    # closes up, and once clearance reaches zero the valve is held off
+    # its seat by its own train. Then it cannot dump heat into the head,
+    # so it overheats, and a burnt valve follows quickly.
+    #
+    # Post-1975-ish engines have induction-hardened or inserted seats and
+    # do not care. So this defaults True, and the historic engines in the
+    # catalogue declare False -- which is exactly the population a gas
+    # conversion is most likely to be done to.
+    hardened_valve_seats: bool = True
     # crank_phase.generate_firing_order's evaluation score for this order
     # (lower is better); 0.0 for the hand-curated catalogue entries, which
     # didn't go through that search.
@@ -1343,6 +1366,16 @@ class Transmission:
     # just wearing the gears. That difference is the reason this is a
     # declared kind rather than a cosmetic label.
     kind: str = "manual"                   # "manual" | "automatic"
+    # A dog-clutch collar that bolts the crank straight to the output
+    # shaft, bypassing the gearbox entirely. This is NOT ordinary
+    # equipment: it is a custom and military fitting, for a driveline
+    # that has to be able to FUSE into one solid shaft -- a winch or
+    # generator drive that must not slip, a vehicle that has to keep
+    # moving with a wrecked gearbox. The vehicle subunit used to emit
+    # one on every build, which gave a shopping-trolley commuter engine
+    # a piece of hardware no such car has ever had; nothing is fitted
+    # now unless the build asks for it.
+    direct_drive_bypass: bool = False
     fluid_capacity_l: float = 0.0          # 0 = derive from the kind
     cooler_fitted: bool | None = None      # None = automatics get one
     # Whether this automatic's converter has a lock-up clutch at all.
@@ -1906,7 +1939,14 @@ _RAW = [
          displacement=4.0, bmep=1_650_000, braking_bmep=210_000, idle=900,
          torque_peak=6250, power_peak=8400, redline=9000, inertia=.19,
          mass=190, clutch_torque=610, combustion_efficiency=.92, coupling_efficiency=.96,
-         architecture=("flat-six", 6, 2, 180.0, [1, 6, 2, 4, 3, 5])),
+         architecture=("flat-six", 6, 2, 180.0, [1, 6, 2, 4, 3, 5]),
+         # A flat-six has two heads and an overhead cam engine drives one
+         # camshaft in each of them -- there is no way for a single cam
+         # to reach both banks of a horizontally opposed engine. Left at
+         # the default of 1, the derived "sohc" gave this engine one
+         # camshaft for six cylinders lying on two sides of the crank.
+         head=dict(valvetrain="sohc", valves_per_cylinder=2, camshaft_count=2,
+                   timing_drive="chain", timing_drive_at="rear")),
     # The odd-fire Buick 231. GM cut two cylinders off the 90-degree
     # 300/340 V8 and kept the V8's crankshaft, so the six rods share
     # three unsplit crankpins on a 90-degree block: the firing interval

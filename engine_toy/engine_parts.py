@@ -33,6 +33,7 @@ import numpy as np
 
 import engine_geometry
 import duct_routing
+import rotating_inertia
 from crank_mesh import crank_end_fittings, CRANK_AXIS
 
 UP = np.array([0.0, 1.0, 0.0])
@@ -132,17 +133,25 @@ def _emit_crank_end_hardware(engine, layout, nodes, edges, node, edge, node_by_i
     crank_id = "powertrain.engine"
     if "pulley_centre" in fit:
         node("powertrain.harmonic_balancer", fit["pulley_centre"], "rotating-mass",
-             mass_kg=engine.mass_kg * 0.012, inertia_kg_m2=0.5 * engine.mass_kg * 0.012 * fit["pulley_radius_m"] ** 2,
+             mass_kg=engine.mass_kg * 0.012, rotating_shape="solid-disc",
+             inertia_kg_m2=rotating_inertia.polar_inertia(
+                 "solid-disc", engine.mass_kg * 0.012, fit["pulley_radius_m"]),
              radius_m=fit["pulley_radius_m"], drawn_by="crank_mesh:crank_pulley",
              body_half_extent_m=[fit["pulley_half_len_m"], fit["pulley_radius_m"], fit["pulley_radius_m"]])
         edge("powertrain.crank_to_balancer", crank_id, "powertrain.harmonic_balancer", "rigid-keyed-hub", radius=0.01)
     else:
         node("powertrain.flywheel_front", fit["front_flywheel_centre"], "rotating-mass",
-             mass_kg=engine.mass_kg * 0.08, radius_m=fit["front_flywheel_radius_m"], drawn_by="crank_mesh:flywheel_front",
+             mass_kg=engine.mass_kg * 0.08, rotating_shape="rim-weighted-flywheel",
+             inertia_kg_m2=rotating_inertia.polar_inertia(
+                 "rim-weighted-flywheel", engine.mass_kg * 0.08, fit["front_flywheel_radius_m"]),
+             radius_m=fit["front_flywheel_radius_m"], drawn_by="crank_mesh:flywheel_front",
              body_half_extent_m=[fit["bore_m"] * 0.12, fit["front_flywheel_radius_m"], fit["front_flywheel_radius_m"]])
         edge("powertrain.crank_to_front_flywheel", crank_id, "powertrain.flywheel_front", "rigid-keyed-hub", radius=0.01)
     node("powertrain.flywheel", fit["flywheel_centre"], "rotating-mass",
-         mass_kg=engine.mass_kg * 0.06, radius_m=fit["flywheel_radius_m"], drawn_by="crank_mesh:flywheel",
+         mass_kg=engine.mass_kg * 0.06, rotating_shape="rim-weighted-flywheel",
+         inertia_kg_m2=rotating_inertia.polar_inertia(
+             "rim-weighted-flywheel", engine.mass_kg * 0.06, fit["flywheel_radius_m"]),
+         radius_m=fit["flywheel_radius_m"], drawn_by="crank_mesh:flywheel",
          body_half_extent_m=[fit["flywheel_half_len_m"], fit["flywheel_radius_m"], fit["flywheel_radius_m"]])
     edge("powertrain.crank_to_flywheel", crank_id, "powertrain.flywheel", "rigid-keyed-hub", radius=0.012)
 
@@ -157,8 +166,12 @@ def _emit_crank_end_hardware(engine, layout, nodes, edges, node, edge, node_by_i
         # with: a series DC motor + bendix/solenoid, or a pneumatic vane
         # motor -- both sit beside the flywheel, pinion toward the rim
         fw = np.array(fit["flywheel_centre"])
-        node("powertrain.flywheel.ring_gear", fit["flywheel_centre"], "rotating-mass", mass_kg=1.2,
-             radius_m=fit["flywheel_radius_m"] * 1.02, drawn_by="crank_mesh:flywheel",
+        _rg_r = fit["flywheel_radius_m"] * 1.02
+        node("powertrain.flywheel.ring_gear", fit["flywheel_centre"], "rotating-mass",
+             mass_kg=rotating_inertia.ring_gear_mass_kg(_rg_r), rotating_shape="thin-ring",
+             inertia_kg_m2=rotating_inertia.polar_inertia(
+                 "thin-ring", rotating_inertia.ring_gear_mass_kg(_rg_r), _rg_r),
+             radius_m=_rg_r, drawn_by="crank_mesh:flywheel",
              body_half_extent_m=[fit["bore_m"] * 0.03, fit["flywheel_radius_m"] * 1.02, fit["flywheel_radius_m"] * 1.02])
         edge("powertrain.flywheel_to_ring_gear", "powertrain.flywheel", "powertrain.flywheel.ring_gear", "rigid-keyed-hub", radius=0.008)
         # the motor bolts to the bellhousing flange and lies OUTSIDE the
@@ -237,6 +250,8 @@ def _emit_belt_drive(engine, nodes, edges, node, edge, node_by_id) -> None:
         p = _pos(acc)
         pid = f"{acc['identity']}.pulley"
         node(pid, [face_x - 0.015, float(p[1]), float(p[2])], "rotating-mass", mass_kg=0.6,
+             rotating_shape="dished-pulley",
+             inertia_kg_m2=rotating_inertia.polar_inertia("dished-pulley", 0.6, radius),
              drum_axis=[1.0, 0.0, 0.0], drum_radius_m=radius, drum_length_m=0.025)
         edge(f"{pid}.hub", acc["identity"], pid, "rigid-keyed-hub", radius=0.006)
     if len(present) >= 2:
@@ -247,6 +262,8 @@ def _emit_belt_drive(engine, nodes, edges, node, edge, node_by_id) -> None:
         outward = _unit(np.array([0.0, mid[1], mid[2]]))
         tp = np.array([face_x - 0.015, mid[1], mid[2]]) + outward * radius * 1.4
         node("powertrain.belt_tensioner", [float(v) for v in tp], "rotating-mass", mass_kg=0.5,
+             rotating_shape="dished-pulley",
+             inertia_kg_m2=rotating_inertia.polar_inertia("dished-pulley", 0.5, radius * 0.6),
              drum_axis=[1.0, 0.0, 0.0], drum_radius_m=radius * 0.6, drum_length_m=0.022)
         edge("powertrain.belt_tensioner_to_block", "powertrain.belt_tensioner", "powertrain.engine", "rigid-bolted-joint", radius=0.006)
 
@@ -304,7 +321,13 @@ def _emit_timing_drive(engine, nodes, edges, node, edge, node_by_id) -> None:
     edge("powertrain.timing_cover_to_block", "powertrain.timing_cover", "powertrain.engine", "rigid-bolted-joint", radius=0.006)
     sx = face_x + out * 0.006
     node("powertrain.timing_drive.crank_sprocket", [float(sx), 0.0, 0.0], "rotating-mass", mass_kg=0.3,
-         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half * 0.22, drum_length_m=0.012)
+         rotating_shape="toothed-sprocket",
+         inertia_kg_m2=rotating_inertia.polar_inertia("toothed-sprocket", 0.3, half * 0.22),
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half * 0.22, drum_length_m=0.012,
+         # behind the cover emitted immediately above. Still spinning,
+         # still carrying its inertia, still hittable -- just not worth
+         # drawing until something opens the cover.
+         enclosed_by="powertrain.timing_cover")
     edge("powertrain.timing_crank_sprocket_hub", "powertrain.engine", "powertrain.timing_drive.crank_sprocket", "rigid-keyed-hub", radius=0.006)
     # one sprocket and one run per camshaft, off the single crank
     # sprocket -- which is how a multi-cam engine is really driven,
@@ -314,7 +337,10 @@ def _emit_timing_drive(engine, nodes, edges, node, edge, node_by_id) -> None:
         suffix = "" if i == 1 else f"_{i}"
         sprocket = f"powertrain.timing_drive.cam_sprocket{suffix}"
         node(sprocket, [float(sx), float(cam_p[1]), float(cam_p[2])], "rotating-mass", mass_kg=0.4,
-             drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half * 0.44, drum_length_m=0.012)
+             rotating_shape="toothed-sprocket",
+             inertia_kg_m2=rotating_inertia.polar_inertia("toothed-sprocket", 0.4, half * 0.44),
+             drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half * 0.44, drum_length_m=0.012,
+             enclosed_by="powertrain.timing_cover")
         edge(f"powertrain.timing_cam_sprocket_hub{suffix}", cam_id, sprocket, "rigid-keyed-hub", radius=0.006)
         edge(f"powertrain.timing_{medium}_run{suffix}", "powertrain.timing_drive.crank_sprocket", sprocket,
              "cosmetic-belt-wrap", radius=0.004)
@@ -462,6 +488,15 @@ def _emit_bellhousing(engine, nodes, edges, node, edge, node_by_id) -> None:
          body_half_extent_m=[max(abs(b[0] - a[0]) / 2.0, 0.03), half * 0.9, half * 0.9])
     edge("powertrain.bellhousing_to_block", "powertrain.engine", "powertrain.bellhousing", "rigid-bolted-joint", radius=0.008)
     edge("powertrain.bellhousing_to_transmission", "powertrain.bellhousing", trans["identity"], "rigid-bolted-joint", radius=0.008)
+    # WHAT A BELLHOUSING IS FOR is covering the clutch, so anything it
+    # spans is inside it. Declared here rather than on the clutch,
+    # because the clutch does not know whether a housing was fitted --
+    # a bare engine on a stand has a clutch anyone can see.
+    for inside in ("powertrain.clutch", "powertrain.flywheel",
+                   "powertrain.torque_converter"):
+        n = node_by_id.get(inside)
+        if n is not None:
+            n["enclosed_by"] = "powertrain.bellhousing"
 
 
 # ---------------------------------------------------------------------
@@ -505,7 +540,16 @@ def _emit_centrifugal_blower(engine, nodes, edges, node, edge, node_by_id, rotor
             rotor["reference_position"] = [float(v) for v in c]
             rotor["drum_axis"] = [1.0, 0.0, 0.0]; rotor["drum_radius_m"] = float(r_imp); rotor["drum_length_m"] = float(vol_len * 0.6)
             rotor["mass_kg"] = engine.mass_kg * 0.012
-            edge("powertrain.blower_gear_to_impeller", "powertrain.blower_gear_housing", "supercharger_rotor", "rigid-keyed-hub", radius=0.008)
+            # the impeller runs INSIDE the volute: nothing to see until
+            # something opens the case, but still square in the path of
+            # anything that comes through it
+            rotor["enclosed_by"] = vid
+            # the gear housing CARRIES the impeller's drive end, it does
+            # not turn with it -- a keyed hub here put a stationary
+            # casting into the impeller's own rotating group. The real
+            # drive is `engine_to_supercharger_belt`, which already
+            # turns this rotor at the blower's declared ratio.
+            edge("powertrain.blower_gear_to_impeller", "powertrain.blower_gear_housing", "supercharger_rotor", "rigid-bolted-joint", radius=0.008)
             edge("powertrain.blower_case_mount", vid, "powertrain.blower_gear_housing", "rigid-bolted-joint", radius=0.006)
         else:
             iid = f"supercharger_impeller_stage_{k + 1}"
@@ -598,6 +642,8 @@ def _emit_supercharger(engine, nodes, edges, node, edge, node_by_id) -> None:
     edge("powertrain.blower_snout_to_case", "powertrain.blower_snout", "powertrain.blower_case", "rigid-bolted-joint", radius=0.006)
     pulley_c = snout_c + np.array([-(snout_len / 2.0 + 0.02), 0.0, 0.0])
     node("powertrain.blower_pulley", [float(v) for v in pulley_c], "rotating-mass", mass_kg=1.5,
+         rotating_shape="dished-pulley",
+         inertia_kg_m2=rotating_inertia.polar_inertia("dished-pulley", 1.5, float(r_rotor * 0.9)),
          drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(r_rotor * 0.9), drum_length_m=0.04)
     edge("powertrain.blower_pulley_hub", "powertrain.blower_pulley", "supercharger_rotor", "rigid-keyed-hub", radius=0.008)
     if "powertrain.harmonic_balancer" in node_by_id:
@@ -948,12 +994,23 @@ def _emit_aircraft_drive(engine, layout, nodes, edges, node, edge, node_by_id) -
          "geared-timing-drive", radius=0.02, ratio=1.0 / ratio)
     shaft_len = bore * 1.2
     shaft_c = case_c + np.array([-(case_len / 2.0 + shaft_len / 2.0), 0.0, 0.0])
-    node("powertrain.prop_shaft", [float(v) for v in shaft_c], "rotating-mass", mass_kg=engine.mass_kg * 0.02,
-         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(bore * 0.22), drum_length_m=float(shaft_len))
+    _ps_m, _ps_r = engine.mass_kg * 0.02, float(bore * 0.22)
+    node("powertrain.prop_shaft", [float(v) for v in shaft_c], "rotating-mass", mass_kg=_ps_m,
+         rotating_shape="solid-disc", rotor_radius_m=_ps_r,
+         inertia_kg_m2=rotating_inertia.polar_inertia("solid-disc", _ps_m, _ps_r),
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=_ps_r, drum_length_m=float(shaft_len))
     edge("powertrain.prop_reduction_to_shaft", "powertrain.prop_reduction_gearbox", "powertrain.prop_shaft", "rigid-keyed-hub", radius=0.02)
     hub_c = shaft_c + np.array([-(shaft_len / 2.0 + bore * 0.25), 0.0, 0.0])
-    node("powertrain.prop_hub", [float(v) for v in hub_c], "rotating-mass", mass_kg=engine.mass_kg * 0.03,
-         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(bore * 0.9), drum_length_m=float(bore * 0.5))
+    # The HUB only. A real constant-speed propeller's inertia is
+    # dominated by its blades, which reach out ten times this radius and
+    # are not modelled as nodes at all -- so this is the hub casting's
+    # own honest inertia and NOT the propeller's. Anything that needs
+    # the real propeller inertia has to add the blades first.
+    _ph_m, _ph_r = engine.mass_kg * 0.03, float(bore * 0.9)
+    node("powertrain.prop_hub", [float(v) for v in hub_c], "rotating-mass", mass_kg=_ph_m,
+         rotating_shape="solid-disc", rotor_radius_m=_ph_r, blades_modelled=False,
+         inertia_kg_m2=rotating_inertia.polar_inertia("solid-disc", _ph_m, _ph_r),
+         drum_axis=[1.0, 0.0, 0.0], drum_radius_m=_ph_r, drum_length_m=float(bore * 0.5))
     edge("powertrain.prop_shaft_to_hub", "powertrain.prop_shaft", "powertrain.prop_hub", "rigid-keyed-hub", radius=0.02)
     # the constant-speed governor rides the gearcase, driven off it
     gov_c = case_c + np.array([0.0, half * 0.9 + 0.04, half * 0.3])
@@ -1030,6 +1087,8 @@ def _emit_dry_sump_extras(engine, layout, nodes, edges, node, edge, node_by_id) 
     tp = _pos(tank)
     cooler_c = tp + np.array([0.0, half * 0.9, 0.0])
     node("powertrain.oil_cooler", [float(v) for v in cooler_c], "engine-block-component", mass_kg=2.5,
+         # an exposed core packs from the outside with whatever the air carries
+         fouling_mode="core-debris", blocked_frac=0.0,
          exchanger_kind="oil-to-air-cooler", body_half_extent_m=[half * 0.5, half * 0.35, half * 0.12])
     edge("powertrain.scavenge_to_oil_cooler", scav["identity"] if scav is not None else "powertrain.oil_pump",
          "powertrain.oil_cooler", "oil-line", radius=0.008, circuit_identity="oil",
@@ -1041,6 +1100,8 @@ def _emit_dry_sump_extras(engine, layout, nodes, edges, node, edge, node_by_id) 
         face_x = _block_front_face_x(engine, nodes)
         pulley_c = np.array([face_x - 0.054, sp[1], sp[2]])
         node("powertrain.scavenge_pump.pulley", [float(v) for v in pulley_c], "rotating-mass", mass_kg=0.5,
+             rotating_shape="dished-pulley",
+             inertia_kg_m2=rotating_inertia.polar_inertia("dished-pulley", 0.5, float(half * 0.24)),
              drum_axis=[1.0, 0.0, 0.0], drum_radius_m=float(half * 0.24), drum_length_m=0.022)
         edge("powertrain.scavenge_pump.pulley.hub", scav["identity"], "powertrain.scavenge_pump.pulley", "rigid-keyed-hub", radius=0.006)
         edge("powertrain.dry_sump_belt", "powertrain.harmonic_balancer", "powertrain.scavenge_pump.pulley", "cosmetic-belt-wrap", radius=0.005)
@@ -1197,7 +1258,17 @@ def _emit_turbine_gas_path(engine, nodes, edges, node, edge, node_by_id) -> None
          mass_kg=1.2, body_half_extent_m=[0.05, 0.035, 0.04])
     edge("powertrain.exciter_to_igniter", "powertrain.ignition_exciter", "powertrain.combustor.igniter", "ignition-lead", radius=0.004, circuit_identity="ignition")
     # accessory gearbox on the compressor end with the starter-generator
-    _drum(node, "powertrain.accessory_gearbox", [x0 - r_in * 0.2, bp[1] - r_in * 1.5, bp[2]], CRANK_AXIS, r_in * 0.6, r_in * 0.5, mass_kg=engine.mass_kg * 0.05)
+    # A REAL GEARBOX, and one the solver actually integrates: the gas
+    # generator drives it through a timing drive, so it needs the
+    # inertia of the shafts and gears inside its case, not the inertia
+    # of the case. It is a casing with things spinning in it, like every
+    # other such unit here.
+    _agb_m = engine.mass_kg * 0.05
+    _agb_r = float(r_in * 0.6)
+    _drum(node, "powertrain.accessory_gearbox", [x0 - r_in * 0.2, bp[1] - r_in * 1.5, bp[2]], CRANK_AXIS, _agb_r, r_in * 0.5,
+          mass_kg=_agb_m, housed_assembly="accessory-gearbox", rotating_shape="geared-shaft-train",
+          rotor_radius_m=_agb_r * 0.30,
+          inertia_kg_m2=rotating_inertia.gear_case_input_inertia(_agb_m, _agb_r))
     edge("powertrain.gas_generator_to_accessory_gearbox", "powertrain.compressor_impeller", "powertrain.accessory_gearbox", "geared-timing-drive", radius=0.01)
     _drum(node, "powertrain.starter_generator", [x0 - r_in * 0.2, bp[1] - r_in * 1.5, bp[2] - r_in * 1.0], CRANK_AXIS, r_in * 0.35, r_in * 0.9,
           mass_kg=8.0, starter_kind="starter-generator")
@@ -1225,11 +1296,14 @@ def _emit_electric_drive_unit(engine, nodes, edges, node, edge, node_by_id) -> N
     # motor housing on the block body's own centre, rotor inside, stator
     # around it, resolver on the tail
     _drum(node, "powertrain.motor_housing", bp, CRANK_AXIS, r_motor * 1.1, l_motor, mass_kg=engine.mass_kg * 0.25)
-    _drum(node, "powertrain.stator", bp, CRANK_AXIS, r_motor, l_motor * 0.8, mass_kg=engine.mass_kg * 0.3)
+    _drum(node, "powertrain.stator", bp, CRANK_AXIS, r_motor, l_motor * 0.8, mass_kg=engine.mass_kg * 0.3,
+          enclosed_by="powertrain.motor_housing")
     _drum(node, "powertrain.rotor_pack", bp, CRANK_AXIS, r_motor * 0.62, l_motor * 0.8, kind="rotating-mass",
-          mass_kg=engine.mass_kg * 0.15, inertia_kg_m2=float(engine.inertia_kg_m2) * 0.8)
+          mass_kg=engine.mass_kg * 0.15, inertia_kg_m2=float(engine.inertia_kg_m2) * 0.8,
+          enclosed_by="powertrain.motor_housing")
     edge("powertrain.rotor_to_shaft", "powertrain.rotor_pack", "powertrain.engine", "rigid-keyed-hub", radius=0.015)
-    _drum(node, "powertrain.resolver", bp + CRANK_AXIS * (l_motor / 2.0 + 0.02), CRANK_AXIS, r_motor * 0.25, 0.03, mass_kg=0.3)
+    _drum(node, "powertrain.resolver", bp + CRANK_AXIS * (l_motor / 2.0 + 0.02), CRANK_AXIS, r_motor * 0.25, 0.03, mass_kg=0.3,
+          enclosed_by="powertrain.motor_housing")
     edge("powertrain.resolver_to_shaft", "powertrain.resolver", "powertrain.engine", "rigid-keyed-hub", radius=0.006)
     # inverter on top (the front position engine_baker already names for
     # its switching whine), DC link and phase busbars to the stator
@@ -1251,7 +1325,9 @@ def _emit_electric_drive_unit(engine, nodes, edges, node, edge, node_by_id) -> N
     red_c = bp - CRANK_AXIS * (l_motor / 2.0 + half * 0.5)
     if servo:
         _drum(node, "powertrain.planetary_gearhead", red_c, CRANK_AXIS, r_motor * 0.9, half * 0.7, mass_kg=engine.mass_kg * 0.15, gearhead_kind="planetary")
-        _drum(node, "powertrain.output_flange", red_c - CRANK_AXIS * (half * 0.5), CRANK_AXIS, r_motor * 0.7, 0.02, kind="rotating-mass", mass_kg=1.5)
+        _drum(node, "powertrain.output_flange", red_c - CRANK_AXIS * (half * 0.5), CRANK_AXIS, r_motor * 0.7, 0.02, kind="rotating-mass", mass_kg=1.5,
+              rotating_shape="solid-disc", rotor_radius_m=float(r_motor * 0.7),
+              inertia_kg_m2=rotating_inertia.polar_inertia("solid-disc", 1.5, float(r_motor * 0.7)))
         edge("powertrain.motor_to_gearhead", "powertrain.engine", "powertrain.planetary_gearhead", "geared-timing-drive", radius=0.01)
         edge("powertrain.gearhead_to_flange", "powertrain.planetary_gearhead", "powertrain.output_flange", "rigid-keyed-hub", radius=0.01)
     else:
@@ -1377,15 +1453,35 @@ def _emit_atmospheric_mechanism(engine, layout, nodes, edges, node, edge, node_b
         cc = np.array(g.crank_centre, dtype=np.float64)
         bore = float(g.bore_m)
         tag = f"powertrain.cylinder_{g.number}"
-        node(f"{tag}.pinion", [float(v) for v in cc], "rotating-mass", mass_kg=6.0, drawn_by="cylinder_ports:pinion")
+        # the pinion the rack drives, and the roller freewheel that lets
+        # it drive the shaft one way only -- both real discs on the
+        # shaft axis, sized off the bore like the rest of this engine
+        _pin_r = float(bore * 0.30)
+        _fw_r = float(bore * 0.26)
+        node(f"{tag}.pinion", [float(v) for v in cc], "rotating-mass", mass_kg=6.0,
+             rotating_shape="toothed-sprocket", rotor_radius_m=_pin_r,
+             inertia_kg_m2=rotating_inertia.polar_inertia("toothed-sprocket", 6.0, _pin_r),
+             drawn_by="cylinder_ports:pinion")
         node(f"{tag}.freewheel", [float(v) for v in (cc + CRANK_AXIS * (bore * 0.26))], "rotating-mass", mass_kg=9.0, drawn_by="cylinder_ports:freewheel_drum",
+             rotating_shape="thin-ring", rotor_radius_m=_fw_r,
+             inertia_kg_m2=rotating_inertia.polar_inertia("thin-ring", 9.0, _fw_r),
              clutch_kind="roller-freewheel")
         edge(f"{tag}.freewheel_to_shaft", f"{tag}.freewheel", "powertrain.engine", "rigid-keyed-hub", radius=0.012)
         edge(f"{tag}.pinion_to_freewheel", f"{tag}.pinion", f"{tag}.freewheel", "one-way-clutch", radius=0.012)
         # the rack is the piston rod's toothed extension: a real part, tall
         base = np.array(g.base, dtype=np.float64); axis = _unit(g.axis)
         rack_c = base + axis * (float(g.length_m) * 1.1)
-        node(f"{tag}.rack", [float(v) for v in rack_c], "rotating-mass", mass_kg=float(getattr(engine.atmospheric, "piston_mass_kg", 10.0)) * 0.4 if getattr(engine, "atmospheric", None) else 5.0,
+        # A RACK DOES NOT ROTATE. It is the free piston's toothed rod,
+        # and it travels in a straight line up and down the cylinder --
+        # its mass is real and matters enormously to this engine (it IS
+        # the reciprocating mass an atmospheric engine throws), but it
+        # has no polar inertia about any spin axis, and calling it a
+        # rotating-mass asked every consumer of that kind -- the
+        # drivetrain solver, the pitched-sound catalogue -- to treat a
+        # sliding bar as a spinning one. The pinion it meshes with is
+        # the rotating half of this pair.
+        node(f"{tag}.rack", [float(v) for v in rack_c], "translating-mass", mass_kg=float(getattr(engine.atmospheric, "piston_mass_kg", 10.0)) * 0.4 if getattr(engine, "atmospheric", None) else 5.0,
+             travel_axis=[float(v) for v in axis],
              body_half_extent_m=[bore * 0.06, float(g.length_m) * 0.55, bore * 0.06])
         edge(f"{tag}.rack_meshes_pinion", f"{tag}.rack", f"{tag}.pinion", "rack-and-pinion", radius=0.01)
         # slide valve + its eccentric on the shaft, the burner at the flame port

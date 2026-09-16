@@ -57,6 +57,14 @@ KNOCK_STRESS_RATIO = 2.0
 FATIGUE_EXPONENT = 6
 KNOCK_FATIGUE_MULTIPLIER = KNOCK_STRESS_RATIO ** FATIGUE_EXPONENT
 
+# Real service life is the calibration, and pacing is a separate knob.
+# 1.0 is real time: a heavy diesel reaches its rings' overhaul life in
+# about fifteen thousand running hours, which is what one really does.
+# Raise it to watch an engine age inside a session -- it multiplies the
+# accumulation, not the constants, so nothing calibrated against a real
+# life (oil analysis, service intervals, corrosion) stops being true.
+WEAR_TIME_ACCELERATION = 1.0
+
 
 @dataclass(frozen=True)
 class WearComponent:
@@ -76,14 +84,14 @@ class WearComponent:
 
 COMPONENTS: tuple[WearComponent, ...] = (
     WearComponent(
-        "spark_plug", PER_EVENT, life_constant=300_000.0,
+        "spark_plug", PER_EVENT, life_constant=5.0e8,
         knock_multiplier=25.0, applies_to_diesel=False,
         note="real electrode arc-erosion per discharge; ~300k firing "
              "events is the right order of magnitude for a stock "
              "plug's rated life; knock's shockwave-scrubbed arc erodes "
              "the electrode far faster than a clean discharge"),
     WearComponent(
-        "fuel_injector", PER_EVENT, life_constant=1_000_000.0,
+        "fuel_injector", PER_EVENT, life_constant=2.0e9,
         knock_multiplier=3.0,
         note="real nozzle/needle erosion per injection event; "
              "compression-ignition's own high-pressure injector, not "
@@ -91,7 +99,7 @@ COMPONENTS: tuple[WearComponent, ...] = (
              "pressure spikes stress the injector tip too) but far "
              "less than it does to an electrode arc"),
     WearComponent(
-        "apex_seals", SLIDING_DISTANCE, life_constant=1_500_000.0,
+        "apex_seals", SLIDING_DISTANCE, life_constant=8.0e7,
         knock_multiplier=1.0,
         note="Wankel-specific: the real, famously short-lived wear "
              "item on a rotary -- the seal at each rotor apex scrapes "
@@ -100,38 +108,38 @@ COMPONENTS: tuple[WearComponent, ...] = (
              "known to run far shorter than a piston engine's ring "
              "life, hence the much lower life constant here"),
     WearComponent(
-        "piston_rings", SLIDING_DISTANCE, life_constant=6_000_000.0,
+        "piston_rings", SLIDING_DISTANCE, life_constant=3.0e8,
         note="real Archard abrasive wear between ring face and bore; "
              "~6,000 km of cumulative piston travel (not vehicle "
              "distance) is the right order of magnitude before ring "
              "seal degrades enough to matter"),
     WearComponent(
-        "oil_control_ring", SLIDING_DISTANCE, life_constant=9_000_000.0,
+        "oil_control_ring", SLIDING_DISTANCE, life_constant=2.5e8,
         note="a real, distinct ring in the same pack -- scrapes the "
              "cylinder wall on every stroke same as the compression "
              "rings above, but sees less combustion-pressure loading "
              "so it genuinely outlasts them"),
     WearComponent(
-        "valve_guides", SLIDING_DISTANCE, life_constant=4_500_000.0,
+        "valve_guides", SLIDING_DISTANCE, life_constant=4.0e8,
         note="real stem-in-guide sliding wear, same Archard mechanism "
              "as the rings, off the same piston-sliding-distance proxy "
              "(valve actuation count tracks piston stroke count 1:1 "
              "in any 4-stroke poppet-valve engine)"),
     WearComponent(
-        "valve_seats", PER_EVENT, life_constant=2_000_000.0,
+        "valve_seats", PER_EVENT, life_constant=2.0e9,
         knock_multiplier=8.0,
         note="real seat recession per closing impact -- a genuinely "
              "different real failure mode from guide wear above "
              "(impact peening, not sliding abrasion), so it gets its "
              "own per-event accounting instead of sharing the guides'"),
     WearComponent(
-        "connecting_rod_bearings", PER_EVENT, life_constant=4_000_000.0,
+        "connecting_rod_bearings", PER_EVENT, life_constant=3.0e9,
         knock_multiplier=KNOCK_FATIGUE_MULTIPLIER,
         note="real Miner's-rule cyclic fatigue off combustion-pressure "
              "loading transmitted through the rod -- the classic real "
              "reason a detonating engine spins a bearing"),
     WearComponent(
-        "piston_crown", PER_EVENT, life_constant=8_000_000.0,
+        "piston_crown", PER_EVENT, life_constant=4.0e9,
         knock_multiplier=KNOCK_FATIGUE_MULTIPLIER,
         note="real cyclic thermal/pressure fatigue of the crown itself "
              "-- longer real life than the rod bearings (the crown "
@@ -139,7 +147,7 @@ COMPONENTS: tuple[WearComponent, ...] = (
              "concentration), same knock multiplier since it's the "
              "same real overpressure event"),
     WearComponent(
-        "crankshaft", PER_EVENT, life_constant=20_000_000.0,
+        "crankshaft", PER_EVENT, life_constant=1.0e10,
         knock_multiplier=KNOCK_FATIGUE_MULTIPLIER,
         note="real Miner's-rule fatigue of the crank itself -- the "
              "most over-built rotating part by real design convention, "
@@ -195,32 +203,147 @@ def new_wear_state(engine) -> dict[str, float]:
     return {c.name: 0.0 for c in _components_for(engine)}
 
 
+def firing_events(engine, rpm: float, dt: float) -> float:
+    """How many real combustion events this engine had in `dt`.
+
+    A fourteen-cylinder engine fires fourteen times per cycle and a
+    single fires once, so fatigue accumulates fourteen times faster on
+    the one -- which is exactly what a per-event mechanism is for. This
+    used to be a BOOL per physics substep: every cylinder that fired in
+    the same substep counted as one event, so the Wartsila aged like a
+    lawnmower, and the rate depended on the substep size rather than on
+    the engine. Counting real events instead makes per-event wear
+    independent of how finely the sim happens to be stepping."""
+    arch = engine.architecture
+    cylinders = max(1, int(getattr(arch, "cylinders", 1) or 1))
+    cycle_deg = float(getattr(arch, "cycle_degrees", 720.0) or 720.0)
+    revs = max(0.0, float(rpm)) / 60.0 * max(0.0, float(dt))
+    return revs * cylinders * (360.0 / max(1.0, cycle_deg))
+
+
+
+
+# ---------------------------------------------------------------------
+# WHAT THE FUEL DOES TO THE HARDWARE
+# ---------------------------------------------------------------------
+#
+# Until now every life constant here described a part running on the
+# fuel it was designed for. That is the ordinary case and it was the
+# only case the model had. But a converted engine is not running on the
+# fuel it was designed for, and for one component that difference is not
+# a percentage -- it is two orders of magnitude.
+#
+# fuel_network.hardware_notes() already knew this and said so in a
+# string: "hardened valve seats: a dry gaseous fuel gives no seat
+# lubrication". Its own docstring admitted the notes were "advice for
+# the build, not physics the sim enforces". This is the physics.
+#
+# RECESSION IS A LOAD PHENOMENON, which is the part that makes it feel
+# real rather than punitive. The micro-welding that tears the seat needs
+# seat temperature and seat pressure, so a converted engine pottering
+# around town is genuinely fine and the same engine towing up a long
+# grade eats its head in an afternoon. Scaling on load squared gives
+# exactly that: a well-known conversion failure that owners consistently
+# describe as arriving from nowhere.
+
+#: Worst-case multiplier on seat recession: dry gaseous fuel, plain cast
+#: iron seats, sustained full load. Takes a five-thousand-hour seat to
+#: something under fifty, which is the documented experience of gas
+#: conversions done to unprepared heads.
+UNLUBRICATED_SEAT_MULTIPLIER = 150.0
+#: What a top-lube doser buys back. It does not eliminate the problem --
+#: it replaces the lead film with a potassium/phosphorus one and gets
+#: most of the way there.
+TOP_LUBE_PROTECTION = 0.92
+
+
+def seat_recession_multiplier(engine, load_frac: float = 1.0,
+                              top_lube: bool = False) -> float:
+    """How much faster the seats go on THIS fuel in THIS head.
+
+    1.0 means the seats are seeing what they were designed for: either
+    the fuel lubricates them, or the head was built not to need it."""
+    fuel_key = getattr(engine, "preferred_fuel_profile", None)
+    if not fuel_key:
+        return 1.0
+    try:
+        import working_fluids as wfl
+        fluid = wfl.WORKING_FLUIDS.get(fuel_key)
+    except Exception:
+        return 1.0
+    if fluid is None or not getattr(fluid, "hardened_valve_seats_required", False):
+        return 1.0
+    arch = getattr(engine, "architecture", None)
+    if arch is not None and getattr(arch, "hardened_valve_seats", True):
+        return 1.0
+    if arch is not None and not getattr(arch, "has_poppet_valves", True):
+        return 1.0
+    load = max(0.0, min(1.0, float(load_frac)))
+    mult = 1.0 + (UNLUBRICATED_SEAT_MULTIPLIER - 1.0) * load * load
+    if top_lube:
+        mult = 1.0 + (mult - 1.0) * (1.0 - TOP_LUBE_PROTECTION)
+    return mult
+
+
+def environment_multipliers(engine, load_frac: float = 1.0,
+                            top_lube: bool = False) -> dict:
+    """Per-component rate factors that come from how the engine is being
+    RUN rather than from how hard it is working.
+
+    A dict rather than a special case inside step_wear, so the next one
+    of these -- a fuel that washes the bores, a coolant that pits the
+    liners -- has somewhere obvious to go."""
+    out = {}
+    m = seat_recession_multiplier(engine, load_frac, top_lube)
+    if m != 1.0:
+        out["valve_seats"] = m
+    return out
+
+
 def step_wear(wear_state: dict[str, float], engine, dt: float, rpm: float,
-              fired: bool, knock: bool) -> None:
+              fired: bool, knock: bool, load_frac: float = 1.0,
+              top_lube: bool = False) -> None:
     """Advance every applicable component's real damage fraction by one
     tick, in place. `fired`/`knock` are this tick's real combustion
     outcome (see EngineCycleSim._record_ignition/state.knock_flag) --
     "time" components ignore them and just accrue dt; "sliding_distance"
     components convert this tick's real piston travel (Engine.mean_
     piston_speed_m_s(rpm) * dt) into abrasive wear; "per_event"
-    components only advance on a real firing event, and jump harder on
-    a knocking one."""
+    components advance by the REAL NUMBER of firing events in this tick
+    (see `firing_events`), and jump harder on a knocking one.
+
+    WEAR_TIME_ACCELERATION multiplies everything. It exists because the
+    life constants below are real service lives -- fifteen thousand
+    hours to an overhaul -- and nobody plays for fifteen thousand hours.
+    Keeping the physics honest and the pacing as a separate, declared
+    knob is the only way to have both; burying a x50 factor in the life
+    constants themselves would make every one of them a lie and would
+    corrupt anything calibrated against them, starting with the oil
+    analysis in wear_debris.py."""
     if not wear_state:
         return
-    sliding_m = engine.mean_piston_speed_m_s(rpm) * dt
+    accel = max(0.0, WEAR_TIME_ACCELERATION)
+    if accel <= 0.0:
+        return
+    sliding_m = engine.mean_piston_speed_m_s(rpm) * dt * accel
+    events = (firing_events(engine, rpm, dt) * accel) if fired else 0.0
+    env = environment_multipliers(engine, load_frac, top_lube)
     for c in _components_for(engine):
         if c.name not in wear_state:
             continue
         damage = wear_state[c.name]
         if c.mechanism == TIME:
-            damage += dt / c.life_constant
+            damage += dt * accel / c.life_constant
         elif c.mechanism == SLIDING_DISTANCE:
             damage += sliding_m / c.life_constant
         elif c.mechanism == PER_EVENT:
-            if fired:
-                increment = 1.0 / c.life_constant
+            if events > 0.0:
+                increment = events / c.life_constant
                 if knock:
                     increment *= c.knock_multiplier
+                # the fuel's own contribution, which for a converted
+                # engine's seats is the dominant term by a long way
+                increment *= env.get(c.name, 1.0)
                 damage += increment
         wear_state[c.name] = min(1.0, damage)
 

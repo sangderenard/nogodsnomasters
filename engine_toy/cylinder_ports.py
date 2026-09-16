@@ -215,6 +215,14 @@ def derive_valvetrain(engine) -> str:
         return arch.valvetrain
     if arch.two_stroke and not arch.has_poppet_valves:
         return "none"
+    # A WANKEL HAS NO VALVETRAIN AT ALL. Its breathing is done by the
+    # rotor's own flanks sweeping past peripheral or side ports cut in
+    # the housing -- there is no camshaft, no valve and nothing to time.
+    # Without this the 13B fell through to the redline correlation below
+    # and came out "sohc", which had head_mesh ready to draw it a cam
+    # box while the graph (correctly) gave it no camshaft node at all.
+    if getattr(arch, "rotary", False):
+        return "none"
     valves = valves_per_cylinder(engine)
     if valves >= 3:
         return "dohc"

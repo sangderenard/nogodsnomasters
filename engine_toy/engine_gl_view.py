@@ -729,8 +729,14 @@ class EngineGLView:
         # a fresh graph is a fresh triangle list: whatever was culled off
         # the last engine does not apply to this one
         self._static_tri_keep = None
-        self._absent = set()
+        # Parts that have BURST -- gone, by graph identity.
         self._absent: set = set()
+        # Parts that are merely OUT OF SIGHT -- sealed inside an intact
+        # casing, by mesh part name. A different question from absent
+        # and it has to stay a different set: an absent part is not
+        # coming back, a hidden one comes back the moment something puts
+        # a hole in what it is hiding behind.
+        self._hidden_parts: set = set()
         # which triangles of _static_mesh are actually in _static_gl.
         # None means all of them; set_absent_parts narrows it when a part
         # bursts, and restage_static_mesh has to honour the same subset or
@@ -899,15 +905,53 @@ class EngineGLView:
         part maps to one of these graph identities and re-upload the
         static mesh (the baked moving frames are untouched -- only
         castings/bolt-ons can be absent)."""
-        from damage_state import mesh_part_identity
         wanted = set(identities)
-        if wanted == self._absent or self._static_mesh is None:
+        if wanted == self._absent:
             return
-        self._absent = set(wanted)
+        self._absent = wanted
+        self._apply_static_culling()
+
+    def set_hidden_parts(self, part_names) -> None:
+        """Parts sealed inside an intact casing: real, still spinning,
+        still hittable, and not worth drawing.
+
+        Takes MESH PART NAMES (what engine_mesh.enclosed_bodies returns)
+        rather than graph identities, because that is the namespace the
+        visibility answer is computed in and converting it here would
+        only give two chances to get the mapping wrong.
+
+        This is the other half of engine_mesh.enclosed_bodies, which has
+        existed and been tested for a while with nothing calling it. The
+        rule it implements: a rotor inside a whole housing is invisible;
+        put a through-hole in the housing and it comes straight back,
+        because you can now see it through the hole."""
+        wanted = set(part_names)
+        if wanted == self._hidden_parts:
+            return
+        self._hidden_parts = wanted
+        self._apply_static_culling()
+
+    def _apply_static_culling(self) -> None:
+        """Rebuild the drawn triangle subset from BOTH cull sources.
+
+        One place, because two independent culls each rewriting
+        `_static_tri_keep` from scratch would take turns undoing each
+        other -- a burst part would reappear the moment a casing was
+        breached, and vice versa.
+
+        Note what is NOT done here: the EngineMesh itself is untouched.
+        Only the GL upload is narrowed, so engine_rays still traces
+        against every triangle and a round still goes through a casing
+        and hits what is behind it."""
+        from damage_state import mesh_part_identity
         mesh = self._static_mesh
+        if mesh is None:
+            return
         keep = np.ones(mesh.n_triangles, bool)
         for (t0, t1), name in zip(mesh.part_ranges, mesh.part_names):
-            if mesh_part_identity(name, self._graph) in wanted:
+            if name in self._hidden_parts:
+                keep[t0:t1] = False
+            elif self._absent and mesh_part_identity(name, self._graph) in self._absent:
                 keep[t0:t1] = False
         from engine_mesh import EngineMesh
         tri_keep = np.nonzero(keep)[0]
@@ -1375,8 +1419,19 @@ class EngineGLView:
             colors=np.stack(light_col).astype(np.float32),
             intensities=np.array(light_int, dtype=np.float32),
         )
-        if self._static_gl is not None:
-            self._renderer.draw_mesh(self._static_gl.vao, self._static_gl.n_vertices, mvp_gl, mv_gl, enable_blend=True)
+        # DRAW THE INSIDES FIRST, THEN THE GLASS OVER THEM.
+        #
+        # The castings are deliberately translucent so the running gear
+        # shows through them (see engine_mesh's material table). That
+        # only works if the shell is drawn AFTER what it is covering.
+        # Drawn first -- which is what this did -- the shell writes
+        # depth, and every piston, rod and cam lobe inside the block
+        # then fails the depth test and is discarded. The engine was
+        # drawing its internals faithfully and throwing them away at the
+        # last step, which is why a see-through engine looked empty.
+        #
+        # Blending is not commutative with the depth test, so order is
+        # the whole fix: moving train, then throttle, then the casting.
         idx = self._frame_index_for(crank_angle_deg)
         if idx is not None and self._frame_gl[idx] not in (None, EMPTY_FRAME):
             fg = self._frame_gl[idx]
@@ -1384,6 +1439,8 @@ class EngineGLView:
         tg = self._throttle_frame_for(throttle_frac)
         if tg is not None:
             self._renderer.draw_mesh(tg.vao, tg.n_vertices, mvp_gl, mv_gl, enable_blend=True)
+        if self._static_gl is not None:
+            self._renderer.draw_mesh(self._static_gl.vao, self._static_gl.n_vertices, mvp_gl, mv_gl, enable_blend=True)
         # the live burns and residue: one small draw per active cylinder
         for cyl, k, _rgb in self._live_flames:
             fg = self._flame_gl.get((cyl, k))

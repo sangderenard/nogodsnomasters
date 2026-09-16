@@ -45,15 +45,38 @@ CRANK_IDENTITIES = ("powertrain.engine", "powertrain.crank_shaft.front", "powert
                     "powertrain.harmonic_balancer", "powertrain.flywheel")
 
 
-def drive_ratios_to_crank(graph: dict) -> dict[str, float]:
+# The edge kinds above carry rotation AND a tonal feature count, which
+# is what a pitched voice needs. Rotation itself travels over more kinds
+# than that -- a torque shaft, a clutch, the crank's own front-to-rear
+# reference -- and anything asking "what is turning, and how fast"
+# rather than "what can I hear" wants those too. Callers pass their own
+# vocabulary rather than this module growing a second walker.
+# NOT rotational-bearing: a bearing SUPPORTS a shaft, it does not couple
+# one shaft's speed to another's. Including it let the walker reach the
+# camshaft through its own bearings at ratio 1.0 and report a camshaft
+# turning at crank speed, when the timing drive beside it says 0.5.
+# NOT starter-pinion-mesh either: it is disengaged whenever the engine
+# is running, which is whenever anyone asks this question.
+DRIVELINE_EDGE_KINDS = ROTATION_EDGE_KINDS + (
+    "torque-shaft", "torque-shaft-wrench-extension", "friction-clutch-shaft",
+    "crank-shaft-reference", "one-way-clutch",
+    "synchronized-positive-dog-clutch-bypass")
+
+
+def drive_ratios_to_crank(graph: dict, edge_kinds: tuple[str, ...] | None = None
+                          ) -> dict[str, float]:
     """Shaft speed / crank speed for every node the crank turns, walking
     the graph's own rotation-carrying edges outward from the crank and
-    multiplying each edge's real `ratio` (1.0 for a keyed hub)."""
+    multiplying each edge's real `ratio` (1.0 for a keyed hub).
+
+    `edge_kinds` defaults to the pitched-sound vocabulary; pass
+    DRIVELINE_EDGE_KINDS to reach the clutch and everything behind it."""
+    kinds = edge_kinds or ROTATION_EDGE_KINDS
     edges = graph.get("edges", ())
     out_edges: dict[str, list[tuple[str, float]]] = {}
     for e in edges:
         kind = e.get("constraint") or e.get("kind")
-        if kind not in ROTATION_EDGE_KINDS:
+        if kind not in kinds:
             continue
         r = float(e.get("ratio", 1.0) or 1.0)
         out_edges.setdefault(e["a"], []).append((e["b"], r))

@@ -52,6 +52,21 @@ def _rgb(h: str) -> tuple:
     h = h.lstrip("#")
     return tuple(int(h[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
 
+#: HOW SOLID THE CASTINGS ARE, in one place instead of four.
+#:
+#: These were 0.20-0.24 -- nearly clear -- so the block, head, covers
+#: and crankcase were glass and the running gear showed through them.
+#: That reads as an X-ray diagram rather than as an engine, and it also
+#: made the depth-ordering in engine_gl_view load-bearing: internals had
+#: to be drawn before the shell or they vanished entirely.
+#:
+#: Solid is the default now. `covers_off` remains the real way to look
+#: inside, which is the honest one -- you take the cover off. Set this
+#: below 1.0 to get the see-through look back; nothing else needs to
+#: change, and the draw order stays correct either way.
+CASTING_OPACITY = 1.0
+
+
 
 # (name-substrings, material) -- first match wins; the colour system of the design renders
 MATERIAL_RULES = [
@@ -130,10 +145,10 @@ MATERIAL_RULES = [
     # already computes from the material's ior (base_material.frag.glsl,
     # hardcoded 1.5 -- real glass) actually shows up at grazing angles,
     # instead of being swamped by a flat, low-gloss alpha blend.
-    (("head_casting", "cam_box"), Material("head", "head castings", _rgb("#98a4b4"), 0.24, 0.08, 0.2, 0.8, 130.0)),
-    (("valve_cover", "valley_cover", "case_top_cover"), Material("cover", "covers", _rgb("#606a78"), 0.2, 0.06, 0.2, 0.85, 140.0)),
-    (("_bore", "_water_jacket", "_fin_", "_head", "chamber_roof", "_crank_cover", "_hopper", "_rotor_housing", "_side_plate", "_valve_chest"), Material("cylinder", "cylinders / jackets / fins", _rgb("#57626e"), 0.22, 0.08, 0.2, 0.8, 130.0)),
-    (("crankcase", "sump", "front_cover", "rear_main", "bedplate", "main_pedestal", "frame_plate", "guide_bar", "rear_accessory"), Material("case", "crankcase / sump / frame", _rgb("#34363a"), 0.2, 0.1, 0.2, 0.75, 120.0)),
+    (("head_casting", "cam_box"), Material("head", "head castings", _rgb("#98a4b4"), CASTING_OPACITY, 0.08, 0.2, 0.8, 130.0)),
+    (("valve_cover", "valley_cover", "case_top_cover"), Material("cover", "covers", _rgb("#606a78"), CASTING_OPACITY, 0.06, 0.2, 0.85, 140.0)),
+    (("_bore", "_water_jacket", "_fin_", "_head", "chamber_roof", "_crank_cover", "_hopper", "_rotor_housing", "_side_plate", "_valve_chest"), Material("cylinder", "cylinders / jackets / fins", _rgb("#57626e"), CASTING_OPACITY, 0.08, 0.2, 0.8, 130.0)),
+    (("crankcase", "sump", "front_cover", "rear_main", "bedplate", "main_pedestal", "frame_plate", "guide_bar", "rear_accessory"), Material("case", "crankcase / sump / frame", _rgb("#34363a"), CASTING_OPACITY, 0.1, 0.2, 0.75, 120.0)),
     (("node_mount_",), Material("mount", "engine mounts / isolators", _rgb("#8a3324"), 0.3, 0.6, 0.3, 0.3, 18.0)),
     # hole_emitters.py: what is passing through the damage holes, drawn
     # as droplet streaks along each emitter's real jet (engine_gl_view.
@@ -469,11 +484,123 @@ def declared_in_view(graph: dict) -> set[str]:
     return out
 
 
-def build_engine_mesh(graph: dict, crank_angle_deg: float = 0.0, covers_off: bool = False) -> tuple[EngineMesh, EngineMesh]:
-    """(static, moving) meshes for this graph at this crank angle."""
-    declared = declared_in_view(graph)
+# WHAT IS AND IS NOT A BODY.
+#
+# `wanted_in_view` below is a keyword allowlist of part NAMES, and it
+# decides what the engine view draws. Anything nobody thought to add to
+# it is built, in full, with real geometry -- and then thrown away. On
+# the catalogue as it stands that is 264 rotating-mass nodes: every
+# alternator, water pump, cooling fan and A/C compressor BODY (their
+# pulleys are on the list, so the view drew four pulleys turning in mid
+# air), every clutch, every gearbox and transfer case (only their mounts
+# were listed), plus the batteries, float bowls, thermostats, torque
+# converters and injection nozzles.
+#
+# The fix is the one `declared_in_view` already argues for: stop asking
+# what a part is CALLED. A node that carries solid geometry is a real
+# object and gets drawn, unless its declared KIND says it is not a body
+# at all. That inverts the default from "listed names are drawn" to
+# "objects are drawn", which is the only version that stays true as new
+# hardware is added -- every part built since that list was written was
+# invisible until someone remembered to name it.
+
+# Not bodies: a port face on a casting, a reference point on a shaft, a
+# wire terminus, an attachment point. These exist in the graph to carry
+# physics and connectivity, and have no separate object to look at.
+NON_BODY_KINDS = frozenset({
+    "engine-block-port", "crank-shaft-endpoint", "electrical-junction",
+    "electrical-bulkhead-connector", "starter-drive-attachment",
+    "pre-clutch-rotating-six-axis-wrench-port",
+})
+
+# Real bodies that a DEDICATED mesh module already draws in full. The
+# head is the live case: head_mesh emits `head_casting_bank`, so drawing
+# `powertrain.cylinder_head.cylinder_N` as well would lay a second
+# casting over the first. Checked, not assumed.
+DRAWN_BY_DEDICATED_MESH_KINDS = frozenset({
+    "engine-head-component",
+})
+
+# Real objects, but in the cockpit rather than on the engine -- the
+# engine view is a view of the engine.
+COCKPIT_KINDS = frozenset({
+    "instrument-cluster-module", "vehicle-computer",
+})
+
+
+def bodies_in_view(graph: dict) -> set[str]:
+    """Part names for every node that is a real object with geometry.
+
+    Kind-based, so a part that has never been named anywhere still gets
+    drawn the moment it is built. A node can still opt out explicitly
+    with `in_view=False`, which is the one thing that outranks its kind
+    -- a part that knows it should not be seen is believed."""
+    out: set[str] = set()
+    for n in graph.get("nodes", ()):
+        kind = str(n.get("kind") or "")
+        if kind in NON_BODY_KINDS or kind in DRAWN_BY_DEDICATED_MESH_KINDS or kind in COCKPIT_KINDS:
+            continue
+        if n.get("in_view") is False:
+            continue
+        if n.get("drawn_by"):
+            continue   # another module owns this one's geometry
+        out.add("node_" + str(n["identity"]).replace("/", "_").replace(".", "_"))
+    return out
+
+
+def enclosed_bodies(graph: dict, breached_casings: frozenset[str]) -> set[str]:
+    """Part names sealed inside a casing that is still intact.
+
+    A node says `enclosed_by="<casing identity>"` when it lives inside
+    something -- an EV rotor inside its motor housing, a blower rotor
+    inside its case. While that casing is whole there is nothing to see,
+    so the RENDERER can skip the geometry and stop updating it.
+
+    THIS IS A VISIBILITY ANSWER AND NOT A PHYSICAL ONE. An enclosed part
+    is still there: it still spins, still carries its inertia, and still
+    has to be hittable, because a round that goes through the casing
+    goes on to hit what is behind it. That is why `build_engine_mesh`
+    only culls when a caller explicitly asks for the visible set -- the
+    ray mesh calls it with no argument and gets everything, every time.
+
+    A casing counts as breached once something has put a hole through
+    it, at which point what is inside becomes visible through the hole
+    and comes back into the render."""
+    hidden: set[str] = set()
+    for n in graph.get("nodes", ()):
+        casing = n.get("enclosed_by")
+        if not casing or str(casing) in breached_casings:
+            continue
+        hidden.add("node_" + str(n["identity"]).replace("/", "_").replace(".", "_"))
+    return hidden
+
+
+def breached_casings(holes) -> frozenset[str]:
+    """Which casings have been opened, from the engine's own holes.
+
+    `holes` is any iterable of hole records carrying `part` and
+    `through` -- HoleEmitterField's own emitters. Only a THROUGH hole
+    reveals anything: a dent or a blind gouge does not open a case."""
+    return frozenset(str(h.part) for h in (holes or ()) if getattr(h, "through", False))
+
+
+def build_engine_mesh(graph: dict, crank_angle_deg: float = 0.0, covers_off: bool = False,
+                      breached: frozenset[str] | None = None) -> tuple[EngineMesh, EngineMesh]:
+    """(static, moving) meshes for this graph at this crank angle.
+
+    `breached` opts into VISUAL culling: pass the set of casings that
+    have been holed (see `breached_casings`) and anything still sealed
+    inside an intact casing is left out of the mesh. Leave it None -- the
+    default -- to get every body there is, which is what the ray mesh and
+    the damage model need: you must be able to shoot what you cannot
+    see."""
+    declared = declared_in_view(graph) | bodies_in_view(graph)
+    # subtracted AFTER the allowlist, not from `declared` -- a hidden
+    # part whose name happens to be on the keyword list would otherwise
+    # walk straight back into the mesh through `wanted_in_view`
+    hidden = enclosed_bodies(graph, breached) if breached is not None else frozenset()
     parts = [p for p in build_drivetrain_solid_parts(graph, crank_angle_deg=crank_angle_deg, covers_off=covers_off)
-             if p.name in declared or wanted_in_view(p.name)]
+             if (p.name in declared or wanted_in_view(p.name)) and p.name not in hidden]
     static = _from_parts([p for p in parts if not is_moving(p.name)], moving=False)
     moving = _from_parts([p for p in parts if is_moving(p.name)], moving=True)
     return static, moving

@@ -75,6 +75,31 @@ _VISUAL_BY_FAMILY = {
 _DEFAULT_VISUAL = _VISUAL_BY_FAMILY["gasoline"]
 
 
+def family_for(engine, fuel_profile: str | None = None) -> str:
+    """WHICH combustion family this engine is burning in, by name.
+
+    `visual_for` resolves the same question and hands back appearance;
+    anything that needs the family itself -- how much soot the burn
+    really makes, say, which is a mass and not a brightness -- asks for
+    it here rather than reaching for a visual property and hoping it
+    stands in."""
+    prof = (fuel_profile or getattr(engine, "preferred_fuel_profile", "") or "").lower()
+    arch = getattr(engine, "architecture", None)
+    for key in ("diesel", "multifuel"):
+        if key in prof:
+            return key
+    if arch is not None and getattr(arch, "two_stroke", False):
+        return "two-stroke"
+    for key in _VISUAL_BY_FAMILY:
+        if key in prof:
+            return key
+    kind = (getattr(engine, "fuel_kind", "") or "").lower()
+    for key in _VISUAL_BY_FAMILY:
+        if key in kind:
+            return key
+    return "gasoline"
+
+
 def visual_for(engine, fuel_profile: str | None = None) -> CombustionVisual:
     """The engine's own declared override first, else the fuel family
     the live fuel profile (or its preferred one) names."""

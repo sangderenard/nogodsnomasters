@@ -38,6 +38,44 @@ class Fluid:
     flammable: bool = False
     autoignition_k: float = 0.0         # what a spray needs to touch to light
     ullage_vapour: bool = False         # a part-empty vessel holds explosive vapour
+    # ---- THE OTHER SIDE OF THE REACTION ----
+    # This registry described only FUELS: `flammable` and an ignition
+    # temperature. That is half a combustion model, and the missing half
+    # is not cosmetic -- without it nothing can tell the difference
+    # between venting nitrogen into a space and venting oxygen into it,
+    # and a fire needs both sides declared to happen at all.
+    #: Declared oxidiser. Not the same as "contains oxygen": water
+    #: contains oxygen and will not oxidise anything.
+    oxidiser: bool = False
+    #: Kilograms of O2-equivalent this fluid can deliver per kilogram of
+    #: itself. Air is 0.232, oxygen 1.0, nitrous oxide 0.364 -- because
+    #: N2O -> N2 + 1/2 O2 gives 16 g of oxygen from 44 g of nitrous.
+    oxygen_equivalence: float = 0.0
+    #: Energy released by the oxidiser DECOMPOSING, with no fuel present
+    #: at all. Zero for oxygen, which is stable. Large for nitrous oxide,
+    #: which is a monopropellant: this is why an N2O bottle can detonate
+    #: on its own and an O2 bottle cannot.
+    decomposition_j_kg: float = 0.0
+    #: Whether that decomposition, once started, propagates through the
+    #: bulk without further ignition.
+    self_sustaining: bool = False
+
+    @property
+    def oxidising_power(self) -> float:
+        """How hard this pushes a fire, with AIR as 1.0.
+
+        Two terms. The first is simply how much oxygen it can hand over
+        relative to air. The second is the energy it brings itself,
+        which raises the local temperature at the reaction front and so
+        makes ignition easier independently of how much oxygen is
+        present -- and it is the term that makes nitrous oxide a worse
+        actor than pure oxygen despite carrying barely a third of the
+        oxygen per kilogram."""
+        if not self.oxidiser:
+            return 0.0
+        supply = self.oxygen_equivalence / 0.232
+        carried = self.decomposition_j_kg / 600_000.0
+        return supply + carried
     # ---- THERMAL ----
     # This registry carried density and viscosity and not one thermal
     # property, so a fluid circuit could say how a leak ran down a
@@ -71,6 +109,16 @@ THERMAL_PROPERTIES = {
 _BASE_FLUIDS: tuple[Fluid, ...] = (
     Fluid("engine-oil", "engine oil", "liquid", 870.0, 0.045, 0.031,
           circuits=("oil",), keywords=("engine-oil", "motor oil", "lube"),
+          leak_material="leak_engine-oil", flammable=True, autoignition_k=633.15),
+    # WHAT COMES OUT OF A SEPARATOR is not the oil that went in. It is
+    # oil plus everything taken out of it -- soot, water, wear metal --
+    # so it is markedly denser and thicker, and it is worth being its
+    # own fluid because a kilogram of it is not a litre of oil. Treating
+    # ejected sludge as engine oil lost a fifth of every spill in the
+    # round trip between a centrifuge's kilograms and an emitter's
+    # litres.
+    Fluid("sludge", "separator sludge", "liquid", 1100.0, 0.30, 0.033,
+          circuits=("oil",), keywords=("sludge", "separator sludge", "bowl solids"),
           leak_material="leak_engine-oil", flammable=True, autoignition_k=633.15),
     # ATF and hydraulic oil are genuinely close relatives -- a light
     # mineral oil with friction modifiers, dyed red so a puddle under a
@@ -110,6 +158,19 @@ _BASE_FLUIDS: tuple[Fluid, ...] = (
     Fluid("water", "water", "liquid", 1000.0, 0.0010, 0.072,
           circuits=("water", "condensate"), keywords=("water", "condensate"),
           leak_material="leak_water"),
+    Fluid("oxygen", "gaseous oxygen", "gas", 1.429, 2.04e-5, 0.0,
+          circuits=("oxygen", "asu-product"), keywords=("oxygen", "lox", "o2"),
+          leak_material="leak_gas", flammable=False,
+          specific_heat_j_per_kg_k=918.0, conductivity_w_per_m_k=0.0263,
+          boiling_point_k=90.19, freezing_point_k=54.36,
+          oxidiser=True, oxygen_equivalence=1.0),
+    Fluid("nitrous-oxide", "nitrous oxide", "gas", 1.977, 1.47e-5, 0.0,
+          circuits=("nitrous",), keywords=("nitrous", "n2o", "nos"),
+          leak_material="leak_gas", flammable=False,
+          specific_heat_j_per_kg_k=880.0, conductivity_w_per_m_k=0.0173,
+          boiling_point_k=184.7, freezing_point_k=182.3,
+          oxidiser=True, oxygen_equivalence=0.364,
+          decomposition_j_kg=1_864_000.0, self_sustaining=True),
     Fluid("gas", "gas", "gas", 1.2, 1.8e-5, 0.0,
           circuits=("intake-air", "exhaust", "pneumatic-reserve", "pneumatic",
                     "nitrous", "boost", "refrigerant", "blanket", "nitrogen"),

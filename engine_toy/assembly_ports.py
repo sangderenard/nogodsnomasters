@@ -4,9 +4,10 @@ you exactly what connected and what was left open.
 
 Every major casting declares its ports from the cylinder layout:
 
-  head (per bank)   oil_fill (a line port on top: the filler, open by
-                    default -- nothing plugs into it until a cap or a
-                    catch-can line does); oil_feed_face and two
+  head (per bank)   oil_fill (a line port on top: the filler, closed by
+                    its screw cap -- take the cap off, or plumb a
+                    catch-can line to it, and it is a real open hole
+                    with gallery pressure behind it); oil_feed_face and two
                     oil_return_face ports on the DECK (mating ports:
                     holes in the gasket face that line up with the
                     block's when the head is bolted on); coolant_face
@@ -60,6 +61,19 @@ class PartPort:
     mating: bool              # True: a gasket-face hole that mates when parts bolt up; False: a line port (needs a hose/pipe/plug)
     connected_to: str | None = None
     fluid: str = "oil"
+    # WHAT IS ACTUALLY IN THE HOLE when nothing is plumbed to it. A line
+    # port is not automatically a leak: an oil filler has a screw cap on
+    # it, a sump has a drain plug, a gallery is closed with a threaded
+    # gallery plug, a dipstick tube has the dipstick in it. Those are
+    # real parts, and the engine is only oil-tight because they are
+    # there.
+    #
+    # Empty means the hole really is open -- a crankcase breather is
+    # supposed to be. Anything with a closure can have it removed, and
+    # then the hole behaves like any other hole: pressure behind it,
+    # fluid out of it. That is the whole point of saying so here rather
+    # than assuming every unplumbed port is sealed by good manners.
+    closure: str = ""
     # ---- THE PORT PICKS THE JOINT ----
     # A port is not only a place, it is a KIND OF JUNCTION. Two faces
     # bolted through a gasket transmit everything; a trunnion boss at
@@ -165,7 +179,7 @@ def part_ports(layout, wet_sump: bool = True, lube: str | None = None) -> list[P
         if has_galleries:
             # the FILL: a line port on top of the head/cover, open until something is put on it
             top = deck_c + axis * (bore * 0.9); top[0] = min(xs) + pitch * 0.2
-            ports.append(PartPort(f"{head}.oil_fill", head, "oil-fill", top, axis, 0.016, False))
+            ports.append(PartPort(f"{head}.oil_fill", head, "oil-fill", top, axis, 0.016, False, closure="screw-cap"))
     # crankcase line ports and the pan joint
     x_a = stations[0][0] - _pitch(stations, bore) / 2.0
     x_b = stations[-1][0] + _pitch(stations, bore) / 2.0
@@ -177,7 +191,7 @@ def part_ports(layout, wet_sump: bool = True, lube: str | None = None) -> list[P
     if not has_galleries:
         return ports
     ports.append(PartPort("crankcase.main_gallery", "crankcase", "main-gallery", np.array([x_b + bore * 0.1, y0 + bore * 0.2, z0 + tunnel_r]),
-                          np.array([0.0, 0.0, 1.0]), 0.008, False))
+                          np.array([0.0, 0.0, 1.0]), 0.008, False, closure="gallery-plug"))
     if not wet_sump:
         # dry sump: the case's own low-point scavenge drain (the scavenge
         # pump pulls from here into the tank); no pan, no dipstick
@@ -185,7 +199,7 @@ def part_ports(layout, wet_sump: bool = True, lube: str | None = None) -> list[P
                               np.array([(x_a + x_b) / 2.0, rim_y, z0]), np.array([0.0, -1.0, 0.0]), 0.010, False))
         return ports
     ports.append(PartPort("crankcase.dipstick", "crankcase", "dipstick", np.array([(x_a + x_b) / 2.0, y0 + tunnel_r * 0.8, z0 + tunnel_r * 0.9]),
-                          np.array([0.0, 0.7, 0.7]), 0.005, False))
+                          np.array([0.0, 0.7, 0.7]), 0.005, False, closure="dipstick"))
     for k, xr in enumerate((x_a + bore * 0.2, (x_a + x_b) / 2.0, x_b - bore * 0.2)):
         for part, dirn in (("crankcase", np.array([0.0, -1.0, 0.0])), ("oil_pan", np.array([0.0, 1.0, 0.0]))):
             ports.append(PartPort(f"{part}.pan_rim_face_{k + 1}", part, "pan-rim", np.array([xr, rim_y, z0 + tunnel_r * 0.8]),
@@ -194,7 +208,7 @@ def part_ports(layout, wet_sump: bool = True, lube: str | None = None) -> list[P
     ports.append(PartPort("crankcase.pump_pickup_face", "crankcase", "pump-pickup", pick.copy(), np.array([0.0, -1.0, 0.0]), 0.012, True))
     ports.append(PartPort("oil_pan.pickup_face", "oil_pan", "pump-pickup", pick.copy(), np.array([0.0, 1.0, 0.0]), 0.012, True))
     ports.append(PartPort("oil_pan.drain_plug", "oil_pan", "drain-plug", np.array([x_b - bore * 0.3, rim_y - bore * 0.65, z0]),
-                          np.array([0.0, -1.0, 0.0]), 0.008, False))
+                          np.array([0.0, -1.0, 0.0]), 0.008, False, closure="drain-plug"))
     return ports
 
 
@@ -292,7 +306,8 @@ def emit_ports_graph(ports: list[PartPort], result: MateResult, node, edge,
         node(f"{prefix}.{p.identity}", [float(v) for v in p.position], "engine-block-port", port_kind=p.kind,
              port_direction=[float(v) for v in _unit(p.direction)], port_radius_m=p.radius_m, fluid_role=p.fluid,
              mating=p.mating, connected=p.connected_to is not None, part=p.part,
-             joint_type=p.joint,
+             joint_type=p.joint, closure=p.closure, plugged=bool(p.closure),
+             bung=bool(p.closure),
              **({"joint_axis": [float(v) for v in _unit(p.joint_axis)]}
                 if p.joint_axis is not None else {}))
     for a, b in result.seals:

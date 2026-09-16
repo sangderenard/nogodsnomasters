@@ -19,6 +19,21 @@ CRANKING_COMBUSTION_QUALITY = 0.12  # the one remaining hand pick -- see torque_
 TWO_STROKE_CRANKING_COMBUSTION_QUALITY = 0.35  # port-scavenged two-stroke, see torque_fraction (disclosed)
 
 
+def _catalogued_intake(engine):
+    """The intake this engine's peak torque figure was measured with.
+
+    Falls back to the engine's own intake when the engine is not in the
+    catalogue at all -- a hand-built one has no published peak to be
+    measured against, so its own hardware is the only reference there
+    is, and the behaviour is exactly what it was before."""
+    try:
+        import engines as _eng
+        ref = _eng.BY_IDENTITY.get(getattr(engine, "identity", None))
+    except Exception:
+        ref = None
+    return ref.intake_system if ref is not None else engine.intake_system
+
+
 def torque_fraction(engine: Engine, rpm: float) -> float:
     """Fraction (0..~1) of peak torque available at this rpm, wide-open
     throttle. Two real, DIFFERENT mechanisms on either side of
@@ -53,6 +68,25 @@ def torque_fraction(engine: Engine, rpm: float) -> float:
         return 0.0
     tpeak = engine.torque_peak_rpm
     if rpm <= tpeak:
+        # KNOWN LIMITATION: breathing does not apply below the torque
+        # peak. This branch returns combustion quality alone, so an
+        # intake runner tuned BELOW tpeak contributes nothing -- which
+        # is exactly the case for most long-runner truck and industrial
+        # engines, whose manifolds are tuned for precisely this region.
+        # Fitting a long intake to such an engine currently shows a loss
+        # up top and no gain down low, when the gain down low is the
+        # entire reason anyone fits one.
+        #
+        # NOT fixed here because it is not a one-line change: the
+        # breathing ratio varies with rpm even on an unmodified engine,
+        # so applying it below tpeak moves low-end torque for every
+        # engine in the catalogue, and the shape in this branch was
+        # arrived at carefully (see below -- an earlier smoothstep
+        # undershot low-rpm torque badly enough to stall the idle-air
+        # governor outright). Doing it properly means re-verifying idle
+        # and cranking behaviour across the catalogue, not editing one
+        # expression.
+        #
         # concave, not the symmetric smoothstep this used to be: real
         # combustion completeness rises fast with the FIRST bit of
         # in-cylinder turbulence and saturates with diminishing returns
@@ -90,7 +124,25 @@ def torque_fraction(engine: Engine, rpm: float) -> float:
     # counted; this only ever contributes the real, ADDITIONAL change
     # in breathing away from that baseline.
     gain_here = intake.resonance_gain(rpm, fpr)
-    gain_at_tpeak = intake.resonance_gain(tpeak, fpr)
+    # NORMALISE AGAINST THE INTAKE THE PEAK WAS MEASURED ON, not against
+    # whatever is fitted now.
+    #
+    # peak_torque_nm is a catalogued figure for this engine AS BUILT.
+    # Dividing the current intake's gain by the CURRENT intake's gain at
+    # the torque peak forces the curve through 1.0 there no matter what
+    # is bolted on -- so fitting a different manifold could only ever
+    # redistribute torque, never raise or lower the peak. Swapping to a
+    # long runner then read as "less top end" rather than "more bottom
+    # end", which is backwards: it was the normaliser moving, not the
+    # engine.
+    #
+    # The catalogue still holds the engine as declared (a modified one
+    # is a dataclasses.replace COPY, so BY_IDENTITY keeps the original),
+    # which gives a real reference to divide by. An unmodified engine is
+    # then bit-identical to before -- the reference IS itself -- and a
+    # modified one finally moves in absolute terms.
+    reference = _catalogued_intake(engine)
+    gain_at_tpeak = reference.resonance_gain(tpeak, fpr)
     breathing_ratio = gain_here / max(gain_at_tpeak, 1e-6)
     # real port/valve-curtain choking -- NOT the runner (IntakeSystem.
     # runner_diameter_mm is explicitly the pipe between plenum and

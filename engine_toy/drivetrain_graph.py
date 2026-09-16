@@ -34,6 +34,9 @@ import math
 import sys
 from pathlib import Path
 from rotational_friction import friction_impulse
+import rotating_inertia
+import gear_trains
+import compressors
 
 _TURING_ROOT = Path(__file__).resolve().parents[1] / "turing"
 if str(_TURING_ROOT) not in sys.path:
@@ -282,7 +285,10 @@ def rotor_load_torque_from_rated_nm(omega_rad_s: float, rated_omega_rad_s: float
 
 
 def _add_belt_driven_compressor(node, edge, identity: str, position: tuple[float, float, float],
-                                  rated_w: float, mass_kg: float = 4.5, inertia_kg_m2: float = 0.006,
+                                  rated_w: float, mass_kg: float = 4.5,
+                                  rotor_class: str = "ac-compressor",
+                                  construction: str = "swash-plate",
+                                  discharge_ratio: float = 8.0,
                                   crank_identity: str = "powertrain.engine") -> float:
     """The generic real mechanical PORT any belt-driven compressor plugs
     into the crank through -- a real magnetic friction clutch (the same
@@ -302,7 +308,35 @@ def _add_belt_driven_compressor(node, edge, identity: str, position: tuple[float
     # needs to know how big this compressor actually is reads it here
     # instead of inventing its own figure (refrigeration.py did exactly
     # that and disagreed with this by a factor of six)
-    node(identity, position, "rotating-mass", mass_kg=mass_kg, inertia_kg_m2=inertia_kg_m2,
+    # what actually spins inside the casting, rather than the 0.006 that
+    # used to sit here as a default argument: a compressor is a small
+    # rotating group in a heavy housing, and its whole shelf mass was
+    # never the thing being accelerated
+    _rotor = rotating_inertia.housed_assembly(rotor_class, mass_kg)
+    # WHAT KIND OF COMPRESSOR THIS ACTUALLY IS. A compressor is an
+    # expander run backwards, and which one it is decides its gas law
+    # (a Roots does no internal compression at all), how hard its torque
+    # swings inside a revolution, and whether it has reciprocating mass.
+    # Sized off `rated_w`, which refrigeration.py is explicit is the one
+    # declaration of how big this machine is -- so it stays the one.
+    _cspec = compressors.spec_for_rating(
+        construction, rated_w=rated_w,
+        reference_omega_rad_s=REFERENCE_COMPRESSOR_OMEGA_RAD_S,
+        unit_mass_kg=mass_kg, discharge_pa=compressors.P_ATM_PA * discharge_ratio)
+    node(identity, position, "rotating-mass", mass_kg=mass_kg,
+         inertia_kg_m2=_rotor.inertia_kg_m2, housed_assembly=rotor_class,
+         rotating_shape=_rotor.shape, rotor_radius_m=_rotor.radius_m,
+         rotating_mass_kg=_rotor.rotating_mass_kg,
+         compressor_construction=construction,
+         compressor_bore_m=_cspec.bore_m, compressor_stroke_m=_cspec.stroke_m,
+         compressor_cylinders=_cspec.cylinders,
+         compressor_displacement_m3_rev=_cspec.displacement_m3_per_rev,
+         reciprocating_mass_kg=_cspec.reciprocating_mass_kg,
+         # a compressor is a SHAFT LOAD: it never asks what is turning
+         # it. This says what is, so that driving the same machine with
+         # an electric motor instead of a crank belt is a declaration
+         # here and not a second mechanism somewhere else.
+         driven_by="crank-belt",
          rated_w=rated_w, reference_omega_rad_s=REFERENCE_COMPRESSOR_OMEGA_RAD_S)
     edge(f"{crank_identity.split('.')[-1]}_to_{identity}_clutch", crank_identity, identity, "friction-clutch-shaft",
          stiffness_nm_per_rad_s=max_torque_nm * 8.0, max_torque_nm=max_torque_nm)
@@ -380,6 +414,16 @@ def _apply_camshaft_count(engine, nodes, edges) -> None:
         extra = dict(cam)
         extra["identity"] = ident
         extra["reference_position"] = position
+        # EACH SHAFT IS ITS OWN ROTATING BODY. The clone says what class
+        # of part it is so the inertia pass sizes it from its own share
+        # of the mass; without that only `powertrain.camshaft` was in the
+        # identity table and shafts 2..4 carried no inertia at all. They
+        # still registered as non-zero only because their cloned sprocket
+        # is keyed to them, so a four-cam engine was swinging four
+        # sprockets and one camshaft.
+        extra["rotor_class"] = "camshaft"
+        extra.pop("inertia_kg_m2", None)
+        extra.pop("rotor_radius_m", None)
         nodes.append(extra)
         for e in cam_edges:
             clone = dict(e)
@@ -388,6 +432,414 @@ def _apply_camshaft_count(engine, nodes, edges) -> None:
                 if clone.get(side) == "powertrain.camshaft":
                     clone[side] = ident
             edges.append(clone)
+
+
+# Which class of housed assembly each rotating unit the VEHICLE SUBUNIT
+# builds actually is. Those nodes are emitted by abstract_ui_vehicles.py,
+# which knows nothing about rotor shapes, so this is where they say what
+# they are -- by explicit identity, exactly as GEAR_CASE_BY_NODE above
+# does for the same reason, and never by matching substrings of a name
+# (which is how a transfer-case breather once grew into a second
+# transfer case).
+# Which housed-assembly classes are PUMPS -- the thing a fluid circuit
+# means when it asks which of its members drives it. A registry, so the
+# answer is a membership test against a declared class rather than a
+# search for the word "pump" in somebody's identity.
+PUMP_ASSEMBLIES = frozenset({"water-pump", "oil-pump", "injection-pump"})
+
+# How each fluid component built by the VEHICLE SUBUNIT closes up. Same
+# reason as ROTOR_CLASS_BY_NODE: those nodes are emitted by
+# abstract_ui_vehicles.py, which has no vocabulary for saying so, and a
+# part built here declares `fouling_mode` at its own node instead.
+# See fouling.py for what actually forms each blockage.
+FOULING_BY_NODE: dict[str, str] = {
+    # a radiator packs from the outside with what the air carries, and
+    # scales from the inside with what the coolant drops
+    "powertrain.radiator": "core-debris",
+    "powertrain.heater_core": "core-debris",
+    "powertrain.condenser": "core-debris",
+    "powertrain.charge_cooler": "core-debris",
+    # the jacket itself scales where the metal is hottest
+    "powertrain.engine_block_port.coolant_outlet": "scale",
+}
+
+# WHAT ROTS, AND HOW THICK IT IS. Everything downstream of a cylinder
+# runs wet with acid condensate whenever the exhaust drops below its dew
+# point, so corrosion is declared against the KIND of component rather
+# than against a list of names -- an exhaust part added tomorrow rots
+# the same way. Wall thicknesses are real: pressed tube and muffler
+# shell are under a millimetre and a half, a cast manifold is several.
+EXHAUST_WALL_M: dict[str, float] = {
+    "exhaust-component": 0.0014,
+    "exhaust-collector": 0.0016,
+    "exhaust-manifold": 0.0050,
+    "exhaust-muffler": 0.0009,
+}
+
+ROTOR_CLASS_BY_NODE: dict[str, str] = {
+    "electrical.alternator": "alternator",
+    "powertrain.water_pump": "water-pump",
+    "powertrain.camshaft": "camshaft",
+    "ac_compressor": "ac-compressor",
+    "pneumatic_compressor": "pneumatic-compressor",
+    "powertrain.starter_motor": "starter-motor",
+    "powertrain.oil_pump": "oil-pump",
+    # a marine engine's seawater (raw-water) pump is the same class of
+    # machine as a jacket water pump, just very much bigger
+    "powertrain.seawater_pump": "water-pump",
+    # driven machines that are not "accessories" in the belt sense but
+    # are every bit as much a casing with something spinning inside
+    "powertrain.magneto": "magneto",
+    "powertrain.flyball_governor": "flyweight-governor",
+    "powertrain.propeller_governor": "flyweight-governor",
+    "powertrain.injection_pump": "injection-pump",
+    "powertrain.reduction_gearset": "reduction-gearset",
+    "powertrain.drive_unit_differential": "drive-differential",
+}
+
+# Parts that a published engine inertia figure ALREADY accounts for. An
+# engine's declared `inertia_kg_m2` is the whole crank assembly as it
+# turns -- crank, rods, pistons, damper, flywheel and ring gear -- which
+# is the convention every real published figure follows, and the basis
+# the friction-work floor in engines.py is applied on. They are still
+# real, fully specified parts with their own mass, radius and polar
+# inertia (an abstracted machine can enumerate them), but adding them to
+# the crank's group again would count them twice.
+CRANK_ASSEMBLY_INCLUDED = (
+    "powertrain.flywheel", "powertrain.flywheel_front", "powertrain.flywheel.ring_gear",
+    "powertrain.harmonic_balancer", "powertrain.timing_drive.crank_sprocket",
+    # an electric machine's declared inertia IS its rotor -- there is
+    # nothing else on that shaft to be the inertia of
+    "powertrain.rotor_pack",
+)
+
+# The real mass of a gearbox and a transfer case, from the torque they
+# have to carry. A gearbox is sized by torque, not by engine mass: a
+# real light-car four-speed is around 30 kg at 250 N*m, and gear volume
+# (hence mass) grows close to linearly with the torque it must pass at a
+# given face width and material. Both were previously mass_kg=0.0, which
+# is why the solver saw a gearbox as one-millionth of a kg*m^2.
+_GEARBOX_REF_TORQUE_NM = 250.0
+_GEARBOX_REF_MASS_KG = 30.0
+_TRANSFER_CASE_MASS_FRAC = 0.9   # of the gearbox it bolts behind
+
+
+def _gearbox_mass_kg(peak_torque_nm: float) -> float:
+    t = max(1.0, float(peak_torque_nm))
+    return _GEARBOX_REF_MASS_KG * (t / _GEARBOX_REF_TORQUE_NM) ** 0.85
+
+
+def _emit_lubrication_drillings(nodes, edge) -> None:
+    """The drilled passages that actually carry oil through the castings.
+
+    assembly_ports.py cuts the ports and mates them across each joint
+    face, which is the hard half. What was missing is the half INSIDE
+    each casting: the block's gallery-to-deck drilling, the drainbacks
+    from the deck back down to the sump, and the head's feed onward to
+    the camshaft journals. Without them the mated faces were islands --
+    the oil circuit ran pan -> pump -> filter -> gallery and stopped at
+    the block, so no oil ever reached the head, nothing came back, and
+    the valvetrain was lubricated by nothing at all.
+
+    A real engine's path, and now this one's:
+
+        sump -> pickup -> pump -> filter -> main gallery
+             -> (block drilling) -> deck feed face
+             -> (head gasket) -> head feed face
+             -> cam journals / rocker gear
+             -> head drainback faces -> (head gasket)
+             -> deck drainback faces -> (block drilling) -> sump
+
+    Only emitted for faces that actually exist: an engine with no deck
+    feed face (a two-stroke with no wet sump, a turbine) gets nothing
+    here rather than edges into parts it does not have."""
+    ids = {n["identity"] for n in nodes}
+    if "powertrain.engine" not in ids:
+        return
+    have_pan = "powertrain.oil_pan" in ids
+    # every camshaft this engine actually has: `_apply_camshaft_count`
+    # clones `powertrain.camshaft` into camshaft_2/_3/_4 for multi-cam
+    # heads and multi-row radials before this runs
+    cams = sorted(i for i in ids if i.rsplit(".", 1)[-1].startswith("camshaft"))
+    OIL = dict(circuit_identity="oil", medium_rate_state="oil-flow-and-temperature-and-pressure",
+               material="cast-iron-casting", fluid="engine-oil")
+    for ident in sorted(ids):
+        # --- the block's own gallery-to-deck feed drilling
+        if ident.endswith(".oil_feed_face") and ".crankcase." in ident:
+            edge(f"powertrain.gallery_drilling_to_{ident.split('.')[-2]}",
+                 "powertrain.engine", ident, "oil-line", radius=0.004, **OIL)
+        # --- the head's feed onward to the camshaft journals: the
+        # valvetrain is the far end of the pressurised circuit, and the
+        # only reason oil gets up there at all
+        elif ident.endswith(".oil_feed_face") and ".crankcase." not in ident:
+            # EVERY camshaft, not just the first. A DOHC head has two, a
+            # twin-row radial has one per row and the Wasp Major has
+            # four -- naming `powertrain.camshaft` alone fed cam 1 and
+            # left the other three dry, which is exactly the kind of
+            # thing an engine does not survive.
+            for cam in cams:
+                edge(f"powertrain.head_feed_to_cam_journals_{ident.split('.')[-2]}_{cam.split('.')[-1]}",
+                     ident, cam, "oil-line", radius=0.003, **OIL)
+        # --- the drainbacks: everything that reaches the head has to
+        # fall back to the sump, and it falls through the block
+        elif ".oil_return_face" in ident and ".crankcase." in ident and have_pan:
+            edge(f"powertrain.drainback_{ident.split('.')[-2]}_{ident.split('.')[-1]}",
+                 ident, "powertrain.oil_pan", "oil-line", radius=0.007, **OIL)
+
+    # --- the water jackets, the same story in the same castings.
+    # The coolant transfer holes across the head gasket had exactly the
+    # same problem: mated, tagged, and joined to nothing, so each one
+    # was its own two-node circuit and the cylinder head -- the part
+    # that makes most of the heat -- was not in the cooling system at
+    # all. A real engine pumps into the BLOCK jacket, up through these
+    # holes into the HEAD jacket, and out of the head to the thermostat.
+    COOLANT = dict(circuit_identity="coolant", medium_rate_state="coolant-flow-and-temperature",
+                   material="cast-iron-casting", fluid="coolant-water-glycol")
+    inlet = "powertrain.engine_block_port.coolant_inlet"
+    outlet = "powertrain.engine_block_port.coolant_outlet"
+    if inlet in ids and outlet in ids:
+        for ident in sorted(ids):
+            if ".coolant_face_" not in ident:
+                continue
+            tail = ident.replace("powertrain.", "").replace(".", "_")
+            if ".crankcase." in ident:
+                edge(f"powertrain.block_jacket_to_{tail}", inlet, ident,
+                     "coolant-line", radius=0.006, **COOLANT)
+            else:
+                edge(f"powertrain.{tail}_to_head_outlet", ident, outlet,
+                     "coolant-line", radius=0.006, **COOLANT)
+
+
+def _emit_main_bearings(engine, layout, nodes, node, edge) -> None:
+    """The crankshaft's main bearings, and the gallery that feeds them.
+
+    crank_mesh.py has drawn `crank_main_1..N` since the beginning, so
+    the journals were always THERE to look at -- but the graph had no
+    main bearings at all. The only `rotational-bearing` edges in a whole
+    engine were the camshaft's two, `powertrain.crankcase.main_gallery`
+    was a port joined to nothing, and the crankshaft was, as far as the
+    machine was concerned, supported by air and lubricated by nobody.
+
+    A main bearing is a SHELL: a pair of plain half-shells in the block
+    and its cap, which do not turn -- the journal turns inside them on a
+    film of oil the gallery holds up. So they are not rotating masses,
+    they are the place the gallery's oil actually goes, and the reason
+    the gallery exists. Positions come from the same `crank_stations`
+    layout crank_mesh draws from, so a bearing is always at the journal
+    it belongs to rather than at a position invented here.
+    """
+    if not layout:
+        return
+    ids = {n["identity"] for n in nodes}
+    gallery = "powertrain.crankcase.main_gallery"
+    if gallery not in ids or "powertrain.engine" not in ids:
+        return
+    try:
+        from crank_mesh import crank_stations
+        stations = crank_stations(layout)
+    except Exception:
+        return
+    if not stations:
+        return
+    import numpy as _np
+    bore = max(g.bore_m for _, gs in stations for g in gs)
+    xs = [x for x, _ in stations]
+    pitch = (xs[-1] - xs[0]) / max(1, len(xs) - 1) if len(xs) > 1 else bore * 1.3
+    y0 = float(stations[0][1][0].crank_centre[1])
+    z0 = float(stations[0][1][0].crank_centre[2])
+    main_xs = [xs[0] - pitch / 2.0] + [(a + b) / 2.0 for a, b in zip(xs, xs[1:])] + [xs[-1] + pitch / 2.0]
+    r_main = bore * 0.11
+    OIL = dict(circuit_identity="oil", medium_rate_state="oil-flow-and-temperature-and-pressure",
+               material="cast-iron-casting", fluid="engine-oil")
+    # the gallery itself is a drilling through the block, fed by the pump
+    edge("powertrain.gallery_from_pump", "powertrain.engine", gallery, "oil-line", radius=0.006, **OIL)
+    # a real main-bearing shell pair: steel-backed trimetal, and light --
+    # what matters is that it is where the oil goes, not its mass
+    shell_mass = max(0.03, bore * 1.2)
+    for i, mx in enumerate(main_xs, start=1):
+        ident = f"powertrain.crank_main_bearing_{i}"
+        node(ident, [float(mx), y0, z0], "plain-bearing", mass_kg=shell_mass,
+             bearing_kind="crankshaft-main", journal_radius_m=float(r_main),
+             drawn_by=f"crank_mesh:crank_main_{i}",
+             material="trimetal-bearing-shell", fluid="engine-oil")
+        # the gallery cross-drilling to this main: the real path, one
+        # branch per bearing, which is why gallery pressure falls when
+        # any one of them is worn
+        edge(f"powertrain.gallery_to_main_{i}", gallery, ident, "oil-line", radius=0.003, **OIL)
+
+
+def _declare_rotating_hardware(engine, nodes, transmission, automatic, gearbox_id) -> None:
+    """Say what every rotating unit in this build actually is.
+
+    Nothing here invents a number: each node is handed to the real
+    builder for its class of part -- a housed assembly for an accessory,
+    a full gear train for a case, a torque-capacity-sized clutch -- and
+    carries away that builder's own real mass, radius, shape and polar
+    inertia. A node that is a casing with things spinning inside it also
+    carries `housed_assembly`, which is what lets an abstracted machine
+    enumerate its spinning masses without knowing what the unit is."""
+    by_id = {n["identity"]: n for n in nodes}
+    peak_torque_nm = float(getattr(engine, "peak_torque_nm", 0.0) or 0.0)
+
+    # --- how each fluid component closes up, for the ones the subunit
+    # builds. A part that already says so keeps its own declaration.
+    for identity, mode in FOULING_BY_NODE.items():
+        n = by_id.get(identity)
+        if n is None or n.get("fouling_mode"):
+            continue
+        n["fouling_mode"] = mode
+        n.setdefault("blocked_frac", 0.0)
+
+    # --- the exhaust rots from the inside, at the low point, whenever
+    # it runs cold enough to condense. The wall it has to eat through is
+    # declared here so a perforation happens when the metal is actually
+    # gone rather than on a timer (see fouling.autogenous_port).
+    for n in nodes:
+        wall = EXHAUST_WALL_M.get(str(n.get("kind") or ""))
+        if wall is None or n.get("corrosion_mode"):
+            continue
+        n["corrosion_mode"] = "acid-condensate"
+        n["wall_thickness_m"] = wall
+        n.setdefault("wall_lost_m", 0.0)
+        # soot in a cold pipe holds the condensate against the metal
+        n.setdefault("fouling_mode", "varnish")
+        n.setdefault("blocked_frac", 0.0)
+
+    # --- accessories: a casing with a rotor in it.
+    # A part that SAYS what it is (`rotor_class` on its own node) is
+    # believed first; the identity table below is only for nodes built
+    # by the vehicle subunit, which has no vocabulary for saying so.
+    # That order matters: an aircraft engine carries two magnetos, and
+    # the second one is a magneto because it says it is, not because
+    # anything matched its name.
+    declared = {n["identity"]: str(n["rotor_class"])
+                for n in nodes if n.get("rotor_class")}
+    for identity, kind in {**ROTOR_CLASS_BY_NODE, **declared}.items():
+        n = by_id.get(identity)
+        if n is None or n.get("inertia_kg_m2"):
+            continue
+        unit_mass = float(n.get("mass_kg") or 0.0)
+        if unit_mass <= 0.0:
+            continue
+        asm = rotating_inertia.housed_assembly(kind, unit_mass)
+        n["housed_assembly"] = kind
+        n["rotating_shape"] = asm.shape
+        n["rotor_radius_m"] = asm.radius_m
+        n["rotating_mass_kg"] = asm.rotating_mass_kg
+        n["inertia_kg_m2"] = asm.inertia_kg_m2
+
+    # --- the cooling fan already declares its own real swept radius, and
+    # an axial fan is genuinely a near-rim rotor: no housing, no rotor
+    # fraction, the whole declared mass turns at the blade radius
+    fan = by_id.get("powertrain.cooling_fan")
+    if fan is not None and not fan.get("inertia_kg_m2"):
+        fan_m = float(fan.get("mass_kg") or 0.0)
+        fan_r = float(fan.get("fan_disk_radius_m") or 0.0)
+        if fan_m > 0.0 and fan_r > 0.0:
+            fan["rotating_shape"] = "axial-fan"
+            fan["rotor_radius_m"] = fan_r
+            fan["inertia_kg_m2"] = rotating_inertia.polar_inertia("axial-fan", fan_m, fan_r)
+
+    # --- the clutch: a real part, sized by the torque it must hold
+    clutch = by_id.get("powertrain.clutch")
+    if clutch is not None and not clutch.get("inertia_kg_m2"):
+        capacity = float(getattr(engine, "clutch_torque_nm", 0.0) or 0.0) or peak_torque_nm
+        if capacity > 0.0:
+            pack = rotating_inertia.clutch_pack(capacity)
+            clutch["mass_kg"] = pack.mass_kg
+            clutch["mass_in_total"] = True
+            clutch["clutch_plates"] = pack.plates
+            clutch["clutch_disc_diameter_m"] = pack.disc_diameter_m
+            clutch["rotating_shape"] = "clutch-cover-assembly"
+            clutch["rotor_radius_m"] = pack.radius_m
+            clutch["inertia_kg_m2"] = pack.inertia_kg_m2
+            clutch["part_label"] = pack.label
+
+    # --- the gearbox and the transfer case: full gear trains
+    box = by_id.get(gearbox_id) if gearbox_id else None
+    box_mass = _gearbox_mass_kg(peak_torque_nm)
+    if box is not None and not box.get("inertia_kg_m2") and peak_torque_nm > 0.0:
+        case_r = max(0.04, (box_mass / 2000.0) ** (1.0 / 3.0))
+        if automatic:
+            # an automatic's rotating inertia at the crank is its
+            # CONVERTER, which is bolted to the crank and spinning in
+            # park; the gearsets behind it are downstream of the fluid
+            conv = gear_trains.TorqueConverter(
+                unit_mass_kg=box_mass * 0.28, outer_radius_m=case_r * 1.15,
+                oil_mass_kg=float(box.get("fluid_volume_l") or 9.5) * 0.85 * 0.35)
+            box["mass_kg"] = box_mass
+            box["mass_in_total"] = True
+            box["housed_assembly"] = "torque-converter"
+            box["rotating_shape"] = "rim-weighted-flywheel"
+            box["rotor_radius_m"] = case_r * 1.15
+            box["inertia_kg_m2"] = conv.inertia_at_crank(0.0)
+        else:
+            gb = gear_trains.Gearbox(
+                unit_mass_kg=box_mass, case_radius_m=case_r,
+                gear_ratios=tuple(getattr(transmission, "gear_ratios", ()) or ()),
+                reverse_ratio=float(getattr(transmission, "reverse_ratio", 3.28) or 3.28))
+            box["mass_kg"] = box_mass
+            box["mass_in_total"] = True
+            box["housed_assembly"] = "manual-transmission"
+            box["rotating_shape"] = "geared-shaft-train"
+            box["rotor_radius_m"] = gb.pitch_radius_m
+            box["constant_mesh_ratio"] = gb.constant_mesh
+            # NEUTRAL is the honest default for a node the solver holds
+            # one number for: the input shaft, the layshaft and every
+            # mainshaft gear turn whenever the clutch is engaged, gear
+            # or no gear, and that is the inertia the engine swings at
+            # idle -- the state this sim spends most of its time in.
+            box["inertia_kg_m2"] = gb.inertia_at_input(None)
+            box["inertia_in_gear_kg_m2"] = {
+                f"{r:g}": gb.inertia_at_input(r) for r in gb.gear_ratios}
+
+    tcase = by_id.get("powertrain.transfer_case")
+    if tcase is not None and not tcase.get("inertia_kg_m2") and peak_torque_nm > 0.0:
+        tc_mass = box_mass * _TRANSFER_CASE_MASS_FRAC
+        tc_r = max(0.04, (tc_mass / 2000.0) ** (1.0 / 3.0))
+        tc = gear_trains.TransferCase(unit_mass_kg=tc_mass, case_radius_m=tc_r)
+        tcase["mass_kg"] = tc_mass
+        tcase["mass_in_total"] = True
+        tcase["housed_assembly"] = "transfer-case"
+        tcase["rotating_shape"] = "geared-shaft-train"
+        tcase["rotor_radius_m"] = tc_r * 0.30
+        tcase["inertia_kg_m2"] = tc.inertia_at_input(False)
+        tcase["inertia_low_range_kg_m2"] = tc.inertia_at_input(True)
+
+    # --- the crank itself: ONE number, not two. `powertrain.engine` is
+    # the crank/flywheel share of the engine (ENGINE_CRANK_FLYWHEEL_MASS_
+    # FRACTION), and the engine's own declared inertia_kg_m2 -- already
+    # floored against its real friction work per cycle in engines.py --
+    # is the authority for what that assembly's polar inertia is. It used
+    # to get mass*0.01 here instead, so combustion integrated the crank
+    # at one inertia while the accessory belt pulled against another.
+    crank = by_id.get("powertrain.engine")
+    if crank is not None and not crank.get("inertia_kg_m2"):
+        declared = float(getattr(engine, "inertia_kg_m2", 0.0) or 0.0)
+        if declared > 0.0:
+            crank["rotating_shape"] = "rim-weighted-flywheel"
+            crank["inertia_kg_m2"] = declared
+            crank["inertia_source"] = "engine.inertia_kg_m2"
+            for ident in CRANK_ASSEMBLY_INCLUDED:
+                part = by_id.get(ident)
+                if part is not None:
+                    part["included_in_parent_inertia"] = True
+
+    # --- a dog-clutch bypass collar is a real sliding part, not a body
+    # with a flywheel's worth of mass: it is a splined collar on the
+    # output shaft, and it carried mass_kg=0.0 only because nothing had
+    # ever been asked to say how big it is
+    bypass = by_id.get("powertrain.direct_drive_bypass")
+    if bypass is not None and not bypass.get("inertia_kg_m2") and peak_torque_nm > 0.0:
+        # a dog collar is sized by the torque it passes, like any other
+        # coupling; a real one is a fraction of the clutch it bypasses
+        collar_r = max(0.02, 0.055 * (peak_torque_nm / 250.0) ** (1.0 / 3.0))
+        collar_m = max(0.15, 2.4 * (peak_torque_nm / 250.0) ** 0.85)
+        bypass["mass_kg"] = collar_m
+        bypass["mass_in_total"] = True
+        bypass["rotating_shape"] = "thin-ring"
+        bypass["rotor_radius_m"] = collar_r
+        bypass["inertia_kg_m2"] = rotating_inertia.polar_inertia("thin-ring", collar_m, collar_r)
 
 
 def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) -> dict[str, Any]:
@@ -784,16 +1236,26 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
             # final drive + differential low in the case, halfshafts out
             # both ends along the crank axis
             fd_c = [case_c[0] + case_len * 0.25, cy - half_yz * 0.75, cz + half_yz * 0.35]
-            node("powertrain.final_drive", fd_c, "rotating-mass", mass_kg=engine.mass_kg * 0.05,
-                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half_yz * 0.55, drum_length_m=half_yz * 0.35)
+            _fd_m, _fd_r = engine.mass_kg * 0.05, half_yz * 0.55
+            node("powertrain.final_drive", fd_c, "rotating-mass", mass_kg=_fd_m,
+                 rotating_shape="geared-shaft-train", rotor_radius_m=_fd_r,
+                 inertia_kg_m2=rotating_inertia.polar_inertia("geared-shaft-train", _fd_m, _fd_r),
+                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=_fd_r, drum_length_m=half_yz * 0.35)
             edge("drivetrain.transaxle_to_final_drive", "powertrain.transaxle", "powertrain.final_drive", "torque-shaft", radius=0.015)
-            node("powertrain.differential", [fd_c[0], fd_c[1], fd_c[2]], "rotating-mass", mass_kg=engine.mass_kg * 0.04,
-                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=half_yz * 0.42, drum_length_m=half_yz * 0.7)
+            # the crown wheel and carrier: a real disc, the heaviest
+            # thing turning at wheel speed in a transaxle
+            _df_m, _df_r = engine.mass_kg * 0.04, half_yz * 0.42
+            node("powertrain.differential", [fd_c[0], fd_c[1], fd_c[2]], "rotating-mass", mass_kg=_df_m,
+                 rotating_shape="solid-disc", rotor_radius_m=_df_r,
+                 inertia_kg_m2=rotating_inertia.polar_inertia("solid-disc", _df_m, _df_r),
+                 drum_axis=[1.0, 0.0, 0.0], drum_radius_m=_df_r, drum_length_m=half_yz * 0.7)
             edge("drivetrain.final_drive_to_differential", "powertrain.final_drive", "powertrain.differential", "torque-shaft", radius=0.015)
             shaft_len = half_yz * 2.2
             for name, sign in (("left", -1.0), ("right", 1.0)):
                 sc = [fd_c[0] + sign * (half_yz * 0.35 + shaft_len / 2.0), fd_c[1], fd_c[2]]
                 node(f"powertrain.halfshaft_{name}", sc, "rotating-mass", mass_kg=4.0,
+                     rotating_shape="solid-disc", rotor_radius_m=0.016,
+                     inertia_kg_m2=rotating_inertia.polar_inertia("solid-disc", 4.0, 0.016),
                      drum_axis=[1.0, 0.0, 0.0], drum_radius_m=0.016, drum_length_m=shaft_len)
                 edge(f"drivetrain.differential_to_halfshaft_{name}", "powertrain.differential", f"powertrain.halfshaft_{name}",
                      "torque-shaft", radius=0.012)
@@ -1024,6 +1486,8 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
     casting_ports = part_ports(layout, lube=lube_kind)
     mating_result = mate_ports(casting_ports)
     emit_ports_graph(casting_ports, mating_result, node, edge)
+    _emit_lubrication_drillings(nodes, edge)
+    _emit_main_bearings(engine, layout, nodes, node, edge)
     if lube_kind == "dry-sump" and not any(n["identity"] == "powertrain.oil_pump" for n in nodes):
         # a dry-sump engine production gave no pump (a crosshead two-
         # stroke: production keys its whole oil circuit on a wet sump):
@@ -1033,7 +1497,11 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
         eng_node = next((n for n in nodes if n["identity"] == "powertrain.engine"), None)
         ep = [float(v) for v in eng_node["reference_position"]] if eng_node is not None else [0.0, 0.0, 0.0]
         peak_torque_nm = float(engine.peak_torque_nm)
-        node("powertrain.oil_pump", (ep[0] + .04, ep[1] - .06, 0.0), "rotating-mass", mass_kg=max(1.4, engine.mass_kg * 0.003),
+        _op_m = max(1.4, engine.mass_kg * 0.003)
+        _op_rotor = rotating_inertia.housed_assembly("oil-pump", _op_m)
+        node("powertrain.oil_pump", (ep[0] + .04, ep[1] - .06, 0.0), "rotating-mass", mass_kg=_op_m,
+             housed_assembly="oil-pump", rotating_shape=_op_rotor.shape,
+             rotor_radius_m=_op_rotor.radius_m, inertia_kg_m2=_op_rotor.inertia_kg_m2,
              material="cast-iron-casting", fluid="engine-oil", fluid_volume_l=max(0.05, engine.displacement_l * 0.004))
         edge("thermal.engine_to_oil", "powertrain.engine", "powertrain.oil_pump", "heat-exchange-path", radius=.003,
              heat_share_frac=0.12, medium_rate_state="rejected-heat-flow-w")
@@ -1417,8 +1885,13 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
             # car's fuel tank gets, just for a different real reason).
             main_pos = (front[0] - 0.15, front[1], front[2] - 0.05)
             node("fuel.gas_main_connection", main_pos, "gas-supply-fitting")
+            # the town-gas main IS this engine's fuel circuit, and has to
+            # say so like every other fuel line: without a declared
+            # circuit_identity the circuit it forms is anonymous, and
+            # anything looking for "the fuel circuit" could only have
+            # found it by matching the word "fuel" in a node's name
             edge("fuel.gas_main_to_engine", "fuel.gas_main_connection", "powertrain.engine",
-                 "fuel-supply-line", radius=0.006)
+                 "fuel-supply-line", radius=0.006, circuit_identity="fuel")
 
     # A real throttle body/butterfly plate, sitting between atmosphere
     # and the plenum -- the standalone subunit has no such node either
@@ -1653,7 +2126,13 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
         pn = engine.pneumatics
         if pn.compressor_drive == "crank-belt" and "pneumatic_compressor" in mount_points:
             pneu_pos = mount_points["pneumatic_compressor"]
+            # a shop/vehicle air compressor is a real piston machine on
+            # a crankshaft, and it runs to a far higher pressure ratio
+            # than an A/C compressor does -- both of which change its
+            # gas law, not just its rating
             _add_belt_driven_compressor(node, edge, "pneumatic_compressor", pneu_pos, pn.compressor_rated_w,
+                                         rotor_class="pneumatic-compressor",
+                                         construction="reciprocating-crank", discharge_ratio=10.0,
                                          crank_identity="powertrain.crank_shaft.front")
             compressor_id = "pneumatic_compressor"
         else:
@@ -2023,6 +2502,18 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
             continue
         n["gear_case"] = role
 
+    # A direct-drive bypass is custom/military equipment (see
+    # Transmission.direct_drive_bypass). The vehicle subunit emits one
+    # unconditionally, so a build that has not asked for one loses it
+    # here, collar and edges together.
+    if not bool(getattr(tr_, "direct_drive_bypass", False)):
+        _bypass = {"powertrain.direct_drive_bypass"}
+        nodes[:] = [n for n in nodes if n["identity"] not in _bypass]
+        edges[:] = [e for e in edges
+                    if e.get("a") not in _bypass and e.get("b") not in _bypass]
+
+    _declare_rotating_hardware(engine, nodes, tr_, automatic, gearbox_id)
+
     # AN AUTOMATIC IS A HYDRAULIC MACHINE, so it gets the hardware that
     # makes it one: a crank-driven pump, a torque converter between the
     # engine and the box, the valve body that applies the packs, and a
@@ -2167,6 +2658,33 @@ class FluidCircuit:
     edges: tuple[dict, ...]
 
     @property
+    def circuit_identity(self) -> str:
+        """WHICH circuit this is, by its own declaration.
+
+        Every fluid edge is built carrying `circuit_identity` -- "oil",
+        "coolant", "fuel", "intake-air", "exhaust", "nitrous" -- and
+        that is the only thing consulted here. Callers used to find a
+        circuit by asking whether any node in it had a particular word
+        in its NAME (`c.circuit_identity == "oil"`), which is
+        not identification: it makes every part's name load-bearing, so
+        renaming a node silently re-routes physics, and a node whose
+        name happens to contain someone else's word joins the wrong
+        circuit. Same reason gear_cases.py stopped matching substrings
+        after a breather called `transfer_case_breather` matched the
+        rule that created it and grew a second transfer case."""
+        cached = self.__dict__.get("_circuit_identity", _UNSET)
+        if cached is _UNSET:
+            declared = {str(e["circuit_identity"]) for e in self.edges
+                        if e.get("circuit_identity")}
+            # a circuit is one connected component of fluid line, so its
+            # edges cannot honestly disagree about what circuit it is;
+            # if they ever do, that is a real topology bug and the empty
+            # answer makes it visible rather than picking a winner
+            cached = declared.pop() if len(declared) == 1 else ""
+            self.__dict__["_circuit_identity"] = cached
+        return cached
+
+    @property
     def has_splash(self) -> bool:
         """Whether this circuit is splash-fed (a dipper in a trough)
         rather than pumped. Fixed by topology, like edge_identity -- it
@@ -2283,7 +2801,13 @@ def _circuit_thermal_capacity(edges: list[dict], node_ids: frozenset[str], node_
     distance between its endpoints (through its waypoints if it has
     them). Anything undeclared falls back to the old lumped guess so an
     older graph still steps."""
-    default_fluid = "engine-oil" if any("oil" in nid for nid in node_ids) else "coolant-water-glycol"
+    # What this circuit is full of when a line does not say. Taken from
+    # the circuit's own declared identity, not from whether any member
+    # node happens to have "oil" in its name -- which would have made an
+    # oil cooler plumbed into the coolant circuit rename that circuit's
+    # contents.
+    _declared = {str(e["circuit_identity"]) for e in edges if e.get("circuit_identity")}
+    default_fluid = ("engine-oil" if _declared == {"oil"} else "coolant-water-glycol")
     capacity_j_per_k = 0.0
     fluid_m3 = 0.0
     declared = False
@@ -2381,7 +2905,25 @@ def _discover_fluid_circuits(graph: dict[str, Any]) -> list[FluidCircuit]:
         if ra != rb:
             parent[ra] = rb
 
-    fluid_edges = [e for e in graph["edges"] if e["constraint"] in FLUID_LINE_KINDS]
+    # A GASKETED PORT FACE THAT CARRIES A FLUID IS A FLOW PATH. The
+    # deck-to-head joint is not decoration: the oil feed drilling and the
+    # two drainbacks pass through it, and so do the coolant transfer
+    # holes -- that is the entire reason those ports are cut in the two
+    # castings and lined up. assembly_ports.py already builds them, seals
+    # them in matched pairs, and tags each pair with the circuit it
+    # carries, but `port-face-seal` was not a fluid-line kind, so every
+    # one of them was a sealed dead end. The measured consequence: the
+    # oil circuit ran pan -> pump -> filter -> gallery and STOPPED at the
+    # block, the head's feed and both drainbacks sat in no circuit at
+    # all, and the coolant circuit did not contain the cylinder head --
+    # the part that makes most of the heat.
+    #
+    # A seal conducts when it says which circuit it carries, and not
+    # otherwise: a structural flange seal has no circuit identity and
+    # stays exactly what it is, a joint.
+    fluid_edges = [e for e in graph["edges"]
+                   if e["constraint"] in FLUID_LINE_KINDS
+                   or (e["constraint"] == "port-face-seal" and e.get("circuit_identity"))]
     # Ports need their circuit identity as part of what keeps them from
     # joining systems they were never meant to share, even when they
     # touch a common hub node (both oil lines and the PCV line terminate
@@ -2419,9 +2961,15 @@ def _discover_fluid_circuits(graph: dict[str, Any]) -> list[FluidCircuit]:
         else:
             kind_class = "compressible-gas"
 
+        # THE PUMP OF THIS CIRCUIT, by what it declares it is. Every
+        # pump is built through rotating_inertia.housed_assembly and
+        # carries the class it belongs to; matching the word "pump" in
+        # an identity instead made the answer depend on a name, and
+        # would have picked up anything else called a pump that happened
+        # to share the circuit.
         pump_node = next((nid for nid in node_ids
-                          if node_by_id.get(nid, {}).get("kind") == "rotating-mass"
-                          and "pump" in nid), None)
+                          if node_by_id.get(nid, {}).get("housed_assembly") in PUMP_ASSEMBLIES),
+                         None)
         # "powertrain.engine" is a shared hub several different fluid
         # lines terminate at (oil supply/return, PCV, intake air) -- the
         # circuit-identity partitioning above already keeps those from
@@ -2470,9 +3018,13 @@ def _discover_fluid_circuits(graph: dict[str, Any]) -> list[FluidCircuit]:
         # match -- any number of fans, of any type, genuinely able to
         # serve the same manifold at once).
         fan_nodes: tuple[str, ...] = ()
-        if any("radiator" in nid for nid in node_ids):
+        # A FAN IS A NODE THAT DECLARES A FAN'S FLOW COEFFICIENT, and a
+        # heat-rejecting core is one that declares it exchanges heat --
+        # both already on every such node, and neither depending on what
+        # anyone called it.
+        if any(node_by_id.get(nid, {}).get("heat_exchange_w_per_k") for nid in node_ids):
             fan_nodes = tuple(n["identity"] for n in graph["nodes"]
-                              if n.get("kind") == "rotating-mass" and "fan" in n["identity"])
+                              if n.get("fan_airflow_m3_s_per_rad_s"))
 
         bottle_capacity = sum(float(node_by_id.get(nid, {}).get("capacity_kg", 0.0)) for nid in node_ids)
         # a real declared choke limit off the intake-air edge itself
@@ -2547,6 +3099,11 @@ class DrivetrainSolver:
     caller passes each call, not fixed in advance."""
     graph: dict[str, Any]
     omega: dict[str, float] = field(default_factory=dict)
+    # Diagnostics only: build a graph that breaks the law above so the
+    # offending parts can be listed rather than raised on. Nothing in
+    # the sim sets this -- it exists so a tool can report every massless
+    # drive component in a build at once instead of one per run.
+    allow_inertia_shortfalls: bool = False
 
     STABILITY_MARGIN = 0.03   # dt * omega_n must stay under this
     SUBSTEP_CAP = 200
@@ -2565,10 +3122,19 @@ class DrivetrainSolver:
         self._edge_state: dict[str, _EdgeState] = {
             e["identity"]: _EdgeState() for e in self.graph["edges"]
         }
-        self._inertia: dict[str, float] = {
-            n["identity"]: float(n.get("inertia_kg_m2") or self._fallback_inertia(n))
-            for n in self.graph["nodes"]
-        }
+        self._inertia, self.inertia_shortfalls = self._build_inertia()
+        # A MASSLESS DRIVE COMPONENT IS NOT ALLOWED TO EXIST. This sim
+        # imposes physical law rather than tolerating a part that gets
+        # to be accelerated for free: a shaft, gear, rotor or coupling
+        # with no polar inertia would reach any speed in zero time, take
+        # no energy to do it, and quietly launder torque through the
+        # driveline. It is refused at build time, where the part that
+        # failed to declare itself can still be pointed at, rather than
+        # papered over with a stand-in the way `mass * 0.01` used to.
+        if self.inertia_shortfalls and not self.allow_inertia_shortfalls:
+            raise ValueError(
+                "massless drive components are not physical:\n  "
+                + "\n  ".join(self.inertia_shortfalls))
         # THE ENSHRINED POLICY: stiffness/spring solving is off, by
         # default, for every coupling in this graph except the crank's
         # own combustion-driven dynamics -- which were never solved
@@ -2642,7 +3208,7 @@ class DrivetrainSolver:
         # constructor doesn't have access to), but a MUCH smaller,
         # honest error than starting cold at full atmospheric.
         intake_circuit = next((c for c in self.fluid_circuits
-                               if c.kind_class == "compressible-gas" and any("intake" in nid for nid in c.nodes)),
+                               if c.kind_class == "compressible-gas" and c.circuit_identity == "intake-air"),
                               None)
         if intake_circuit is not None:
             seed_pa = 101_325.0 * 0.30
@@ -2677,10 +3243,115 @@ class DrivetrainSolver:
             return 1e-3   # nothing left resolving a real spring -- coarse is fine
         return self.STABILITY_MARGIN / fastest_omega_n
 
-    @staticmethod
-    def _fallback_inertia(node: dict) -> float:
-        mass = float(node.get("mass_kg", 1.0))
-        return max(1e-6, mass * 0.01)   # a small effective radius-of-gyration guess
+    # Edges that bolt a part RIGIDLY to a shaft: a keyed hub, a press
+    # fit, a bolted flange. They carry no ratio and resolve no dynamics
+    # of their own, so they were never integrated -- which meant every
+    # part hanging off one (every pulley, the flywheel, the ring gear,
+    # the harmonic balancer) had an inertia the solver stored and then
+    # never used. A rigidly keyed part is not a separate rotating body:
+    # it is part of the one its hub is on, and its inertia belongs added
+    # to that parent's, which is what makes a belt actually feel the
+    # pulley it runs on.
+    # `crank-shaft-reference` joins the crank's own front and rear ends,
+    # which are not separate bodies either -- and the front end is where
+    # every accessory belt actually pulls, so leaving it without the
+    # crank's inertia would have the belts hauling on nothing.
+    RIGID_HUB_KINDS = ("rigid-keyed-hub", "crank-shaft-reference")
+
+    # The edge kinds `step` actually resolves a torque across, so both
+    # ends get integrated as bodies and must have a real inertia to
+    # divide that torque by. Exactly the kinds the loop below branches
+    # on -- no wider. A torque-shaft, a wrench port, a rack-and-pinion
+    # and a starter pinion mesh all appear in the graph and none of them
+    # is integrated here, so none of them is obliged to answer.
+    TORQUE_CARRYING_KINDS = (
+        "friction-clutch-shaft", "rolling-friction-contact", "rotational-bearing",
+        "direct-torque-shaft", "geared-timing-drive", "accessory-drive-belt")
+
+    def _build_inertia(self) -> tuple[dict[str, float], list[str]]:
+        """Polar inertia for everything that really turns, and a list of
+        anything that should have declared one and did not.
+
+        Nothing is guessed. A rotating part that reaches this without a
+        declared inertia is reported, not quietly given a stand-in --
+        the stand-in this replaces (`mass * 0.01`, a 100 mm radius of
+        gyration on every part in the graph) was wrong by up to 150x on
+        small parts and, being silent, stayed wrong for as long as it
+        took someone to ask what the number meant."""
+        nodes = {n["identity"]: n for n in self.graph["nodes"]}
+        # what each node brings of its own. A node that is not a rotating
+        # part brings nothing, because it does not spin -- giving one an
+        # inertia (as `mass * 0.01` did for 284 of this graph's 306
+        # nodes, block ports and engine mounts included) invents a
+        # rotating body out of a bolted fitting.
+        # A part flagged `included_in_parent_inertia` is already inside
+        # the figure its shaft declares -- a flywheel inside the engine's
+        # own published crank-assembly inertia -- so it keeps its real
+        # inertia on the node, for anything enumerating spinning masses,
+        # and brings nothing extra to the shaft it is keyed to.
+        own: dict[str, float] = {
+            ident: (0.0 if n.get("included_in_parent_inertia")
+                    else float(n.get("inertia_kg_m2") or 0.0))
+            for ident, n in nodes.items()}
+
+        # Everything joined by rigid hubs is ONE shaft. Resolve those
+        # groups first, then give every member the group's whole inertia:
+        # a flywheel keyed to the crank is not a second body, and the
+        # inertia you feel pushing on any point of one rigid shaft is
+        # the inertia of all of it.
+        root: dict[str, str] = {ident: ident for ident in nodes}
+
+        def find(x: str) -> str:
+            while root[x] != x:
+                root[x] = root[root[x]]
+                x = root[x]
+            return x
+
+        for e in self.graph["edges"]:
+            if e.get("constraint") not in self.RIGID_HUB_KINDS:
+                continue
+            a, b = e.get("a"), e.get("b")
+            if a not in root or b not in root:
+                continue
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                root[rb] = ra
+
+        group_total: dict[str, float] = {}
+        for ident in nodes:
+            group_total[find(ident)] = group_total.get(find(ident), 0.0) + own[ident]
+
+        inertia: dict[str, float] = {ident: group_total[find(ident)] for ident in nodes}
+
+        # Anything the solver will INTEGRATE has to have an inertia --
+        # it divides torque by it. That is a wider set than the
+        # rotating-mass kind: a turbine's accessory gearbox is declared
+        # an engine-block-component and is still driven through a timing
+        # drive, and it is a real case of a part that must answer this.
+        driven: set[str] = set()
+        for e in self.graph["edges"]:
+            if e.get("constraint") not in self.TORQUE_CARRYING_KINDS:
+                continue
+            for end in ("a", "b"):
+                if e.get(end) in nodes:
+                    driven.add(e[end])
+
+        shortfalls: list[str] = []
+        for ident, n in nodes.items():
+            if inertia[ident] > 0.0:
+                continue
+            if n.get("kind") != "rotating-mass" and ident not in driven:
+                continue
+            # a real part that turns, whose whole rigid group can say
+            # nothing about its inertia -- loud, because it will move
+            # under torque and the answer to how fast is missing
+            why = ("rotating-mass" if n.get("kind") == "rotating-mass"
+                   else f"{n.get('kind')} driven through a torque-carrying edge")
+            shortfalls.append(
+                f"{ident}: {why} with no inertia_kg_m2 "
+                f"(mass_kg={n.get('mass_kg')!r}) -- declare a rotating_shape and radius, "
+                f"or build it through rotating_inertia/gear_trains")
+        return inertia, shortfalls
 
     def step(self, dt: float, crank_omega: float, alternator_shaft_load_w: float = 0.0,
               dyno_load_torque_nm: float = 0.0, waste_heat_kw: float = 0.0,
@@ -2743,7 +3414,7 @@ class DrivetrainSolver:
         if "supercharger_rotor" in self._node_ids:
             intake_circuit = next((c for c in self.fluid_circuits
                                    if c.kind_class == "compressible-gas"
-                                   and any("intake" in nid for nid in c.nodes)), None)
+                                   and c.circuit_identity == "intake-air"), None)
             if intake_circuit is not None:
                 pressure_ratio = max(1.0, intake_circuit.pressure_pa / 101_325.0)
                 specific_work_j_per_kg = 1005.0 * 293.15 * (pressure_ratio ** (0.4 / 1.4) - 1.0)
@@ -2924,7 +3595,17 @@ class DrivetrainSolver:
             for identity, torque in net_torque.items():
                 if identity in ("powertrain.engine", "powertrain.crank_shaft.front"):
                     continue
-                inertia = self._inertia.get(identity, 0.01)
+                inertia = self._inertia.get(identity, 0.0)
+                if inertia <= 0.0:
+                    # NOT A ROTATING BODY -- a block port, an engine
+                    # mount, a coolant face. It has no polar inertia
+                    # because it does not spin, so there is no equation
+                    # of motion to integrate for it. This is never a
+                    # massless DRIVE component: __post_init__ refuses to
+                    # build a graph containing one of those at all, so
+                    # by the time we are here the only things left with
+                    # no inertia are things that genuinely do not turn.
+                    continue
                 # no zero-floor here: a small driven mass under a stiff
                 # coupling needs to correct THROUGH zero during a transient
                 # (that's what keeps the coupling converged); only the
@@ -2996,11 +3677,11 @@ class DrivetrainSolver:
         # genuinely far slower than the rotational dynamics above, so
         # they don't need and shouldn't pay for that resolution
         for c in self.fluid_circuits:
-            if c.kind_class == "high-pressure-liquid-supply" and any("nitrous" in nid for nid in c.nodes):
+            if c.kind_class == "high-pressure-liquid-supply" and c.circuit_identity == "nitrous":
                 c.valve_open = nitrous_active
-            elif c.kind_class == "high-pressure-liquid-supply" and any("auxiliary_injection" in nid for nid in c.nodes):
+            elif c.kind_class == "high-pressure-liquid-supply" and c.circuit_identity == "auxiliary-injection":
                 c.valve_open = auxiliary_injection_active
-            elif c.kind_class == "high-pressure-liquid-supply" and any("fuel" in nid for nid in c.nodes):
+            elif c.kind_class == "high-pressure-liquid-supply" and c.circuit_identity == "fuel":
                 # fuel flows whenever the engine is running at all -- no
                 # solenoid to command, unlike nitrous's genuinely optional
                 # valve. See _step_fluid_circuits: this circuit's drain
@@ -3012,7 +3693,7 @@ class DrivetrainSolver:
                 # lock-off solenoid (fuel_network.LockoffSolenoid) --
                 # True for every network-less engine.
                 c.valve_open = fuel_valve_open
-            elif c.kind_class == "compressible-gas" and any("intake" in nid for nid in c.nodes):
+            elif c.kind_class == "compressible-gas" and c.circuit_identity == "intake-air":
                 c.supply_pressure_pa = intake_supply_pressure_pa
         self._step_fluid_circuits(dt, waste_heat_kw, intake_demand_kg_s, exhaust_demand_kg_s, fuel_demand_kg_s,
                                    exhaust_brake_frac, fuel_cooler_target_k,
@@ -3026,7 +3707,7 @@ class DrivetrainSolver:
                                    fuel_production_composition_frac=fuel_production_composition_frac)
         pneumatic_circuit = next((c for c in self.fluid_circuits
                                   if c.kind_class == "high-pressure-liquid-supply"
-                                  and any("pneumatic" in nid for nid in c.nodes)), None)
+                                  and c.circuit_identity == "pneumatic-reserve"), None)
         outputs["pneumatic_reserve_pressure_pa"] = (
             101_325.0 + pneumatic_circuit.fill_level_frac
             * (max(pneumatic_circuit.working_pressure_pa, PNEUMATIC_RESERVE_PRESSURE_PA) - 101_325.0)
@@ -3043,19 +3724,19 @@ class DrivetrainSolver:
         }
         nitrous_circuit = next((c for c in self.fluid_circuits
                                 if c.kind_class == "high-pressure-liquid-supply"
-                                and any("nitrous" in nid for nid in c.nodes)), None)
+                                and c.circuit_identity == "nitrous"), None)
         outputs["nitrous_delivered_kg_s"] = nitrous_circuit.delivered_flow_kg_s if nitrous_circuit else 0.0
         outputs["nitrous_fill_frac"] = nitrous_circuit.fill_level_frac if nitrous_circuit else 0.0
         auxiliary_injection_circuit = next((c for c in self.fluid_circuits
                                             if c.kind_class == "high-pressure-liquid-supply"
-                                            and any("auxiliary_injection" in nid for nid in c.nodes)), None)
+                                            and c.circuit_identity == "auxiliary-injection"), None)
         outputs["auxiliary_injection_delivered_kg_s"] = (
             auxiliary_injection_circuit.delivered_flow_kg_s if auxiliary_injection_circuit else 0.0)
         outputs["auxiliary_injection_fill_frac"] = (
             auxiliary_injection_circuit.fill_level_frac if auxiliary_injection_circuit else 0.0)
         fuel_circuit = next((c for c in self.fluid_circuits
                              if c.kind_class == "high-pressure-liquid-supply"
-                             and any("fuel" in nid for nid in c.nodes)), None)
+                             and c.circuit_identity == "fuel"), None)
         outputs["fuel_delivered_kg_s"] = fuel_circuit.delivered_flow_kg_s if fuel_circuit else 0.0
         outputs["fuel_fill_frac"] = fuel_circuit.fill_level_frac if fuel_circuit else 1.0
         # the two real supply signals a consumer actually feels (a
@@ -3072,10 +3753,10 @@ class DrivetrainSolver:
         outputs["fuel_temp_k"] = fuel_circuit.temp_k if fuel_circuit else 293.15
         pneumatic_circuit = next((c for c in self.fluid_circuits
                                   if c.kind_class == "high-pressure-liquid-supply"
-                                  and any("pneumatic" in nid for nid in c.nodes)), None)
+                                  and c.circuit_identity == "pneumatic-reserve"), None)
         outputs["pneumatic_reserve_fill_frac"] = pneumatic_circuit.fill_level_frac if pneumatic_circuit else 0.0
         intake_circuit = next((c for c in self.fluid_circuits
-                               if c.kind_class == "compressible-gas" and any("intake" in nid for nid in c.nodes)),
+                               if c.kind_class == "compressible-gas" and c.circuit_identity == "intake-air"),
                               None)
         outputs["intake_manifold_pressure_pa"] = intake_circuit.pressure_pa if intake_circuit else intake_supply_pressure_pa
         outputs["intake_charge_temp_k"] = intake_circuit.temp_k if intake_circuit else 293.15
@@ -3086,14 +3767,14 @@ class DrivetrainSolver:
         # drop that restriction eventually produces
         outputs["intake_flow_capacity_kg_s"] = intake_circuit.flow_capacity_kg_s if intake_circuit else 0.0
         exhaust_circuit = next((c for c in self.fluid_circuits
-                                if c.kind_class == "compressible-gas" and any("exhaust" in nid for nid in c.nodes)),
+                                if c.kind_class == "compressible-gas" and c.circuit_identity == "exhaust"),
                                None)
         outputs["exhaust_temp_k"] = exhaust_circuit.temp_k if exhaust_circuit else 293.15
         outputs["exhaust_backpressure_frac"] = (
             exhaust_circuit.pressure_pa / 101_325.0 - 1.0) if exhaust_circuit else 0.0
         outputs["exhaust_flow_capacity_kg_s"] = exhaust_circuit.flow_capacity_kg_s if exhaust_circuit else 0.0
         oil_circuit = next((c for c in self.fluid_circuits
-                            if c.kind_class == "thermal-liquid" and any("oil" in nid for nid in c.nodes)),
+                            if c.kind_class == "thermal-liquid" and c.circuit_identity == "oil"),
                            None)
         outputs["oil_pressure_pa"] = oil_circuit.pressure_pa if oil_circuit else 101_325.0
         # identified by real node membership, not a heat_share numeric
@@ -3103,7 +3784,7 @@ class DrivetrainSolver:
         coolant_circuit = next(
             (c for c in self.fluid_circuits
              if c.kind_class == "thermal-liquid" and c.heat_share > 0.0
-             and not any("oil" in nid for nid in c.nodes)),
+             and not c.circuit_identity == "oil"),
             None)
         outputs["coolant_temp_k"] = coolant_circuit.temp_k if coolant_circuit else 293.15
         # every real fan's own delivered volume flow (its flow coefficient
@@ -3122,13 +3803,13 @@ class DrivetrainSolver:
         this engine has no liquid coolant circuit at all)."""
         coolant_circuit = next((c for c in self.fluid_circuits
                                 if c.kind_class == "thermal-liquid"
-                                and any("coolant" in nid or "radiator" in nid for nid in c.nodes)), None)
+                                and c.circuit_identity == "coolant"), None)
         return coolant_circuit.temp_k if coolant_circuit is not None else 293.15
 
     def coolant_thermostat_open_frac(self) -> float:
         coolant_circuit = next((c for c in self.fluid_circuits
                                 if c.kind_class == "thermal-liquid"
-                                and any("coolant" in nid or "radiator" in nid for nid in c.nodes)), None)
+                                and c.circuit_identity == "coolant"), None)
         return coolant_circuit.thermostat_open_frac if coolant_circuit is not None else 1.0
 
     def draw_cylinder_charge(self, cylinder_volume_m3: float) -> float:
@@ -3148,7 +3829,7 @@ class DrivetrainSolver:
         """
         ambient_pa = 101_325.0
         circuit = next((c for c in self.fluid_circuits
-                        if c.kind_class == "compressible-gas" and any("intake" in nid for nid in c.nodes)),
+                        if c.kind_class == "compressible-gas" and c.circuit_identity == "intake-air"),
                        None)
         if circuit is None:
             return 1.0
@@ -3259,7 +3940,7 @@ class DrivetrainSolver:
                 net_kw = waste_heat_kw * c.heat_share - reject_kw
                 c.temp_k = max(ambient_k, c.temp_k + (net_kw * dt) / c.thermal_mass_kj_per_k)
 
-                if any("oil" in nid for nid in c.nodes):
+                if c.circuit_identity == "oil":
                     # A real gear pump: delivered pressure tracks pump
                     # speed until the relief valve caps it (relief_pressure_pa,
                     # the real declared setting off the gallery edge
@@ -3280,7 +3961,7 @@ class DrivetrainSolver:
                     pressure_tau_s = 0.15
                     c.pressure_pa += (target_pressure_pa - c.pressure_pa) * min(1.0, dt / pressure_tau_s)
             elif c.kind_class == "compressible-gas":
-                is_exhaust = any("exhaust" in nid for nid in c.nodes)
+                is_exhaust = c.circuit_identity == "exhaust"
                 if is_exhaust:
                     # Real backpressure, mirroring the intake choke below
                     # but on the other side of atmospheric: exhaust gas
@@ -3410,7 +4091,7 @@ class DrivetrainSolver:
                 # absolute floor (not ambient) guards against a runaway
                 # numerical negative, nothing more.
                 c.temp_k = max(ambient_k, new_temp_k) if is_exhaust else max(150.0, new_temp_k)
-            elif c.kind_class == "high-pressure-liquid-supply" and any("fuel" in nid for nid in c.nodes):
+            elif c.kind_class == "high-pressure-liquid-supply" and c.circuit_identity == "fuel":
                 # a real tank, not a pressurized bottle: it drains by
                 # whatever's actually being burned (fuel_demand_kg_s,
                 # the caller's own real combustion-derived need), capped
@@ -3473,7 +4154,7 @@ class DrivetrainSolver:
                 target_k = fuel_cooler_target_k if fuel_cooler_target_k is not None else ambient_k
                 tau_s = FUEL_COOLER_TAU_S if fuel_cooler_target_k is not None else FUEL_PASSIVE_TAU_S
                 c.temp_k += (target_k - c.temp_k) * min(1.0, dt / tau_s)
-            elif c.kind_class == "high-pressure-liquid-supply" and any("pneumatic" in nid for nid in c.nodes):
+            elif c.kind_class == "high-pressure-liquid-supply" and c.circuit_identity == "pneumatic-reserve":
                 # a real reserve tank that FILLS instead of draining --
                 # the same depletable-reservoir bookkeeping nitrous/fuel
                 # already use, just run in reverse. Real air mass flow

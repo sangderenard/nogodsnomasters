@@ -164,7 +164,21 @@ class RayMesh:
         return kernel
 
     @classmethod
-    def from_graph(cls, graph: dict, crank_angle_deg: float = 0.0, covers_off: bool = True) -> "RayMesh":
+    def from_graph(cls, graph: dict, crank_angle_deg: float = 0.0, covers_off: bool = False) -> "RayMesh":
+        """The mesh a projectile is resolved against: the WHOLE engine.
+
+        `covers_off` used to default to True here, which quietly made the
+        damage model a different engine from the real one -- a round
+        fired at the cam box crossed the head casting with nothing in
+        front of it, because the valve cover, the cam case and the
+        valley cover were never built. Those are real steel in the path
+        of anything coming down at the valvetrain, and they have to be
+        there to be holed and to spend a projectile's energy.
+
+        Taking a cover off is a VIEW decision -- so is rendering the
+        castings at 20% opacity so you can see the crank through them.
+        Neither is a statement about what is physically on the engine,
+        and neither belongs in the mesh the damage model reads."""
         from engine_mesh import build_engine_mesh
         static, moving = build_engine_mesh(graph, crank_angle_deg=crank_angle_deg, covers_off=covers_off)
         return cls(static, moving)
