@@ -152,10 +152,25 @@ def volumetric_efficiency(engine, rpm: float) -> float:
         ve *= engine.intake_system.resonance_gain(rpm, fpr)
     except Exception:
         pass
-    try:
-        ve *= 1.0 + engine.exhaust_system.scavenging_assist_frac(rpm, fpr)
-    except Exception:
-        pass
+    # NO EXHAUST TERM. This was `ve *= 1.0 + scavenging_assist_frac(...)`,
+    # which is wrong twice over and is worth leaving described rather
+    # than silently deleted, because it looked completely reasonable:
+    #
+    #  - WRONG QUANTITY. scavenging_assist_frac returns a fraction of
+    #    BACKPRESSURE relieved near the tuned rpm, to apply to a solved
+    #    pressure. Read as a VE multiplier its 0.35 becomes a 35%
+    #    volumetric-efficiency gain, which no engine has ever made.
+    #  - WRONG STATE. It was called without a gas temperature, so it
+    #    fell through to 293 K and tuned every pipe in the catalogue as
+    #    though the engine had never run. The AMC's manifold resolved
+    #    to 1143 rpm instead of its real hot 2002, and this function
+    #    then returned 1.219 -- 22% ABOVE peak torque -- at 1200 rpm on
+    #    an engine whose peak is at 1800.
+    #
+    # The exhaust's real effect on torque is pumping work against
+    # backpressure the fluid circuit solves, applied in
+    # engine_cycle_sim where that solved value exists. See
+    # engine_sim.torque_fraction's note for the same decision.
     # FORCED INDUCTION MULTIPLIES THE CHARGE OUTRIGHT, and the field is
     # max_boost_frac -- a fraction of an atmosphere, so 1.2 means the
     # manifold sees 2.2 atmospheres absolute.

@@ -2611,6 +2611,31 @@ class EngineCycleSim:
         return int(engine_graph_abi(self.engine).state_stride)
 
     def start(self) -> None:
+        """!!! TEST-CELL WARM START -- NOT A REAL START. !!!
+
+        THIS TELEPORTS THE ENGINE TO IDLE. It does not crank, it does
+        not draw a single amp off the battery, it does not care whether
+        there is fuel in the tank or a starter bolted to the block, and
+        it cannot fail. A piston engine goes from stopped to idling in
+        one assignment.
+
+        IT EXISTS ONLY so regressions can reach a running engine in one
+        line without paying for a start sequence they are not testing.
+        Anything that is ABOUT starting, or that reports on it, or that
+        a player would experience, must use engage_starter() instead --
+        that is the real path, through starter.py, with seven real
+        starting systems behind it (electric, cart, air, wound-flywheel
+        inertia, recoil rope, hand crank, flywheel bar), real bus sag,
+        real receiver air, real duty limits, a real catch, and a real
+        ring gear you can grind to pieces by keying a running engine.
+
+        Using this where a real start belongs does not raise, warn, or
+        look wrong in any output. It just quietly makes every starting
+        system in the project irrelevant, and makes a dead battery and a
+        full one indistinguishable. It has already caused one wrong
+        conclusion in this repo -- a profiler reported there was
+        "nothing to measure" at startup, because it called this.
+        """
         self._omega = self.engine.idle_rpm * RPM_TO_RAD_S
         self.state.rpm = self.engine.idle_rpm
         self.state.stalled = False

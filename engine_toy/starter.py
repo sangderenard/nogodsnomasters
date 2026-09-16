@@ -61,6 +61,26 @@ import engine_geometry
 STARTER_DESIGN_EFFICIENCY = 0.60        # real loaded efficiency at the cranking point
 PINION_PITCH_DIAMETER_M = 0.028         # real 9-10 tooth Bendix pinion
 PINION_RATIO_MIN, PINION_RATIO_MAX = 6.0, 20.0
+
+# --- engaging into a turning engine: the grind ------------------------
+#
+# A Bendix pinion sits STILL until the solenoid throws it, so meshing it
+# with a ring gear that is already moving is a collision between a
+# stationary gear and a moving one. The pinion has to be spun up to
+# ring-gear speed times the reduction in the length of one tooth
+# engagement, and when it cannot be, the teeth skate over each other:
+# the noise everyone recognises as grinding the starter.
+#
+# The tolerance is genuinely tiny. Matching happens at the MOTOR, so a
+# ring gear turning at engine speed asks the pinion for ratio times
+# that -- 10-15x. A modern ECU simply refuses to energise the solenoid
+# above a threshold of this order for exactly this reason, and on an
+# engine without that interlock the driver does the damage instead.
+CLEAN_MESH_RPM = 40.0                   # ring-gear speed a pinion can still pick up cleanly
+#: how much of the ring gear's face is lost per second of skating,
+#: relative to a full tooth. Sustained grinding really does eat a ring
+#: gear, and this is what makes that visible rather than free.
+RING_GEAR_WEAR_PER_S_AT_IDLE = 0.02
 STARTER_MAX_CRANK_S = 15.0              # real thermal duty limit before you let it cool
 EXTERNAL_STARTER_SUPPLY_V = 24.0        # pit-cart external starter supply
 EXTERNAL_STARTER_REDUCTION = 20.0       # real geared external starter on a crank-nose hex
@@ -275,6 +295,10 @@ class StartingSystem:
         self.timer_s = 0.0
         self.catch_timer_s = 0.0
         self.phase = ""
+        #: 0..1, how much of the ring gear's tooth face has been ground
+        #: away. Never repairs itself; a real ring gear is replaced.
+        self.ring_gear_damage = 0.0
+        self.grinding = False
         self._flywheel_omega = 0.0
         self._flywheel_energy_j = 0.0
         self._rope_left_s = 0.0
@@ -286,10 +310,28 @@ class StartingSystem:
     def cranking(self) -> bool:
         return self.engaged
 
+    def mesh_speed_mismatch(self, rpm: float) -> float:
+        """How badly the pinion and ring gear disagree, as a multiple of
+        what a clean pickup can absorb.
+
+        Only a geared starter has a mesh to spoil. An air motor admits
+        into the cylinders, a rope pulls a ratchet drum that simply
+        slips, and a person on a handle is the one who finds out -- none
+        of them can grind a ring gear, so none of them report a
+        mismatch."""
+        if self.motor is None:
+            return 0.0
+        return max(0.0, abs(float(rpm)) - CLEAN_MESH_RPM) / CLEAN_MESH_RPM
+
     def engage(self) -> None:
         """The operator's action: key to START, hit the cart button,
         open the starting-air valve, start winding, yank the rope, or
-        take the crank handle."""
+        take the crank handle.
+
+        Engaging into an engine that is ALREADY TURNING is the operator's
+        to get wrong, and this does not stop them -- see
+        mesh_speed_mismatch and the grind handled in step(). A real key
+        switch has no idea what the engine is doing."""
         self.engaged = True
         self.timer_s = 0.0
         self.catch_timer_s = 0.0
@@ -340,6 +382,33 @@ class StartingSystem:
             if self.motor.supply_v is not None:
                 current = 0.0   # cart-fed: nothing off the vehicle bus
             note = "cart starter" if self.motor.supply_v else "cranking"
+            # THE GRIND. Teeth that cannot pick up the ring gear's speed
+            # skate over it instead of meshing, and a gear that is
+            # skating transmits nothing: the motor still draws its
+            # current, still makes its torque, and none of it reaches
+            # the crank. That is the whole character of the fault --
+            # loud, expensive, and completely ineffective.
+            mismatch = self.mesh_speed_mismatch(rpm)
+            self.grinding = mismatch > 0.0
+            if self.grinding:
+                # a partial mesh at the margin still bites a little; far
+                # past it, nothing does. Transmitted fraction falls off
+                # as the mismatch grows.
+                transmitted = 1.0 / (1.0 + mismatch * mismatch)
+                assist *= transmitted
+                # and the difference goes into the tooth faces
+                self.ring_gear_damage = min(1.0, self.ring_gear_damage
+                                            + RING_GEAR_WEAR_PER_S_AT_IDLE
+                                            * mismatch * (1.0 - transmitted) * dt)
+                note = (f"GRINDING: ring gear at {rpm:.0f} rpm, pinion cannot "
+                        f"pick up past {CLEAN_MESH_RPM:.0f} -- "
+                        f"{transmitted * 100:.0f}% of the starter reaching the "
+                        f"crank, ring gear {self.ring_gear_damage * 100:.1f}% gone")
+            elif self.ring_gear_damage > 0.0:
+                # damaged teeth keep slipping even on a clean engagement:
+                # the wear does not go away when the mismatch does
+                assist *= max(0.0, 1.0 - self.ring_gear_damage)
+                note = f"cranking on a {self.ring_gear_damage * 100:.0f}% worn ring gear"
             if self.timer_s > STARTER_MAX_CRANK_S:
                 self.release(); self.reading = StarterReading(note="starter duty limit"); return self.reading
         elif self.mode == "air-motor-starter" and self.air_motor is not None:
@@ -441,3 +510,117 @@ class StartingSystem:
     def _finish(self, assist: float, current: float, air: float, note: str) -> StarterReading:
         self.reading = StarterReading(assist_torque_nm=assist, bus_current_a=current, air_kg_s=air, note=note)
         return self.reading
+
+# --- push starting ----------------------------------------------------
+#
+# Not a starting system the engine CARRIES -- nothing is fitted, nothing
+# is bought. It is the drivetrain run backwards: the wheels drive the
+# output shaft, the output shaft drives the crank through whatever gear
+# is selected, and the vehicle's own momentum does the work a starter
+# motor would have done. That is why it lives here as a function of the
+# vehicle's state rather than as another StartingSystem mode.
+#
+# Three real things have to be true at once, and each can fail alone.
+
+
+@dataclass
+class PushStartAttempt:
+    """What a bump start would actually do, before anyone tries it."""
+    possible: bool
+    crank_rpm: float              # what the wheels would spin the engine to
+    catch_rpm: float              # what it needs to fire
+    road_shaft_rpm: float
+    gear_index: int
+    energy_available_j: float     # the vehicle's kinetic energy
+    energy_required_j: float      # to turn the engine over to catch speed
+    reason: str = ""
+
+
+def push_start(engine: Engine, road_shaft_rpm: float, gear_index: int = 2,
+               vehicle_mass_kg: float = 1500.0,
+               wheel_radius_m: float = 0.32) -> PushStartAttempt:
+    """Can this engine be bump started at this road speed in this gear?
+
+    THE GEARING. gear_ratios[i] is engine revolutions per output-shaft
+    revolution and final_drive multiplies it, so driving it backwards
+    the crank turns at road_shaft_rpm times both. A high gear barely
+    turns the engine; a low gear turns it fast but asks the tyres for
+    more torque than they may have. Second or third is the real choice
+    for exactly this reason, which is why it is the default here.
+
+    THE SPEED. The crank has to reach the same catch speed any other
+    starting system must reach -- this borrows StartingSystem.catch_rpm
+    rather than inventing a second threshold, because there is only one
+    engine and it does not care what is turning it.
+
+    THE ENERGY. Spinning a stopped engine up to catch speed costs
+    1/2.J.omega^2 in the crank's own inertia, plus the work against
+    cranking torque over the revolutions it takes. That comes out of the
+    vehicle's kinetic energy, and if the car does not have enough it
+    simply stops in the road -- which is the real failure everyone who
+    has tried this at walking pace has experienced.
+
+    THE TRANSMISSION. An automatic cannot do this at all, and the reason
+    is already written down in automatic_transmission.py: the pump is
+    crank-driven, so a dead engine means no line pressure, so the clutch
+    packs never apply and the wheels are not connected to anything. No
+    amount of road speed fixes that."""
+    tx = getattr(engine, "transmission", None)
+    if tx is None:
+        return PushStartAttempt(False, 0.0, 0.0, road_shaft_rpm, gear_index, 0.0, 0.0,
+                                "no transmission: nothing connects the wheels to the crank")
+    if getattr(tx, "automatic", False) or getattr(tx, "kind", "") == "automatic":
+        return PushStartAttempt(False, 0.0, 0.0, road_shaft_rpm, gear_index, 0.0, 0.0,
+                                "automatic: the oil pump is crank-driven, so a dead engine "
+                                "has no line pressure and the clutch packs cannot apply -- "
+                                "the wheels are not connected to anything to push against")
+    ratios = tuple(getattr(tx, "gear_ratios", ()) or ())
+    if not ratios:
+        return PushStartAttempt(False, 0.0, 0.0, road_shaft_rpm, gear_index, 0.0, 0.0,
+                                "no gear ratios declared")
+    i = max(0, min(len(ratios) - 1, int(gear_index)))
+    overall = ratios[i] * float(getattr(tx, "final_drive_ratio", 1.0) or 1.0)
+    crank_rpm = max(0.0, float(road_shaft_rpm)) * overall
+
+    catch = StartingSystem(engine).catch_rpm()
+
+    # what it costs to get there, and what the car has to spend
+    omega = crank_rpm * RPM_TO_RAD_S
+    j = float(getattr(engine, "inertia_kg_m2", 0.0) or 0.0)
+    spin_j = 0.5 * j * omega * omega
+    # work against compression and cold friction for the revolutions it
+    # takes to reach catch speed -- one crank revolution is enough to
+    # find out, and that is genuinely what a bump start gets
+    crank_work_j = cold_cranking_torque_nm(engine) * 2.0 * math.pi
+    required = spin_j + crank_work_j
+
+    road_omega = float(road_shaft_rpm) * RPM_TO_RAD_S
+    v = road_omega * float(wheel_radius_m)
+    available = 0.5 * float(vehicle_mass_kg) * v * v
+
+    # AND THE OTHER END OF IT. The wheels do not care what the engine's
+    # redline is: in a low gear at road speed they will spin it straight
+    # past it, and unlike a starter motor there is no duty limit or
+    # overrunning clutch to save it. This is a real way to destroy an
+    # engine while trying to start it, and the answer is a higher gear,
+    # which is also the one that asks least of the tyres.
+    redline = float(getattr(engine, "redline_rpm", 0.0) or 0.0)
+    if redline > 0.0 and crank_rpm > redline:
+        return PushStartAttempt(False, crank_rpm, catch, road_shaft_rpm, i, available, required,
+                                f"OVER-REVS: the wheels would spin the crank to {crank_rpm:.0f} rpm "
+                                f"against a {redline:.0f} rpm redline -- nothing here can slip to "
+                                "save it. Take a higher gear")
+    if crank_rpm < catch:
+        return PushStartAttempt(False, crank_rpm, catch, road_shaft_rpm, i, available, required,
+                                f"too slow: {crank_rpm:.0f} rpm at the crank against a "
+                                f"{catch:.0f} rpm catch speed -- go faster or take a lower gear")
+    if available < required:
+        return PushStartAttempt(False, crank_rpm, catch, road_shaft_rpm, i, available, required,
+                                f"not enough momentum: {available / 1000.0:.1f} kJ in the vehicle "
+                                f"against {required / 1000.0:.1f} kJ to turn the engine over -- "
+                                "the car stops instead of the engine starting")
+    return PushStartAttempt(True, crank_rpm, catch, road_shaft_rpm, i, available, required,
+                            f"{crank_rpm:.0f} rpm at the crank, past a {catch:.0f} rpm catch, "
+                            f"spending {required / 1000.0:.1f} kJ of "
+                            f"{available / 1000.0:.1f} kJ available")
+

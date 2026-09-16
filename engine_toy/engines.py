@@ -414,6 +414,19 @@ INTAKE_RUNNER_Q = 3.0                   # real, disclosed typical intake-runner 
 ENGINE_BAY_AMBIENT_K = 313.15           # real, typical hot under-hood temperature at operating conditions (40C)
 AIR_SPECIFIC_HEAT_J_PER_KGK = 1005.0    # real, standard dry-air specific heat
 INTAKE_RESONANCE_PEAK_GAIN = 0.12       # real, disclosed peak ram-effect VE gain at the tuned rpm
+# The exhaust's counterparts, named here beside the intake's so the two
+# sides of the head can be compared at a glance -- they were inline, and
+# being inline is how they drifted into a different lineshape entirely.
+#
+# NOTE THESE ARE NOT THE SAME KIND OF NUMBER. The intake gain above is a
+# VE MULTIPLIER (charge actually packed in). The exhaust taper below is
+# a fraction of solved BACKPRESSURE removed near the tuned rpm. 0.35 is
+# not "three times the intake's effect"; it is a different quantity
+# applied to a different thing, and reading it as a VE gain is a real
+# mistake that has already been made once (see engine_sim.torque_
+# fraction's note on why there is no exhaust term in it).
+EXHAUST_SCAVENGE_PEAK_TAPER = 0.35      # peak fraction of backpressure relieved at the tuned rpm
+EXHAUST_PIPE_Q = 4.0                    # exhaust primary Q -- preserves the width this already had (tuned/4)
 
 
 @dataclass
@@ -855,7 +868,8 @@ class ExhaustSystem:
     def tuned_rpm(self, firing_events_per_rev: float, exhaust_temp_k: float = 293.15) -> float:
         return self.tuned_frequency_hz(exhaust_temp_k) * 60.0 / max(firing_events_per_rev, 0.01)
 
-    def scavenging_assist_frac(self, rpm: float, firing_events_per_rev: float) -> float:
+    def scavenging_assist_frac(self, rpm: float, firing_events_per_rev: float,
+                                exhaust_temp_k: float = 293.15) -> float:
         """0..0.35: how much the reflected low-pressure wave off the open
         tailpipe end (arriving back at the exhaust valve right as it
         closes, tuned by this pipe's own real length/temperature) is
@@ -865,12 +879,35 @@ class ExhaustSystem:
         real solved backpressure (e.g. from the live fluid-circuit
         simulation) can taper THAT value, instead of this class's own
         static-geometry-only estimate silently overriding a genuinely
-        richer solved one."""
-        tuned = self.tuned_rpm(firing_events_per_rev)
+        richer solved one.
+
+        exhaust_temp_k is NOT decoration. The speed of sound goes with
+        sqrt(T), so the same pipe tunes to a completely different rpm
+        hot than cold: the AMC 258's log manifold resolves to 1143 rpm
+        at 20 C and 2002 rpm at a real 627 C wide-open exhaust. Callers
+        that omit it get the cold-pipe answer, which is right only for
+        an engine that has not run. Anything reporting torque should
+        pass the real solved gas temperature -- engine_cycle_sim does,
+        off the exhaust circuit's own integrated energy balance."""
+        tuned = self.tuned_rpm(firing_events_per_rev, exhaust_temp_k)
         if tuned <= 0:
             return 0.0
-        detune = (rpm - tuned) / max(tuned * 0.25, 1.0)
-        return max(0.0, 1.0 - detune * detune) * 0.35
+        # THE SAME DAMPED-RESONANCE LINESHAPE THE INTAKE ALREADY USES
+        # (IntakeSystem.resonance_gain, a Lorentzian). This was an
+        # inverted parabola clipped at zero, which made a real pipe's
+        # influence end ABRUPTLY at +/-25% detune -- fit headers and
+        # torque outside that narrow window changed by exactly nothing,
+        # because the term was identically zero there rather than
+        # merely small. A lossy pipe does not behave that way, and the
+        # project already had the right form on the other side of the
+        # head; this is that form, not a new one.
+        #
+        # The WIDTH is unchanged: Q of 4 reproduces the old tuned*0.25
+        # bandwidth exactly. Only the skirt changes -- from hard zero to
+        # a real decaying tail.
+        bandwidth = tuned / EXHAUST_PIPE_Q
+        detune = (rpm - tuned) / max(bandwidth, 1.0)
+        return EXHAUST_SCAVENGE_PEAK_TAPER / (1.0 + detune * detune)
 
     def backpressure_frac(self, rpm: float, firing_events_per_rev: float) -> float:
         """rpm-dependent backpressure -- scavenging assist tapers the

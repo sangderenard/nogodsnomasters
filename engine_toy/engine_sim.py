@@ -68,24 +68,14 @@ def torque_fraction(engine: Engine, rpm: float) -> float:
         return 0.0
     tpeak = engine.torque_peak_rpm
     if rpm <= tpeak:
-        # KNOWN LIMITATION: breathing does not apply below the torque
-        # peak. This branch returns combustion quality alone, so an
-        # intake runner tuned BELOW tpeak contributes nothing -- which
-        # is exactly the case for most long-runner truck and industrial
-        # engines, whose manifolds are tuned for precisely this region.
-        # Fitting a long intake to such an engine currently shows a loss
-        # up top and no gain down low, when the gain down low is the
-        # entire reason anyone fits one.
-        #
-        # NOT fixed here because it is not a one-line change: the
-        # breathing ratio varies with rpm even on an unmodified engine,
-        # so applying it below tpeak moves low-end torque for every
-        # engine in the catalogue, and the shape in this branch was
-        # arrived at carefully (see below -- an earlier smoothstep
-        # undershot low-rpm torque badly enough to stall the idle-air
-        # governor outright). Doing it properly means re-verifying idle
-        # and cranking behaviour across the catalogue, not editing one
-        # expression.
+        # combustion quality is the ONE thing that is genuinely
+        # special below the torque peak: poor in-cylinder mixture
+        # motion at low speed means slower, less complete burning.
+        # Breathing, choking and friction are not special down here and
+        # are applied at every speed below -- this branch used to
+        # return early, which silently zeroed the contribution of any
+        # intake tuned below the peak (every long-runner truck and
+        # industrial manifold in the catalogue).
         #
         # concave, not the symmetric smoothstep this used to be: real
         # combustion completeness rises fast with the FIRST bit of
@@ -108,7 +98,17 @@ def torque_fraction(engine: Engine, rpm: float) -> float:
         arch = engine.architecture
         floor = (TWO_STROKE_CRANKING_COMBUSTION_QUALITY
                  if arch.two_stroke and not arch.has_poppet_valves else CRANKING_COMBUSTION_QUALITY)
-        return floor + (1.0 - floor) * ease
+        combustion_quality = floor + (1.0 - floor) * ease
+    else:
+        # above the peak, combustion is as complete as this engine gets
+        # and stays there -- the losses above tpeak are breathing and
+        # friction, which the shared terms below already carry
+        combustion_quality = 1.0
+    # from here on: terms that apply at EVERY speed, not just above the
+    # peak. Each is a ratio against its own value at tpeak, so an
+    # unmodified engine returns exactly 1.0 there and peak_torque_nm is
+    # never double-counted.
+    #
     # a real degenerate case exists in the catalogue: a hit-and-miss
     # governor engine genuinely has no rev range at all (idle ==
     # torque_peak_rpm == power_peak_rpm by design, it holds one fixed
@@ -176,7 +176,32 @@ def torque_fraction(engine: Engine, rpm: float) -> float:
     # separate invented falloff shape
     friction_delta_nm = engine.friction_torque_nm(rpm) - engine.friction_torque_nm(tpeak)
     friction_penalty_frac = friction_delta_nm / max(engine.peak_torque_nm, 1.0)
-    return max(0.0, breathing_ratio * choke_ratio - friction_penalty_frac)
+    # NO EXHAUST TERM HERE, DELIBERATELY -- and this is the second time
+    # that decision has had to be made, so it is written down.
+    #
+    # It is tempting to mirror the intake: this pipe's scavenging assist
+    # over the catalogued pipe's assist at tpeak. It is wrong twice.
+    #
+    # 1. WRONG QUANTITY. IntakeSystem.resonance_gain returns a VE
+    #    MULTIPLIER -- charge actually packed into the cylinder.
+    #    ExhaustSystem.scavenging_assist_frac returns a BACKPRESSURE
+    #    TAPER, a ratio to apply to a solved pressure, as its own
+    #    docstring says. Using it as `ve *= 1 + assist` reads its 0.35
+    #    as a 35% volumetric-efficiency gain, which no engine has.
+    #    derived_torque.py did exactly that.
+    # 2. DOUBLE COUNT. engine_cycle_sim calls this function for
+    #    combustion pulse strength (:3592) and then applies the solved
+    #    exhaust_pressure_frac separately as the brake component
+    #    (:3776), already tapered by that same assist. An exhaust term
+    #    in here would be charged once in each.
+    #
+    # The exhaust's real effect on torque is pumping work against
+    # backpressure the fluid circuit actually solved, and it is already
+    # applied there, on the right quantity, once. A torque curve that
+    # includes the exhaust therefore comes from a DYNO PULL, not from
+    # this function -- see EngineCycleSim.start_wot_dyno_pull.
+    return max(0.0, combustion_quality * breathing_ratio * choke_ratio
+               - friction_penalty_frac)
 
 
 def electric_torque_fraction(engine: Engine, rpm: float) -> float:

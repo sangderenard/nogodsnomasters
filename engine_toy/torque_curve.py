@@ -13,18 +13,39 @@ of making them compete:
               whole catalogue and a wrong one is obvious. This supplies
               MAGNITUDE and nothing else.
 
-  SHAPE       derived physics, normalised to exactly 1.0 at the
-              declared torque peak. Valve and port area, the Mach
-              index, overlap loss at low speed, runner resonance,
-              exhaust scavenging, the way a centrifugal blower's boost
-              climbs with the square of speed, two-stroke port
-              scavenging. This supplies EVERYTHING ABOUT THE CURVE and
-              deliberately nothing about its height.
+  SHAPE       engine_sim.torque_fraction -- THE PROJECT'S OWN, the one
+              the live sim integrates, not a second opinion computed
+              beside it. Intake runner resonance against the catalogued
+              manifold, port/valve-curtain choke, and the real FMEP
+              friction correlation, each as a ratio against its own
+              value at the torque peak. Supplies EVERYTHING ABOUT THE
+              CURVE and deliberately nothing about its height.
+
+              This used to call derived_torque.derive, a parallel
+              offline model. That was a mistake worth naming: it
+              recomputed what the sim already solves, and it called the
+              harmonics with DEFAULT arguments, so every pipe in the
+              catalogue was tuned as though it were at room
+              temperature. The AMC 258 then "peaked" at 1128 rpm
+              against a declared 1800 and read 1.219 -- 22% ABOVE peak
+              torque -- at 1200 rpm. The same geometry at a real 900 K
+              exhaust tunes to 2002 rpm, and the catalogue figure was
+              right all along. A reported shape defect was a
+              disconnected model.
 
   RESIDUAL    an optional learned correction, per engine, fitted to
               whatever high-detail data can be scavenged. Defaults to
               exactly 1.0 everywhere, so an engine with no data gets
               pure physics and nothing silently invented for it.
+
+AND WHAT THIS IS NOT: A MEASURED CURVE. Everything here is a
+steady-state estimate at wide-open throttle. It has no exhaust term at
+all, because the exhaust's effect on torque is pumping work against a
+backpressure only the fluid circuit can solve, and the circuit is
+stateful. For the real answer you run the engine:
+EngineCycleSim.start_wot_dyno_pull() spins a real drum through real
+gears with real solved gas in the pipes. `pull()` below is that, and it
+is what a power curve for this project actually means.
 
 WHY THE SPLIT IS NOT COSMETIC. Fitting absolute torque needs the model
 to get magnitude AND shape right from the same parameters, and with one
@@ -73,30 +94,18 @@ def anchor_rpm(engine) -> float:
 # 2. the shape
 # ---------------------------------------------------------------------
 
-def raw_shape(engine, rpm: float) -> float:
-    """Unnormalised derived torque at this speed.
-
-    Everything in derived_torque, used for its CURVE rather than its
-    height. Any constant that merely scales this cancels in the
-    normalisation below, which is the whole point."""
-    import derived_torque as dt
-    return dt.derive(engine, rpm).torque_nm
-
-
 def shape(engine, rpm: float) -> float:
-    """Derived torque, normalised to 1.0 at the declared torque peak.
+    """The project's own WOT torque fraction, at this speed.
 
-    Division by the value at the anchor speed is what makes this a pure
-    shape. An engine whose physics says it makes twice as much torque as
-    declared still gets the right curve, because that factor of two
-    appears in numerator and denominator alike and leaves."""
-    peak_rpm = anchor_rpm(engine)
-    if peak_rpm <= 0.0:
-        return 1.0
-    at_peak = raw_shape(engine, peak_rpm)
-    if at_peak <= 1e-9:
-        return 1.0
-    return raw_shape(engine, rpm) / at_peak
+    engine_sim.torque_fraction is already exactly a normalised shape --
+    every term in it is a ratio against that term's own value at
+    torque_peak_rpm, and the intake is normalised against the
+    CATALOGUED manifold, so it returns exactly 1.0 for an unmodified
+    engine at its declared peak and moves in absolute terms when
+    hardware changes. There is nothing left for this module to
+    normalise, and re-normalising it here would undo that."""
+    import engine_sim as es
+    return es.torque_fraction(engine, rpm)
 
 
 # ---------------------------------------------------------------------
@@ -171,6 +180,23 @@ class CurvePoint:
     shape: float
     residual: float
 
+    # SI is what is computed; these are reading conveniences, derived on
+    # demand so they can never drift out of step with the real figure.
+    @property
+    def bhp(self) -> float:
+        import units
+        return units.kw_to_hp(self.power_kw)
+
+    @property
+    def lb_ft(self) -> float:
+        import units
+        return units.lb_ft(self.torque_nm)
+
+    def describe(self) -> str:
+        import units
+        return (f"{self.rpm:5.0f} rpm  {units.torque(self.torque_nm)}  "
+                f"{units.power(self.power_kw)}")
+
 
 def torque_nm(engine, rpm: float) -> float:
     a = anchor_nm(engine)
@@ -189,10 +215,90 @@ def point(engine, rpm: float) -> CurvePoint:
 
 
 def curve(engine, steps: int = 24) -> list:
+    """The steady-state ESTIMATE across the rev range.
+
+    Cheap, stateless, and exhaust-blind -- see the module docstring.
+    Use it to compare hardware or to sanity-check a catalogue entry.
+    Do not report it as this engine's power curve; for that, pull()."""
     hi = float(getattr(engine, "redline_rpm", 4000.0) or 4000.0)
     lo = max(60.0, hi * 0.15)
     return [point(engine, lo + (hi - lo) * i / max(1, steps - 1))
             for i in range(steps)]
+
+
+def pull(engine, max_seconds: float = 90.0) -> dict:
+    """A REAL measurement: run the engine on the dyno.
+
+    READ THIS BEFORE USING THE TORQUE NUMBER. This is the one-button WOT
+    INERTIA pull -- settle, shift, run the final gear to redline -- and
+    it is the right instrument for PEAK POWER and the wrong one for a
+    torque curve. The drum's torque is only tracked while the clutch is
+    genuinely locked, which on the AMC 258 means a sampled window of
+    roughly 3140-4300 crank rpm. That engine's declared torque peak is
+    at 1800 rpm, and the pull never goes there under lock. So
+    peak_torque_nm here is the largest torque IN THE SAMPLED WINDOW, not
+    the engine's peak, and `rpm_span` is reported next to it so the
+    number cannot be read without its own range.
+
+    A real torque curve needs a SWEPT-LOAD pull that holds each speed
+    while the brake absorbs the difference -- a different instrument,
+    not a different wrapper around this one. Not built yet; said here
+    rather than implied by a function name.
+
+    This is what a power curve means here. It starts the same one-button
+    WOT inertia pull the dashboard does -- settle, shift, run the final
+    gear to redline -- and reports what the drum actually saw. Along the
+    way the fluid circuits solve real exhaust pressure and temperature,
+    that temperature sets the speed of sound, the pipe's own geometry
+    turns it into a tuned rpm, and the assist tapers the solved
+    backpressure into real pumping work. None of which the estimate
+    above can see, because none of it exists without running.
+
+    Note also that the drum is POST-GEARING: its torque is the crank's
+    times the ratio, so a drum figure must never be compared against a
+    catalogue crank figure. Both are reported separately below for
+    exactly that reason.
+
+    Costs real simulated seconds; that is the price of measuring
+    instead of asserting."""
+    import engine_cycle_sim as ecs
+    import units as _u
+    sim = ecs.EngineCycleSim(engine=engine)
+    sim.start()
+    sim.start_wot_dyno_pull()
+    dt = ecs.FIXED_PHYSICS_DT_S
+    samples, t = [], 0.0
+    while t < max_seconds:
+        sim.step(dt)
+        t += dt
+        st = sim.state
+        if (st.dyno_pull_state == "pulling" and st.brake_clutch_locked
+                and st.rpm > 0.0):
+            # crank AND drum, never conflated: (crank rpm, crank torque,
+            # drum rpm, drum torque)
+            samples.append((st.rpm, st.current_torque_nm,
+                            st.dyno_rpm, st.dyno_torque_nm))
+        if st.dyno_pull_complete_flag:
+            break
+    st = sim.state
+    span = ((min(x[0] for x in samples), max(x[0] for x in samples))
+            if samples else (0.0, 0.0))
+    return {"identity": getattr(engine, "identity", "?"),
+            "completed": bool(st.dyno_pull_complete_flag),
+            "seconds": t,
+            "rpm_span": span,
+            "crank_peak_torque_nm": max((x[1] for x in samples), default=0.0),
+            "peak_torque_nm": st.dyno_pull_peak_torque_nm,
+            "peak_torque_rpm": st.dyno_pull_peak_torque_rpm,
+            "peak_power_kw": st.dyno_pull_peak_power_kw,
+            "peak_power_bhp": _u.kw_to_hp(st.dyno_pull_peak_power_kw),
+            "peak_power_rpm": st.dyno_pull_peak_power_rpm,
+            "peak_torque_lb_ft": _u.lb_ft(st.dyno_pull_peak_torque_nm),
+            "samples": samples,
+            "what": "measured at the drum, POST-GEARING, on an inertia "
+                    "pull over rpm_span only -- peak power is the "
+                    "trustworthy figure here; peak torque is bounded by "
+                    "that window, and drum torque is not a crank figure"}
 
 
 # ---------------------------------------------------------------------
@@ -214,7 +320,8 @@ def audit_anchor(engine) -> dict:
     a, ar = anchor_nm(engine), anchor_rpm(engine)
     if a <= 0.0 or ar <= 0.0:
         return {"identity": getattr(engine, "identity", "?"), "checkable": False}
-    derived = raw_shape(engine, ar)
+    import derived_torque as dt
+    derived = dt.derive(engine, ar).torque_nm
     return {"identity": getattr(engine, "identity", "?"), "checkable": True,
             "declared_nm": a, "derived_nm": derived,
             "disagreement": derived / a - 1.0,

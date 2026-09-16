@@ -62,6 +62,22 @@ class WorkingFluid:
     effective_octane: float = 0.0
     density_kg_m3: float = 0.0
     latent_heat_j_per_kg: float = 0.0
+    #: Temperature at which this fluid boils at one atmosphere, K.
+    #:
+    #: NOT A SHARP NUMBER FOR ANY PETROLEUM FUEL, and that is worth
+    #: knowing rather than hiding. Gasoline, diesel and kerosene are
+    #: BLENDS: they boil across a whole distillation range, gasoline
+    #: from around 308 K to 480 K. The single figure here is the
+    #: standard T50 characterisation point -- the temperature at which
+    #: half the sample has evaporated -- which is the number refiners
+    #: actually specify and the one that governs how fast a spill dries.
+    #: Pure compounds (methanol, nitromethane) have a real sharp value
+    #: and get it exactly.
+    #:
+    #: 0.0 means "does not usefully boil here": engine oil cracks before
+    #: it distils, so anything reading this must treat 0.0 as
+    #: non-volatile rather than as absolute zero.
+    boiling_point_k: float = 0.0
     lfl: float = 0.0
     ufl: float = 0.0
     stoich_vol_frac: float = 0.0
@@ -115,9 +131,10 @@ class WorkingFluid:
 
 def _liquid(name, energy, afr, octane, density, latent=350_000.0, flame=0.40, mie=0.25,
             ignition="spark", viscous=False, cetane=0.0, ash=0.0, gum=0.0,
-            sulfur=0.0, preheat=0.0) -> WorkingFluid:
+            sulfur=0.0, preheat=0.0, boiling=0.0) -> WorkingFluid:
     return WorkingFluid(name=name, phase=LIQUID_FUEL, energy_density_j_per_kg=energy, stoich_afr=afr,
                         effective_octane=octane, density_kg_m3=density, latent_heat_j_per_kg=latent,
+                        boiling_point_k=boiling,
                         laminar_flame_speed_m_s=flame, min_ignition_energy_mj=mie, ignition=ignition,
                         viscous_at_ambient=viscous, cetane=cetane, ash_frac=ash,
                         gum_tendency=gum, sulfur_frac=sulfur, preheat_c=preheat)
@@ -125,22 +142,22 @@ def _liquid(name, energy, afr, octane, density, latent=350_000.0, flame=0.40, mi
 
 WORKING_FLUIDS: dict[str, WorkingFluid] = {f.name: f for f in (
     # -- liquid fuels (the catalogue's existing rows, unchanged values) --
-    _liquid("pump-gasoline-87", 44.0e6, 14.7, 87.0, 745.0),
-    _liquid("pump-gasoline-89", 44.0e6, 14.7, 89.0, 745.0),
-    _liquid("pump-gasoline-91", 44.0e6, 14.7, 91.0, 745.0),
-    _liquid("pump-gasoline-93", 44.0e6, 14.7, 93.0, 745.0),
-    _liquid("aviation-gasoline-100-130", 43.5e6, 14.7, 100.0, 715.0),
-    _liquid("methanol-race", 19.9e6, 6.4, 105.0, 792.0, latent=1_100_000.0, flame=0.45),
-    _liquid("nitromethane-race", 11.3e6, 1.7, 110.0, 1140.0, latent=330_000.0),
+    _liquid("pump-gasoline-87", 44.0e6, 14.7, 87.0, 745.0, boiling=373.0),
+    _liquid("pump-gasoline-89", 44.0e6, 14.7, 89.0, 745.0, boiling=373.0),
+    _liquid("pump-gasoline-91", 44.0e6, 14.7, 91.0, 745.0, boiling=373.0),
+    _liquid("pump-gasoline-93", 44.0e6, 14.7, 93.0, 745.0, boiling=373.0),
+    _liquid("aviation-gasoline-100-130", 43.5e6, 14.7, 100.0, 715.0, boiling=367.0),
+    _liquid("methanol-race", 19.9e6, 6.4, 105.0, 792.0, latent=1_100_000.0, flame=0.45, boiling=337.85),
+    _liquid("nitromethane-race", 11.3e6, 1.7, 110.0, 1140.0, latent=330_000.0, boiling=374.35),
     _liquid("ultra-low-sulfur-diesel", 45.5e6, 14.5, 100.0, 832.0, latent=250_000.0,
-            ignition="compression", cetane=48.0, sulfur=0.000015),
+            ignition="compression", cetane=48.0, sulfur=0.000015, boiling=533.0),
     _liquid("jet-a-kerosene", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0,
-            ignition="compression", cetane=43.0, sulfur=0.0003),
+            ignition="compression", cetane=43.0, sulfur=0.0003, boiling=473.0),
     _liquid("kerosene", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0,
-            ignition="compression", cetane=40.0, sulfur=0.0004, gum=0.05),
+            ignition="compression", cetane=40.0, sulfur=0.0004, gum=0.05, boiling=473.0),
     # JP-8 is kerosene with additives; the military multifuel standard.
     _liquid("jp-8", 43.0e6, 14.5, 100.0, 800.0, latent=250_000.0,
-            ignition="compression", cetane=43.0, sulfur=0.0003),
+            ignition="compression", cetane=43.0, sulfur=0.0003, boiling=473.0),
     # Crude is the hard one and the ash is why: sodium and vanadium in a
     # hot section corrode it far faster than temperature alone does.
     _liquid("crude-oil", 42.0e6, 14.0, 100.0, 870.0, latent=250_000.0,
