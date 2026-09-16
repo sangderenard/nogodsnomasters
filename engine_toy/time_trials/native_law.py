@@ -32,6 +32,7 @@ vector in argument order addresses the kernel completely.
 from __future__ import annotations
 
 import warnings
+from time import perf_counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,12 @@ class NativeLaw:
     ir_lines: int = 0
     input_slot: dict = field(default_factory=dict)
     output_slot: dict = field(default_factory=dict)
+    #: what this law has cost. A profiler that has to be switched on
+    #: measures a different program from the one that runs, so the ledger
+    #: is always kept: one `perf_counter` pair against a 24 us call is
+    #: under a percent, and the number is the whole point.
+    calls: int = 0
+    wall_s: float = 0.0
 
     @classmethod
     def build(cls, compilation: Any, entry: str) -> "NativeLaw":
@@ -119,6 +126,18 @@ class NativeLaw:
         return out
 
     def call(self, vector, into=None):
+        started = perf_counter()
         self.write(vector)
         self.run()
-        return self.read(into)
+        out = self.read(into)
+        self.wall_s += perf_counter() - started
+        self.calls += 1
+        return out
+
+    def reset_ledger(self) -> None:
+        self.calls = 0
+        self.wall_s = 0.0
+
+    @property
+    def per_call_ms(self) -> float:
+        return self.wall_s / self.calls * 1e3 if self.calls else 0.0

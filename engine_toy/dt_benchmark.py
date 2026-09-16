@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from time import perf_counter as _perf_counter
 import sys
 import time
 
@@ -169,6 +170,28 @@ class CycleEngine(DtCompatibleEngine):
         self.sim = sim
         self.label = label
         self._registration = set()
+        # THE LEDGER. Wall seconds spent inside this engine's interior
+        # against world seconds it advanced -- which is tau for this one
+        # subsystem, measured rather than set. Kept always: a profiler
+        # that has to be switched on measures a different program.
+        self.calls = 0
+        self.wall_s = 0.0
+        self.world_s = 0.0
+
+    def reset_ledger(self):
+        self.calls = 0
+        self.wall_s = 0.0
+        self.world_s = 0.0
+
+    @property
+    def tau(self) -> float:
+        """World seconds this interior advanced per wall second spent.
+
+        Below 1.0 the engine is dilated: it cannot keep up with the clock
+        it is being asked to run against, and everything sharing its
+        world has to wait or go on without it.
+        """
+        return self.world_s / self.wall_s if self.wall_s > 0.0 else 0.0
 
     def get_state(self, state=None):
         out = state if isinstance(state, dict) else {}
@@ -182,7 +205,11 @@ class CycleEngine(DtCompatibleEngine):
         return None
 
     def step(self, dt: float, state=None, state_table=None):
+        started = _perf_counter()
         self.sim.step(float(dt))
+        self.wall_s += _perf_counter() - started
+        self.world_s += float(dt)
+        self.calls += 1
         rpm = float(getattr(self.sim, "rpm", 0.0))
         # a cycle resolves on crank angle, so the step that matters is
         # the one that keeps a degree of crank from being skipped

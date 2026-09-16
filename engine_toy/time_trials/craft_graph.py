@@ -253,6 +253,22 @@ class VehicleGraph:
     contact_slot: dict = field(default_factory=dict)
     result: object = None
     contact_out: object = None
+    #: this craft's own ledger. The laws' ledgers are shared -- one
+    #: compiled kernel serves every craft -- so cost per CRAFT has to be
+    #: counted where the craft is, not where the law is.
+    calls: int = 0
+    wall_s: float = 0.0
+    world_s: float = 0.0
+    law_calls: int = 0
+
+    def reset_ledger(self) -> None:
+        self.calls = self.law_calls = 0
+        self.wall_s = self.world_s = 0.0
+
+    @property
+    def tau(self) -> float:
+        """World seconds this body advanced per wall second spent."""
+        return self.world_s / self.wall_s if self.wall_s > 0.0 else 0.0
 
     # -- the declared span: the law's whole input vector ----------------
     def sync_state_span(self):
@@ -418,6 +434,8 @@ class VehicleGraph:
     def step(self, dt: float, *, shaft_omega: float, throttle: float,
              steer: float, brake: float = 0.0) -> dict[str, float]:
         """One tick of this craft's body, given its engine's exterior."""
+        started = time.perf_counter()
+        before = self.vehicle.calls + self.contact.calls
         self.put("engine_angular_speed", shaft_omega)
         self.put("dt", dt)
         self.put("throttle", throttle)
@@ -480,6 +498,10 @@ class VehicleGraph:
             "limit_ms": self.limit_s * 1e3,
             "substeps": float(self.substeps),
         }
+        self.wall_s += time.perf_counter() - started
+        self.world_s += dt
+        self.law_calls += self.vehicle.calls + self.contact.calls - before
+        self.calls += 1
         return self.last
 
 
