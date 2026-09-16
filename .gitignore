@@ -54,3 +54,7 @@
 #   EDITOR BACKUPS.
 /engine_toy/*.bak
 /engine_toy/*.bak2
+
+# viewer artefacts: rendered frames and run logs, not source
+engine_toy/time_trials/frames/
+engine_toy/time_trials/*.log

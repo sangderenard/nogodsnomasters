@@ -1,6 +1,6 @@
-"""ENGINES IN THE DT SYSTEM; VEHICLE GRAPHS ON THEIR OWN.
+"""A CRAFT'S GRAPH: ENGINES IN THE DT SYSTEM, BODIES ON THEIR OWN.
 
-    python time_trials/graft.py --frames 120
+    python time_trials/craft_graph.py --frames 120
 
 Two layers, joined only where the ABI says they may be.
 
@@ -64,7 +64,8 @@ from src.common.dt_system.realtime import RealtimeConfig              # noqa: E4
 from src.common.tensors import AbstractTensor as AT                   # noqa: E402
 from src.compiler.abstract_ui_vehicles import (                       # noqa: E402
     compile_symbolic_vehicle_physics, compile_wheel_contact_ssa,
-    load_default_car_configuration, WHEEL_NAMES)
+    load_default_car_configuration, basic_craft_defaults,
+    BASIC_CRAFT_ROLLING_RADIUS_M, WHEEL_NAMES)
 from src.compiler.vehicle_python_compilation import (                 # noqa: E402
     vehicle_python_runtime_bindings, _abstract_tensor_stage_callable)
 
@@ -91,6 +92,8 @@ class EngineBatch:
     builder: GraphBuilder = field(init=False)
     runner: MetaLoopRunner = field(init=False)
     config: RealtimeConfig = field(init=False)
+    #: the declared flat span -- see `compile_contract.BATCH_RECORD`
+    state_span: object = None
 
     @classmethod
     def build(cls, identities: dict[str, str]) -> "EngineBatch":
@@ -122,6 +125,28 @@ class EngineBatch:
                                   state_table=self.table)
         self.runner.run_round(node, dt=dt, state_table=self.table)
 
+    # -- the declared span: every engine's interior, end to end --------
+    def sync_state_span(self):
+        """Concatenate every engine's declared span into one array.
+
+        An `EngineBatch` is opaque to the compiler until it has one, and
+        the measured consequence is exact: lowering the game refuses with
+        `blockers=('opaque-state-effect',) batch.step(dt)`.
+        """
+        spans = [sim.sync_state_span() for sim in self.sims.values()]
+        self.state_span = np.concatenate(spans) if spans else np.zeros(0)
+        return self.state_span
+
+    def load_state_span(self, span=None) -> None:
+        source = self.state_span if span is None else span
+        if source is None:
+            return
+        cursor = 0
+        for sim in self.sims.values():
+            width = sim.state_span_length()
+            sim.load_state_span(np.asarray(source[cursor:cursor + width]))
+            cursor += width
+
     def exterior(self, name: str) -> tuple[float, float]:
         """(shaft omega rad/s, shaft torque Nm) -- the whole crossing."""
         sim = self.sims[name]
@@ -137,31 +162,48 @@ class EngineBatch:
 # layer two: one vehicle graph per craft
 # ---------------------------------------------------------------------
 
-def simple_craft_parameters(mass_kg: float = 520.0) -> dict[str, float]:
-    """A light craft, from the configuration's own declared defaults.
+def craft_parameters(configuration=None) -> dict[str, float]:
+    """Every figure the body needs, COMPUTED by the configuration.
 
-    The law's input list is fixed at 341, so "simple" cannot mean fewer
-    ports -- it means the craft those ports describe is small: a light
-    chassis on four wheels, and the law's own combustion silenced so the
-    real engine is the only source of crank torque.
+    None of these are chosen here. `VehicleConfiguration.mass_properties()`
+    sums 118 declared components -- engine, transmission, differentials,
+    fuel, wheels, tires, calipers, harness, body shell -- into a total
+    mass, a centre of mass and a roll/pitch/yaw inertia tensor, and
+    `wheel_rotational_inertia()` does the same for a corner. They were
+    literals in this file until it was pointed out that the system
+    already derives them, and the invented ones were wrong: a chassis
+    mass of 520 kg against a computed sprung mass of 524 kg, and yaw
+    inertia of 380 against a computed 728.
+
+    The one thing still stated rather than derived is that the law's own
+    combustion is silenced, because the real `EngineCycleSim` is supplying
+    crank torque and two engines would double-count.
     """
-    values = dict(load_default_car_configuration().parameter_defaults())
+    configuration = configuration or load_default_car_configuration()
+    values = dict(configuration.parameter_defaults())
+    mass = configuration.mass_properties()
+    inertia = mass["inertia_kg_m2"]
+    total_kg = float(mass["total_mass_kg"])
     values.update({
-        "inverse_mass": 1.0 / mass_kg,
+        "inverse_mass": 1.0 / total_kg,
+        "inverse_inertia_roll": 1.0 / float(inertia["roll"]),
+        "inverse_inertia_pitch": 1.0 / float(inertia["pitch"]),
+        "inverse_inertia_yaw": 1.0 / float(inertia["yaw"]),
+        "wheel_inertia": float(configuration.wheel_rotational_inertia()),
         "gravity": -9.81,
-        "angular_damping": 0.22,
-        "inverse_inertia_roll": 1.0 / 160.0,
-        "inverse_inertia_pitch": 1.0 / 300.0,
-        "inverse_inertia_yaw": 1.0 / 380.0,
-        "wheel_inertia": 2.4,
+        # the real engine is the engine; the law's own combustion is off
         "engine_displacement_m3": 0.0,
         "engine_enabled": 1.0,
         "assembly_alpha_drivetrain": 1.0,
         "yaw_cos": 1.0, "yaw_sin": 0.0,
         "drive_direction": 1.0,
     })
+    for axis, value in zip("xyz", mass["center_of_mass"]):
+        if f"center_of_mass_{axis}" in values:
+            values[f"center_of_mass_{axis}"] = float(value)
     for corner in WHEEL_NAMES:
         values[f"assembly_alpha_{corner}"] = 1.0
+    values["_total_mass_kg"] = total_kg
     return values
 
 
@@ -184,12 +226,40 @@ class VehicleGraph:
     #: tire radius, stiffness or pressure at all -- its only tire
     #: parameters are sidewall deformation frequencies -- so the radial
     #: tire has to be stated here or invented silently.
-    major_radius_m: float = 0.3925
-    section_radius_m: float = 0.1425
-    tread_width_m: float = 0.285
-    tire_pressure_pa: float = 760_000.0
+    contact_defaults: dict = field(default_factory=dict)
     substeps: int = 1
-    dt_limit_s: float = float("inf")
+    limit_s: float = float("inf")
+    #: the declared flat span -- see `compile_contract.GRAPH_RECORD`
+    state_span: object = None
+    #: THE WHEEL'S SIZE. The vehicle law has no radius input of any kind --
+    #: not wheel, not tire, not rolling -- so it cannot turn wheel speed
+    #: into ground speed by itself. It takes `slip_longitudinal` as an
+    #: INPUT and expects something outside to compute it; in the validator
+    #: that is the roller fixture and the balloon-tire material. Without
+    #: it a wheel spinning at 77 rad/s under a stationary craft reports a
+    #: slip of exactly zero, so there is no traction and the craft never
+    #: moves however much torque reaches the hubs.
+    rolling_radius_m: float = BASIC_CRAFT_ROLLING_RADIUS_M
+
+    # -- the declared span: the law's whole input vector ----------------
+    def sync_state_span(self):
+        """The 341 law inputs as one contiguous array.
+
+        `columns` already IS the body's state -- one value per port of the
+        vehicle law -- so the span is that vector rather than a new
+        representation invented for the compiler.
+        """
+        self.state_span = np.array(
+            [float(np.asarray(getattr(c, "data", c)).reshape(-1)[0])
+             for c in self.columns], dtype=np.float64)
+        return self.state_span
+
+    def load_state_span(self, span=None) -> None:
+        source = self.state_span if span is None else span
+        if source is None:
+            return
+        for index, value in enumerate(np.asarray(source).reshape(-1)):
+            self.columns[index] = AT.tensor(np.array([float(value)]))
 
     def put(self, name: str, value: float) -> None:
         slot = self.inputs.get(name)
@@ -204,67 +274,93 @@ class VehicleGraph:
         return float(np.asarray(getattr(value, "data", value)).reshape(-1)[0])
 
     def settle_on_its_tires(self) -> None:
-        """Press the craft onto the ground before the first tick.
+        """Find the compression that carries a corner, BY ASKING THE LAW.
 
-        A craft that starts with every tire at zero compression generates
-        no contact force, so it is never supported, so nothing ever
-        compresses a tire -- measured, the first attempt reported 0.0 N of
-        contact for every wheel while the driveline spun up to 200 rad/s
-        and the body never moved a millimetre. The static deflection that
-        carries its own weight is where a parked craft actually sits.
+        A craft whose tires start at zero compression makes no contact
+        force, so it is never supported, so nothing ever compresses a
+        tire. It has to begin where a parked craft actually sits.
+
+        That depth is bisected out of the contact law itself rather than
+        divided out of a stiffness. There is no radial k*x tire spring to
+        divide by -- the law says so: "there is no radial k*x tire
+        spring" -- so a stiffness picked to stand in for one is a number
+        with no referent, which is what was here before.
         """
         corner_load = self.mass_kg * 9.81 / len(WHEEL_NAMES)
-        stiffness = float(self.values.get("tire_radial_stiffness", 0.0)) or 220_000.0
-        deflection = corner_load / stiffness
+        low, high = 0.0, self.contact_defaults["tire_section_radius"] * 1.6
+        for _ in range(28):
+            mid = 0.5 * (low + high)
+            if self.probe_normal_force(mid) < corner_load:
+                low = mid
+            else:
+                high = mid
+        self.static_deflection_m = 0.5 * (low + high)
         for wheel in WHEEL_NAMES:
-            self.put(f"compression_{wheel}", deflection)
-            self.values[f"compression_{wheel}"] = deflection
-        self.static_deflection_m = deflection
+            self.put(f"compression_{wheel}", self.static_deflection_m)
+            self.values[f"compression_{wheel}"] = self.static_deflection_m
 
-    #: geometry the analytic floor needs, matching the law's own constants
-    MINIMUM_AREA = 0.008
-    MAXIMUM_AREA = 0.06
-    POLYTROPIC = 1.3
-    REFERENCE_VOLUME = 0.035
+    def probe_normal_force(self, compression: float) -> float:
+        """One wheel through the contact law at a stated compression."""
+        row = {name: 0.0 for name in self.contact_names}
+        row.update({k: v for k, v in self.contact_defaults.items() if k in row})
+        row["dt"] = 1.0e-4          # well inside the law's own radial mode
+        row["tire_radial_compression"] = max(compression, 0.0)
+        columns = [AT.tensor(np.array([row[name]]))
+                   for name in self.contact_names]
+        out = self.contact_step(*columns)
+        return float(np.asarray(getattr(out[1], "data", out[1])).reshape(-1)[0])
+
+    #: the radial effective mass the contact law is given, so the mode it
+    #: forms can be read back out of what it publishes
     RADIAL_MASS = 6.0
 
-    def contact_dt_limit(self, compression: float) -> float:
-        """The tire's own safe step, from what the law already computes.
+    def stability_limit_s(self) -> float:
+        """The contact law's own stability limit, from what it published.
 
-        The contact response is a real radial mode, not a penalty force:
-        pneumatic pressure over the flattened patch gives a radial
-        stiffness, and against the radial effective mass that is a
-        frequency. An explicit scheme cannot outrun it, so the floor is
-        `2/sqrt(k/m)`.
+        The contact response is a real radial mode: the law forms a
+        pneumatic stiffness from the patch it is standing on and rings it
+        down through implicit midpoint stages. An explicit step cannot
+        outrun that mode, so the limit is `2/sqrt(k/m)`.
 
-        MEASURED, and sharp: at half this step the law returns 32-44 kN
-        across the working range; at twice it, exactly 0 N every time,
-        with nothing in between. A 16.7 ms frame violates it at every
-        compression, which is why a craft with four wheels on the ground
-        reported no ground at all.
+        Taken from the law's OUTPUTS -- the normal force it produced and
+        the compression that produced it are a secant stiffness -- rather
+        than by recomputing its patch geometry and gas law in Python. A
+        second copy of one law is two things to keep in step, and they do
+        not stay in step.
 
-        The counterintuitive part is worth keeping in mind: the floor is
-        TIGHTEST when the tire is barely touching (2.5 ms at 10 mm) and
-        loosens as it is pressed (7.4 ms at 120 mm), because the patch
-        clamps at `maximum_contact_area` so `P*A/d` falls with depth. A
-        policy that reasoned about penetration depth would guess the
-        wrong way round; publishing the number does not.
+        Measured, and sharp: below this the law returns 32-44 kN across
+        the working range; above it, exactly 0 N, with nothing in
+        between. A craft stepped past it has no ground at all and its
+        wheels spin freely, which is what this is here to prevent.
         """
-        depth = min(max(compression, 0.0), self.section_radius_m * 1.65)
-        if depth <= 0.0:
+        force = abs(self.last.get("contact_force_y", 0.0))
+        depth = self.last.get("compression_m", 0.0)
+        if force <= 0.0 or depth <= 0.0:
             return float("inf")
-        chord = max(0.0, 2.0 * self.major_radius_m * depth - depth * depth)
-        area = min(max(2.0 * math.sqrt(chord) * self.tread_width_m,
-                       self.MINIMUM_AREA), self.MAXIMUM_AREA)
-        strain = min(max(area * depth * 0.55
-                         / (self.REFERENCE_VOLUME + 1e-5), 0.0), 0.65)
-        pressure = self.tire_pressure_pa * (
-            1.0 + self.POLYTROPIC * strain
-            + self.POLYTROPIC * (self.POLYTROPIC + 1.0) * strain * strain / 2.0)
-        stiffness = pressure * area / (depth + self.section_radius_m * 1e-5 + 1e-5)
-        if stiffness <= 0.0:
-            return float("inf")
-        return 2.0 / math.sqrt(stiffness / self.RADIAL_MASS)
+        return 2.0 / math.sqrt((force / depth) / self.RADIAL_MASS)
+
+    def publish_slip(self) -> None:
+        """Wheel speed against ground speed, per wheel.
+
+        Longitudinal slip ratio in the usual sense: the surface speed of
+        the tire minus the speed the hub is actually travelling, over
+        whichever is larger. This is the quantity the law consumes and
+        cannot form, because it does not know how big its wheels are.
+        """
+        def scalar(name: str) -> float:
+            slot = self.inputs.get(name)
+            if slot is None:
+                return 0.0
+            column = self.columns[slot]
+            return float(np.asarray(
+                getattr(column, "data", column)).reshape(-1)[0])
+
+        body = scalar("velocity_x")
+        for wheel in WHEEL_NAMES:
+            omega = scalar(f"wheel_omega_{wheel}")
+            surface = omega * self.rolling_radius_m
+            reference = max(abs(surface), abs(body), 0.5)
+            self.put(f"slip_longitudinal_{wheel}", (surface - body) / reference)
 
     def wheel_compressions(self, result) -> list[float]:
         out = []
@@ -276,35 +372,18 @@ class VehicleGraph:
 
     def contact_wrench(self, result, dt: float):
         """Every wheel through the real contact law, summed to one wrench."""
-        rated = self.tire_pressure_pa
-        radius = self.major_radius_m + self.section_radius_m
-        section = self.section_radius_m
         force = [0.0, 0.0, 0.0]
         torque = [0.0, 0.0, 0.0]
         area = 0.0
         for wheel in WHEEL_NAMES:
             row = {name: 0.0 for name in self.contact_names}
+            row.update({k: v for k, v in self.contact_defaults.items()
+                        if k in row})
             compression = self.got(result, f"compression_{wheel}_next")
             if compression <= 0.0:
                 compression = getattr(self, "static_deflection_m", 0.01)
             row.update({
-                "support": 1.0, "normal_y": 1.0, "forward_x": 1.0, "right_z": 1.0,
-                "dt": dt, "corner_weight": 1.0,
-                "mu_static": 1.15, "mu_kinetic": 0.95,
-                "load_sensitivity": 0.85, "slip_transition_speed": 2.0,
-                "minimum_contact_area": self.MINIMUM_AREA,
-                "maximum_contact_area": self.MAXIMUM_AREA,
-                "tire_pressure": rated,
-                "tire_major_radius": max(radius - section, 0.05),
-                "tire_section_radius": section,
-                "tire_gas_polytropic_exponent": self.POLYTROPIC,
-                "tire_reference_volume": self.REFERENCE_VOLUME,
-                "tire_radial_effective_mass": self.RADIAL_MASS,
-                "sidewall_shear_stiffness_longitudinal": 180_000.0,
-                "sidewall_shear_stiffness_lateral": 140_000.0,
-                "sidewall_shear_damping": 900.0,
-                "radial_carcass_loss": 0.04,
-                "tire_effective_tread_width": 0.18,
+                "dt": dt,
                 "tire_radial_compression": compression,
                 "slip_longitudinal": self.got(result, f"slip_longitudinal_{wheel}_next"),
                 "tire_radial_velocity": self.got(
@@ -338,23 +417,18 @@ class VehicleGraph:
         self.put("brake", brake)
         self.put("drive_direction", 1.0)
 
-        # THE TIRE'S OWN FLOOR DECIDES THE STEP. Ask it what it can
-        # tolerate, then take that many substeps -- the body never gets a
-        # step its tires cannot resolve. This is the module publishing a
-        # safe dt range and the caller honouring it, which is the whole
-        # mechanism `Metrics.dt_limit` exists for and which the realtime
-        # lane collects and never reads.
-        result = self.vehicle_step(*self.columns)
-        floor = min(self.contact_dt_limit(c)
-                    for c in self.wheel_compressions(result))
-        substeps = 1 if floor >= dt else min(int(math.ceil(dt / floor)), 512)
-        self.substeps = substeps
-        self.dt_limit_s = floor
-        step_dt = dt / substeps
+        # THE STABILITY LIMIT DECIDES THE STEP. The contact law publishes
+        # a mode it cannot be stepped slower than; honour it by dividing
+        # the window until every piece of it is inside the limit.
+        limit = self.stability_limit_s()
+        self.substeps = 1 if limit >= dt else max(1, int(math.ceil(dt / limit)))
+        self.limit_s = limit
+        step_dt = dt / self.substeps
         self.put("dt", step_dt)
 
-        force = torque = None
-        for _ in range(substeps):
+        raw_slip = {self.inputs.get(f"slip_longitudinal_{w}") for w in WHEEL_NAMES}
+        for _ in range(self.substeps):
+            self.publish_slip()
             result = self.vehicle_step(*self.columns)
             force, torque, area = self.contact_wrench(result, step_dt)
             for axis, axis_name in enumerate("xyz"):
@@ -364,9 +438,26 @@ class VehicleGraph:
             engine_slot = self.inputs.get("engine_angular_speed")
             for out_slot, in_slot in self.feedback:
                 if in_slot == engine_slot:
-                    continue                  # the real engine owns its speed
+                    continue              # the real engine owns its speed
+                if in_slot in raw_slip:
+                    # THE FILTER'S OUTPUT IS NOT ITS INPUT.
+                    # `slip_longitudinal` is a raw MEASUREMENT the law
+                    # runs through a second-order sensor;
+                    # `slip_longitudinal_next` is the filtered result and
+                    # `previous_slip_longitudinal` is where it belongs.
+                    # Carried back onto the raw port it closes a loop with
+                    # no source, decays to zero and stays there -- which
+                    # reads exactly like a tire with no grip.
+                    continue
                 self.columns[in_slot] = result[out_slot]
-
+            for wheel in WHEEL_NAMES:
+                self.put(f"previous_slip_longitudinal_{wheel}",
+                         self.got(result, f"slip_longitudinal_{wheel}_next"))
+            self.last["contact_force_y"] = force[1]
+            self.last["compression_m"] = min(self.wheel_compressions(result))
+        result = self.vehicle_step(*self.columns)
+        _unused = (dt,)
+        force, torque, area = self.contact_wrench(result, step_dt)
         self.last = {
             "clutch_torque_nm": self.got(result, "clutch_torque"),
             "driveline_torque_nm": self.got(result, "driveline_torque"),
@@ -378,13 +469,14 @@ class VehicleGraph:
             "contact_force_x": force[0],
             "contact_force_y": force[1],
             "patch_cm2": area * 1e4,
+            "compression_m": min(self.wheel_compressions(result)),
+            "limit_ms": self.limit_s * 1e3,
             "substeps": float(self.substeps),
-            "dt_limit_ms": self.dt_limit_s * 1e3,
         }
         return self.last
 
 
-def build_graphs(names: list[str], mass_kg: float = 520.0):
+def build_graphs(names: list[str]):
     """One compile, shared by every craft: the law is the same law."""
     vehicle = compile_symbolic_vehicle_physics()
     contact = compile_wheel_contact_ssa()
@@ -401,10 +493,12 @@ def build_graphs(names: list[str], mass_kg: float = 520.0):
                 for slot, name in enumerate(vehicle_outputs)
                 if name.endswith("_next") and name[:-5] in inputs]
 
+    parameters = craft_parameters()
+    mass_kg = float(parameters['_total_mass_kg'])
     graphs = {}
-    for name in names:
+    for lane, name in enumerate(names):
         values = {key: 0.0 for key in vehicle_names}
-        for key, value in simple_craft_parameters(mass_kg).items():
+        for key, value in parameters.items():
             if key in values:
                 values[key] = float(value)
         graph = VehicleGraph(
@@ -412,58 +506,15 @@ def build_graphs(names: list[str], mass_kg: float = 520.0):
             columns=[AT.tensor(np.array([values[key]])) for key in vehicle_names],
             feedback=feedback, inputs=inputs, outputs=outputs,
             vehicle_step=vehicle_step, contact_step=contact_step,
-            contact_names=contact_names)
+            contact_names=contact_names,
+            contact_defaults=basic_craft_defaults(
+                load_default_car_configuration()))
+        # EACH CRAFT IN ITS OWN LANE. They start superimposed otherwise,
+        # and since the body law has no steering port they can only ever
+        # separate by speed -- so for a long stretch there is visibly one
+        # craft on screen and the other is underneath it.
+        graph.put("position_z", 4.0 * lane)
+        graph.values["position_z"] = 4.0 * lane
         graph.settle_on_its_tires()
         graphs[name] = graph
     return graphs, len(vehicle_names), len(contact_names), len(feedback)
-
-
-def main(argv=None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--frames", type=int, default=120)
-    parser.add_argument("--throttle", type=float, default=0.9)
-    parser.add_argument("--substeps", type=int, default=16)
-    args = parser.parse_args(argv)
-
-    craft = {"roadster": "mazda-b6ze-miata-1990",
-             "coupe": "vw-vr6-2800-12v"}
-
-    started = time.perf_counter()
-    batch = EngineBatch.build(craft)
-    graphs, n_in, n_contact, n_carry = build_graphs(list(craft))
-    print(f"built in {time.perf_counter() - started:.1f}s")
-    print(f"   engine batch : {len(batch.sims)} sims in one dt round")
-    for name, limit in batch.dt_limits().items():
-        print(f"      {name:<10} {batch.sims[name].engine.identity:<24}"
-              f" dt_limit {limit * 1e6:8.1f} us")
-    print(f"   vehicle graph: {n_in} inputs, {n_contact} contact inputs, "
-          f"{n_carry} carried states, one per craft")
-    print(f"   static tire deflection "
-          f"{graphs[list(craft)[0]].static_deflection_m * 1000:.2f} mm\n")
-
-    dt = FLOOR_S * args.substeps
-    for frame in range(args.frames):
-        batch.step(dt)
-        for name, graph in graphs.items():
-            omega, _torque = batch.exterior(name)
-            graph.step(dt, shaft_omega=omega, throttle=args.throttle, steer=0.0)
-        if frame % max(args.frames // 6, 1) == 0:
-            for name, graph in graphs.items():
-                row = graph.last
-                print(f"   f{frame:4d} {name:<9} rpm "
-                      f"{float(batch.sims[name].rpm or 0.0):7.1f}"
-                      f"  clutch {row['clutch_torque_nm']:8.1f} Nm"
-                      f"  wheel_w {row['wheel_omega']:8.2f}"
-                      f"  Fy {row['contact_force_y']:9.1f} N"
-                      f"  patch {row['patch_cm2']:6.1f} cm2"
-                      f"  x {row['x']:8.3f} m")
-    print(f"\nworld {args.frames * dt:.3f} s")
-    for name, graph in graphs.items():
-        row = graph.last
-        print(f"   {name:<10} x {row['x']:9.3f} m  z {row['z']:8.3f} m"
-              f"  speed {row['speed_x']:7.3f} m/s"
-              f"  rpm {float(batch.sims[name].rpm or 0.0):7.1f}")
-
-
-if __name__ == "__main__":
-    main()

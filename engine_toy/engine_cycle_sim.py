@@ -110,6 +110,17 @@ from burst import BurstField
 from ordnance import OrdnanceField
 import engine_geometry
 import wear as wear_module
+import wear_debris
+import combustion_kernel
+
+# How much of the sump passes the filter in a second, how good that
+# element is, and how fast what is in the oil drops out of it where no
+# filter can reach. A full-flow pump turns the charge over several times
+# a minute, which is why the coarse flake is gone quickly and the fine
+# fraction -- the part an oil sample reads -- is not.
+OIL_TURNOVER_PER_S = 0.05
+OIL_FILTER_BETA = 200.0          # beta_200: a real full-flow element
+OIL_SETTLING_PER_S = 2.0e-6
 BURN_WINDOW_DEG = 50.0  # no longer used to SHAPE the torque pulse -- see _burned_frac
 # Real, disclosed combustion-kernel constants: a representative laminar
 # flame speed for gasoline near stoichiometric/atmospheric conditions,
@@ -503,6 +514,9 @@ class EngineCycleState:
     oil_consumption_ml_per_h: float = 0.0
     blowby_l_per_min: float = 0.0
     crankcase_pressure_kpa: float = 0.0
+    # what is in the oil, as a used-oil report states it
+    oil_soot_frac: float = 0.0
+    oil_debris_captured_g: float = 0.0
     sump_oil_l: float = 0.0
     oil_fuel_dilution_frac: float = 0.0
     current_torque_nm: float = 0.0
@@ -829,6 +843,17 @@ class EngineCycleSim:
         # deliberately; two sims with the same seed now agree exactly.
         self._rng = _random.Random(
             _identity_seed(self.engine.identity) if self.seed is None else int(self.seed))
+        # THE WEAR LEDGER HAS TO EXIST FROM THE START. `state.wear` was
+        # only ever created by `set_engine`, which a sim built straight
+        # from an engine never calls -- so a freshly constructed sim
+        # carried an EMPTY ledger, `step_wear` returned immediately on
+        # it every tick, and nothing in the entire durability model ever
+        # moved unless the operator happened to switch engines in the
+        # UI and back. Everything downstream of wear (oil debris, ring
+        # leak, blow-by, oil analysis) was reading a ledger that could
+        # not change.
+        if not self.state.wear:
+            self.state.wear = wear_module.new_wear_state(self.engine)
         self._omega = 0.0
         self._total_crank_deg = 0.0
         self._map_frac_na = idle_map_base_frac(self.engine)  # ECU's per-engine idle calibration
@@ -842,6 +867,7 @@ class EngineCycleSim:
         # the emitters do not own fluid state: they ask the sim for the
         # real pressure and the real contents, and hand back every gram
         # they take, so the HUD, the pump and the leak are one machine
+        self._spray_needs_resolve = True
         self.hole_emitters.pressure_of = self._circuit_pressure_pa
         self.hole_emitters.remaining_of = self._circuit_remaining_l
         self.hole_emitters.on_loss = self._deplete_circuit
@@ -971,6 +997,15 @@ class EngineCycleSim:
         self._ring_escalation_ticks = 0
         self._exhaust_demand_kg_s = 0.0
         self._physics_accum_s = 0.0
+        # THE DECLARED FLAT SPAN. `compile_contract.py` says the engine is
+        # opaque because "its state is a graph of Python objects rather
+        # than typed spans", and that going native "needs a real piece of
+        # work on the class rather than on this file". This is that span:
+        # one contiguous float64 array in the `engine_abi` layout, which
+        # `engine_state.pack`/`unpack` fill and read. Declaring it in
+        # `program_abi.records` is what stops every method on this class
+        # being a wall.
+        self.state_span = None
         if self.engine.load_resistor_frac is not None:
             self.electrical_load_frac = self.engine.load_resistor_frac
         self.stop()
@@ -995,6 +1030,10 @@ class EngineCycleSim:
         cs = getattr(self, "_crankcase_state", None)
         if cs is None or cs.identity != self.engine.identity:
             self._crankcase_state = CrankcaseState.from_engine(self.engine)
+            # a different engine is a different engine: its oil has none
+            # of the last one's history in it
+            self._oil_debris = wear_debris.DebrisLedger()
+            self._wear_vector_last = None
         self._cyl_valve_factor = _np.ones(self._valve_state.n_cyl)
         # a network-only swap (fuel_network.convert_engine) keeps the
         # catalogue rating and applies the fluid's charge energy live; a
@@ -1039,6 +1078,8 @@ class EngineCycleSim:
         # oil-splash-path (dressing.py) -- rebuilt with the graph
         self.hole_emitters.emitters = [e for e in self.hole_emitters.emitters if e.kind != "splash"]
         self.hole_emitters.add_splash_from_graph(graph)
+        # any port whose cap/plug is not fitted is a real hole from here on
+        self.hole_emitters.sync_open_ports(graph)
         register_graph_parts(self.state.part_damage, graph)
         sync_part_pressures(self.state.part_damage, drivetrain.fluid_circuits)
         return drivetrain
@@ -1067,6 +1108,10 @@ class EngineCycleSim:
             penetration,
         )
         self.hole_emitters.add_from_punctures(recorded, self._drivetrain.graph, self._drivetrain.fluid_circuits)
+        # the geometry just changed: whatever a jet used to land on may
+        # now have a hole through it, so every spray is asked again
+        for _em in self.hole_emitters.emitters:
+            _em.spray_resolved = False
         by_part = {ident: p for ident, p in recorded}
         # a round through a placed charge: its filling's own impact
         # sensitivity decides whether that starts a firing sequence
@@ -1794,6 +1839,79 @@ class EngineCycleSim:
                         rho = DENSITY_KG_M3.get(em.fluid, 900.0)
                         self._deplete_circuit(em.circuit, port.flow_kg_s * dt / rho * 1000.0)
 
+    def _resolve_spray_targets(self) -> None:
+        """Ask the geometry where each jet actually lands.
+
+        Oil thrown inside an engine is not lost -- it hits a web, a
+        skirt, the inside of a cover, and runs back to the sump. The only
+        oil that goes is the oil that gets OUT. Rather than assume either
+        way, every emitter's cone is cast against the same ray mesh a
+        projectile uses and the answer read off what it hits (see
+        HoleEmitterField.resolve_spray).
+
+        Cheap by construction: a handful of rays per emitter, once, and
+        again only when the geometry changes under it -- a round through
+        a cover turns an emitter that was spraying onto the inside of
+        that cover into one spraying at the sky, and the oil it throws
+        genuinely does start leaving the engine."""
+        if self.ray_mesh_factory is None:
+            return
+        if not any(not em.spray_resolved for em in self.hole_emitters.emitters):
+            return
+        try:
+            self.hole_emitters.resolve_spray(self.ray_mesh_factory())
+        except Exception:
+            # never let a spray question stop the engine running; an
+            # unresolved emitter keeps its honest default of "it left"
+            pass
+
+    def _step_oil_contamination(self, dt: float, cs, fuel_kg_s: float) -> None:
+        """What the engine is putting into its own oil, this tick.
+
+        Three things that were each modelled and none of which were
+        joined up:
+
+          * the wear ledger knows how far gone every part is, so the
+            CHANGE in that is metal off those parts and into the sump
+            (wear_debris: a closed mass balance, not a guessed rate)
+          * blow-by carries combustion soot down past the rings, and on
+            a diesel that is a hundred times the mass of the metal
+          * the rings' own wear opens them up, which is what blow-by IS,
+            so a tired ring pack blackens its oil faster for the real
+            reason rather than by a separate rule
+
+        The filter then takes what it can reach of it, and what it
+        cannot reach stays in the oil -- which is what an oil sample
+        reads, and why one taken after a change reads clean on an engine
+        that is still destroying itself."""
+        led = self._oil_debris
+        before = self._wear_vector_last
+        now = wear_debris.damage_vector(self.state.wear)
+        if before is not None:
+            led.debit(before, now, float(getattr(self.engine, "displacement_l", 4.0) or 4.0))
+        self._wear_vector_last = now
+        # the rings are as open as they are worn
+        cs.apply_ring_wear(float(self.state.wear.get("piston_rings", 0.0) or 0.0))
+        # soot, by blow-by, at this fuel's own declared sootiness
+        # THE SAME CLOCK FOR EVERYTHING THAT ACCUMULATES WITH DUTY.
+        # `wear.WEAR_TIME_ACCELERATION` exists so an engine can be aged
+        # inside a play session; if it sped up metal and not soot, an
+        # accelerated engine would wear its rings out with clean oil and
+        # every ratio between the two would be wrong. Soot, filtration
+        # and settling all run on it as well, so what changes is how
+        # fast the clock turns and not what the engine does.
+        duty = max(0.0, wear_module.WEAR_TIME_ACCELERATION) * dt
+        family = combustion_kernel.family_for(self.engine, self.fuel_choice)
+        led.debit_soot(wear_debris.soot_into_oil_g(
+            max(0.0, float(fuel_kg_s)) * duty, family,
+            float(_np.mean(cs.ring_leak))))
+        # the charge passing the element, and a little of what is in it
+        # dropping out where no filter reaches
+        led.through_filter(min(1.0, duty * OIL_TURNOVER_PER_S), OIL_FILTER_BETA)
+        led.settle(duty * OIL_SETTLING_PER_S)
+        self.state.oil_soot_frac = led.soot_frac_of_oil(cs.oil_kg)
+        self.state.oil_debris_captured_g = led.captured_g
+
     def _check_burst_triggers(self, dt: float) -> None:
         """The real fire: fuel spraying from a punctured fuel part whose
         stream reaches an exhaust part above the fuel's autoignition
@@ -2371,6 +2489,7 @@ class EngineCycleSim:
                 h.nitrogen_fill_frac = 1.0
         # and the splash emitters, which are hardware rather than damage
         self.hole_emitters.add_splash_from_graph(self._drivetrain.graph)
+        self.hole_emitters.sync_open_ports(self._drivetrain.graph)
         register_graph_parts(self.state.part_damage, self._drivetrain.graph)
 
     def set_engine(self, engine: Engine) -> None:
@@ -2469,6 +2588,27 @@ class EngineCycleSim:
             self._expander = self.engine.expander.build()
         self._time_since_last_ignition_s = 0.0
         self.state.real_fire_hz = 0.0
+
+    # -- the declared span: what crosses the boundary ------------------
+    def sync_state_span(self):
+        """Pack the whole live state into the declared flat span."""
+        from engine_abi import engine_graph_abi
+        from engine_state import pack
+        self.state_span = pack(self, engine_graph_abi(self.engine),
+                               self.state_span)
+        return self.state_span
+
+    def load_state_span(self, span=None) -> None:
+        """Write a declared flat span back into the live state."""
+        from engine_abi import engine_graph_abi
+        from engine_state import unpack
+        source = self.state_span if span is None else span
+        if source is not None:
+            unpack(self, engine_graph_abi(self.engine), source)
+
+    def state_span_length(self) -> int:
+        from engine_abi import engine_graph_abi
+        return int(engine_graph_abi(self.engine).state_stride)
 
     def start(self) -> None:
         self._omega = self.engine.idle_rpm * RPM_TO_RAD_S
@@ -2800,6 +2940,7 @@ class EngineCycleSim:
             self._rpm_rate_per_s += (raw - self._rpm_rate_per_s) * min(1.0, FIXED_PHYSICS_DT_S / 0.08)
             self._physics_accum_s -= FIXED_PHYSICS_DT_S
             if self.hole_emitters.emitters:
+                self._resolve_spray_targets()
                 self.hole_emitters.step(FIXED_PHYSICS_DT_S, self._drivetrain.fluid_circuits, self.state.exhaust_temp_k,
                                         crank_omega_rad_s=self._omega)
                 self._check_burst_triggers(FIXED_PHYSICS_DT_S)
@@ -3333,6 +3474,7 @@ class EngineCycleSim:
             self.state.crankcase_pressure_kpa = cs.crankcase_pressure_pa / 1000.0
             self.state.sump_oil_l = cs.oil_kg / 0.87
             self.state.oil_fuel_dilution_frac = cs.dilution_frac
+            self._step_oil_contamination(dt, cs, fuel_delivered_kg_s)
             vs.age(dt, self.state.rpm, self.state.cylinder_block_temps_k,
                    exhaust_temp_k=self.state.exhaust_temp_k, load_frac=self.throttle,
                    richness=fuel_quantity_frac, direct_injection=eng.compression_ignition,

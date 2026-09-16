@@ -54,6 +54,55 @@ PROGRAM_EXTRACTION = _SHEETS / "program_extraction.yaml"
 FULL_NATIVE_EXECUTION = _SHEETS / "vehicle_full_native_execution.yaml"
 
 
+#: THE RECORD THAT STOPS THE ENGINE BEING OPAQUE.
+#:
+#: This file used to say `EngineCycleSim` "is not declared here yet -- its
+#: state is a graph of Python objects rather than typed spans", and that
+#: declaring it "needs a real piece of work on the class rather than on
+#: this file". That work is done: `engine_state.py` carries the whole live
+#: sim -- crank, cylinders, circuits, every drivetrain edge's torsional
+#: wind-up, the air plant, the catalyst, the generator positions -- as one
+#: contiguous float64 span in the `engine_abi` layout, with an exact round
+#: trip and an exact restore. `EngineCycleSim.state_span` is that array.
+#:
+#: WITHOUT THIS, every method on the class is a wall. Measured: lowering
+#: the demo game refuses with
+#:
+#:     CompilationSubdivisionRequired ... blockers=('opaque-state-effect',)
+#:         batch.step(dt)
+#:         graph.step(dt, shaft_omega=...)
+#:
+#: which is the compiler declining to compile a loop whose body calls an
+#: undeclared object, rather than silently running it once.
+ENGINE_RECORD = {
+    "identity": "engine_cycle_sim.EngineCycleSim",
+    "fields": {
+        "state_span": {"storage": "span", "dtype": "float64",
+                       "rank": 1, "mutable": True},
+    },
+}
+
+
+#: The two wrappers the game actually calls. Declaring the engine alone
+#: moved the refusal but did not clear it: the game says `batch.step(dt)`
+#: and `graph.step(...)`, and those objects were undeclared too.
+BATCH_RECORD = {
+    "identity": "craft_graph.EngineBatch",
+    "fields": {
+        "state_span": {"storage": "span", "dtype": "float64",
+                       "rank": 1, "mutable": True},
+    },
+}
+
+GRAPH_RECORD = {
+    "identity": "craft_graph.VehicleGraph",
+    "fields": {
+        "state_span": {"storage": "span", "dtype": "float64",
+                       "rank": 1, "mutable": True},
+    },
+}
+
+
 def contract(*, full_native: bool = False):
     """The contract engine_toy lowers under.
 
@@ -68,7 +117,35 @@ def contract(*, full_native: bool = False):
     policy = ExtractionContract(PROGRAM_EXTRACTION)
     if full_native:
         policy = policy.with_execution_file(FULL_NATIVE_EXECUTION)
-    return policy
+    # Declared on top of whatever the repository sheet already states, not
+    # instead of it: `with_program_abi` replaces the ABI wholesale, so the
+    # existing records are carried across rather than dropped.
+    program_abi = policy.program_abi.receipt()
+    records = program_abi.setdefault("records", {})
+    records["EngineCycleSim"] = ENGINE_RECORD
+    records["EngineBatch"] = BATCH_RECORD
+    records["VehicleGraph"] = GRAPH_RECORD
+    # A RECORD IS NOT ENOUGH ON ITS OWN. `program_abi.bindings` is what
+    # attaches a declared layout to a named parameter of a named function;
+    # without one the compiler has a description of a class and no reason
+    # to believe the object in front of it is that class.
+    # THE SCALARS TOO. A binding says which record a parameter is; a
+    # `values` entry says what an ordinary parameter's storage and type
+    # are. Declaring only the records left `dt`, `throttle` and
+    # `shaft_omega` undeclared, so the function had no usable ABI at all
+    # -- `parameter_names: {}`, `argument_names: None`,
+    # `output_names: None` -- and an empty body is what a function with
+    # nothing observable coming in or out is supposed to lower to.
+    program_abi.setdefault("values", []).extend([
+        {"function": "*frame", "parameter": name, "storage": "scalar",
+         "dtype": "float64", "python_type": "builtins.float"}
+        for name in ("dt", "throttle", "shaft_omega")
+    ])
+    program_abi.setdefault("bindings", []).extend([
+        {"function": "*frame", "parameter": "batch", "record": "EngineBatch"},
+        {"function": "*frame", "parameter": "graph", "record": "VehicleGraph"},
+    ])
+    return policy.with_program_abi(program_abi)
 
 
 def declared_records() -> tuple[str, ...]:
