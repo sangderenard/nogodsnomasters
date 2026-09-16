@@ -108,6 +108,7 @@ class CompileProbe:
     finished: float = 0.0
     unit_plans: list = field(default_factory=list)
     _restore: list = field(default_factory=list)
+    _effect_index: dict = field(default_factory=dict)
 
     # -- installation --------------------------------------------------
     def __enter__(self) -> "CompileProbe":
@@ -147,9 +148,24 @@ class CompileProbe:
 
         record = self.effects
 
+        index = self._effect_index
+
         def build(**kw):
             effect = Real(**kw)
-            record.append(effect)
+            # THE SAME EFFECT IS BUILT TWICE: once before its output id is
+            # assigned and once after, with identical state_input_id. Kept
+            # naively that doubles every count and invents a finding --
+            # "half of them have no state_output_id, so the recurrence
+            # cannot close" -- when in truth all of them have one and the
+            # blocker is the MODE alone (loop_composer.py:4732). Keep the
+            # later, resolved record.
+            key = (str(effect.state_name), str(effect.operator),
+                   int(effect.effect_node_id), int(effect.state_input_id))
+            if key in index:
+                record[index[key]] = effect
+            else:
+                index[key] = len(record)
+                record.append(effect)
             return effect
 
         self._patch(lc, "LoopStateEffect", build)
@@ -296,8 +312,11 @@ class CompileProbe:
             add("  `opaque` is the DEFAULT, not a detection. This list is the")
             add("  specification for what a record has to cover.")
             no_output = sum(1 for e in opaque if e.state_output_id is None)
-            add(f"  {no_output} of {len(opaque)} have no state_output_id --")
-            add("  each is a loop recurrence that cannot close.")
+            add(f"  {no_output} of {len(opaque)} have no state_output_id.")
+            add("  Note what blocks the loop: `loop_composer.py` refuses on")
+            add("  the MODE alone. An opaque effect normally HAS an output")
+            add("  id, so there is nothing to compute -- only something to")
+            add("  declare.")
             add("")
             add(f"  {'receiver':<44}{'n':>4}  operators")
             by_state = collections.Counter(e.state_name for e in opaque)
