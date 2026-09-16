@@ -103,14 +103,24 @@ GRAPH_RECORD = {
 }
 
 
-def contract(*, full_native: bool = False):
+def contract(*, full_native: bool = True):
     """The contract engine_toy lowers under.
 
-    `full_native=True` applies the overlay that refuses a Python-
-    resident boundary. Use it to ASK whether a law is fully native --
-    never to compile something for the first time, because then every
-    unlowered compartment is a failure instead of a boundary and the
-    report tells you nothing about which ones were close.
+    THE DEFAULT IS NO PYTHON. The base sheet says
+    `unlowered_behavior: execute_in_python`, and this used to default to
+    that: a compartment that would not lower stayed resident in Python
+    and the lowering reported success. That is not a boundary for this
+    program, it is a way to not find out. A machine that has to run on a
+    player's box does not get to keep a Python remainder, so the overlay
+    -- `unlowered_behavior: reject`, `python_callbacks: reject`,
+    `require_full_native: true` -- is the normal contract and asking for
+    less is the thing you opt into.
+
+    `full_native=False` restores the permissive base sheet. It is a
+    DIAGNOSTIC: with it, every compartment that would not lower shows up
+    as a boundary you can enumerate instead of one refusal that stops at
+    the first. Use it to find out how far you are, never to declare
+    success.
     """
     from src.compiler.extraction_contract import ExtractionContract
 
