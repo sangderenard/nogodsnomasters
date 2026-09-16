@@ -164,9 +164,59 @@ def port_open_deg(port_height_frac: float = DEFAULT_PORT_HEIGHT_FRAC,
 DEFAULT_CRANKCASE_COMPRESSION = 1.45
 
 
+#: Fraction of the liner circumference that is actually port rather
+#: than the bridges between ports. Geometric and measurable: a real
+#: uniflow liner is close to half holes at the scavenge belt.
+DEFAULT_PORT_CIRCUMFERENCE_FRAC = 0.40
+
+
+def port_area_m2(bore_m: float, stroke_m: float,
+                 port_height_frac: float = DEFAULT_PORT_HEIGHT_FRAC,
+                 circumference_frac: float = DEFAULT_PORT_CIRCUMFERENCE_FRAC) -> float:
+    """Open area of the scavenge belt, from the castings.
+
+    Circumference times the fraction of it that is port, times the port
+    height. Nothing here is chosen except two ratios that can be
+    measured off a liner."""
+    return (math.pi * max(1e-6, float(bore_m))
+            * max(0.0, min(0.95, float(circumference_frac)))
+            * max(0.0, float(port_height_frac)) * max(1e-6, float(stroke_m)))
+
+
+def port_limited_delivery(bore_m: float, stroke_m: float, rpm: float,
+                          scavenge_pressure_pa: float,
+                          port_height_frac: float = DEFAULT_PORT_HEIGHT_FRAC,
+                          circumference_frac: float = DEFAULT_PORT_CIRCUMFERENCE_FRAC,
+                          scavenge_temp_k: float = 320.0) -> float:
+    """Delivery ratio the PORTS alone will allow.
+
+    Uses drivetrain_graph.choked_orifice_mass_flow_kg_s -- the one
+    orifice relation this project has, the same one governing a
+    wastegate or a relief valve -- over the time the ports are actually
+    open. No parallel flow model.
+
+    On a well-designed engine this comes out enormous, and that is the
+    correct answer rather than a broken one: marine scavenge ports are
+    deliberately huge so that they are never the restriction. It only
+    binds when somebody has cut small ports, which is exactly when it
+    should."""
+    import drivetrain_graph as dg
+    area = port_area_m2(bore_m, stroke_m, port_height_frac, circumference_frac)
+    flow = dg.choked_orifice_mass_flow_kg_s(area, float(scavenge_pressure_pa),
+                                            float(scavenge_temp_k))
+    if flow <= 0.0:
+        return 0.0
+    # a two-stroke scavenges once per revolution
+    open_s = port_open_deg(port_height_frac) / (6.0 * max(1.0, float(rpm)))
+    swept = math.pi * 0.25 * bore_m ** 2 * stroke_m
+    return (flow * open_s) / max(1e-12, swept * 1.184)
+
+
 def delivery_ratio(boost_frac: float = 0.0, crankcase: bool = False,
                    crankcase_compression: float = DEFAULT_CRANKCASE_COMPRESSION,
-                   transfer_pressure_ratio: float = 1.25) -> float:
+                   transfer_pressure_ratio: float = 1.25,
+                   bore_m: float = 0.0, stroke_m: float = 0.0,
+                   rpm: float = 0.0) -> float:
     """Air offered to the cylinder, over what its swept volume holds.
 
     A BLOWN ENGINE simply offers what the blower delivers: one
@@ -191,7 +241,24 @@ def delivery_ratio(boost_frac: float = 0.0, crankcase: bool = False,
     the tuned expansion chamber on the exhaust reflecting escaped charge
     back in, which belongs to the exhaust and not here."""
     if not crankcase:
-        return 1.0 + max(0.0, float(boost_frac))
+        # TWO REAL CONSTRAINTS, AND THE ANSWER IS THE SMALLER.
+        #
+        # The blower can only deliver what its pressure ratio implies,
+        # and the ports can only pass what an orifice of that area
+        # passes while they are open. A real engine is limited by one or
+        # the other, and which one is a design statement: marine
+        # practice makes the ports so large that the blower always
+        # binds, and an engine with small ports is port-limited no
+        # matter what is bolted to it.
+        #
+        # 1 + boost alone was only ever the first of these.
+        blower = 1.0 + max(0.0, float(boost_frac))
+        if bore_m > 0.0 and stroke_m > 0.0 and rpm > 0.0:
+            ports = port_limited_delivery(
+                bore_m, stroke_m, rpm,
+                scavenge_pressure_pa=101_325.0 * blower)
+            return min(blower, ports)
+        return blower
     import compressors as _cp
     ccr = max(1.05, float(crankcase_compression))
     clearance = 1.0 / (ccr - 1.0)
@@ -243,7 +310,9 @@ class ScavengeResult:
 
 
 def charge(scavenge: str, *, boost_frac: float = 0.0, rpm_frac: float = 1.0,
-           port_height_frac: float = DEFAULT_PORT_HEIGHT_FRAC) -> ScavengeResult:
+           port_height_frac: float = DEFAULT_PORT_HEIGHT_FRAC,
+           bore_m: float = 0.0, stroke_m: float = 0.0,
+           rpm: float = 0.0) -> ScavengeResult:
     """What a two-stroke cylinder actually ends up holding.
 
     The charging efficiency returned is the direct equivalent of a
@@ -251,7 +320,8 @@ def charge(scavenge: str, *, boost_frac: float = 0.0, rpm_frac: float = 1.0,
     place -- not multiplied by it."""
     s = scavenge_type(scavenge)
     crank = (scavenge == "crankcase")
-    dr = delivery_ratio(boost_frac, crankcase=crank)
+    dr = delivery_ratio(boost_frac, crankcase=crank, bore_m=bore_m,
+                        stroke_m=stroke_m, rpm=rpm)
     tr = trapping_efficiency(scavenge, dr)
     lost = (1.0 - tr) if s.fuel_in_scavenge else 0.0
     # THE CYLINDER IS NOT FULL SIZE WHEN IT SHUTS. Scavenge ports are

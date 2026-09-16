@@ -121,7 +121,9 @@ def volumetric_efficiency(engine, rpm: float) -> float:
         if fi_ is not None and getattr(fi_, "kind", None) in ("turbo", "supercharger"):
             boost = max(0.0, float(getattr(fi_, "max_boost_frac", 0.0) or 0.0))
         rl = max(1.0, float(getattr(engine, "redline_rpm", 4000.0)))
-        return ts.charge(sc, boost_frac=boost, rpm_frac=rpm / rl).charging
+        return ts.charge(sc, boost_frac=boost, rpm_frac=rpm / rl,
+                         bore_m=arch.bore_m, stroke_m=arch.stroke_m,
+                         rpm=rpm).charging
     import port_flow as pf
     import cylinder_ports as cp
     try:
