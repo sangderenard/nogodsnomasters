@@ -66,7 +66,7 @@ from src.compiler.abstract_ui_vehicles import (                       # noqa: E4
     compile_symbolic_vehicle_physics, compile_wheel_contact_ssa,
     load_default_car_configuration, basic_craft_defaults,
     BASIC_CRAFT_ROLLING_RADIUS_M, WHEEL_NAMES)
-from native_law import NativeLaw                                      # noqa: E402
+from native_law import build_law                                      # noqa: E402
 
 RAD_PER_S_PER_RPM = math.pi / 30.0
 FLOOR_S = FIXED_PHYSICS_DT_S
@@ -207,103 +207,121 @@ def craft_parameters(configuration=None) -> dict[str, float]:
 
 
 @dataclass
-class VehicleGraph:
-    """One craft's body: turing's law, its contact law, and nothing of mine.
+class Craft:
+    """One craft: a ROW in the fleet's columns, not an object with a law.
 
-    Both laws are COMPILED. `columns` is a plain vector in the vehicle
-    law's own argument order and `result` a vector in its output order,
-    so a tick writes numbers into the kernel's buffers and reads numbers
-    back out -- no `AbstractTensor` is built anywhere on this path.
+    Everything a craft is lives in slot `row` of every column of the two
+    kernels. It owns no arrays and calls nothing.
     """
 
     name: str
+    row: int
+    last: dict = field(default_factory=dict)
+    static_deflection_m: float = 0.0
+    limit_s: float = float("inf")
+
+
+@dataclass
+class CraftFleet:
+    """Every craft's body, in one call of each law.
+
+    THE CRAFT STEP TOGETHER, and that is not only an optimisation. They
+    share a world, so they share its floor: the substep count is set by
+    the TIGHTEST stability limit in the fleet and everybody takes it.
+    Letting each craft pick its own would mean two bodies advancing
+    different amounts of world time between the same pair of engine
+    rounds, which is the drift this whole demo exists to expose rather
+    than to create.
+
+    Both laws are batch kernels lowered by the repository
+    (`native_law_kernels.law_kernel`, sympy -> AbstractTensor -> SSA) and
+    prepared once, so a column is the kernel's own memory. Writing an
+    input for every craft is one array assignment; carrying 90 states
+    from outputs back to inputs is 90 assignments for the whole fleet
+    rather than 90 per craft.
+    """
+
+    craft: dict
+    vehicle: object          # NativeLaw, or FannedLaw if refused
+    contact: object
+    #: (output name, input name) for every state the law advances
+    feedback: list
+    contact_defaults: dict
     mass_kg: float
-    values: dict[str, float]
-    columns: object                      # ndarray, one slot per law input
-    feedback: list[tuple[int, int]]
-    inputs: dict[str, int]
-    outputs: dict[str, int]
-    vehicle: NativeLaw
-    contact: NativeLaw
-    contact_names: list[str]
-    last: dict[str, float] = field(default_factory=dict)
-    #: the craft's tire, declared. The vehicle configuration carries no
-    #: tire radius, stiffness or pressure at all -- its only tire
-    #: parameters are sidewall deformation frequencies -- so the radial
-    #: tire has to be stated here or invented silently.
-    contact_defaults: dict = field(default_factory=dict)
+    values: dict
     substeps: int = 1
     limit_s: float = float("inf")
-    #: the declared flat span -- see `compile_contract.GRAPH_RECORD`
-    state_span: object = None
-    #: THE WHEEL'S SIZE. The vehicle law has no radius input of any kind --
-    #: not wheel, not tire, not rolling -- so it cannot turn wheel speed
-    #: into ground speed by itself. It takes `slip_longitudinal` as an
-    #: INPUT and expects something outside to compute it; in the validator
-    #: that is the roller fixture and the balloon-tire material. Without
-    #: it a wheel spinning at 77 rad/s under a stationary craft reports a
-    #: slip of exactly zero, so there is no traction and the craft never
-    #: moves however much torque reaches the hubs.
     rolling_radius_m: float = BASIC_CRAFT_ROLLING_RADIUS_M
-    #: one contact row, reused. The declared tire is written into it once
-    #: at build; a wheel then overwrites only the eight ports that differ
-    #: between corners, instead of rebuilding forty values per wheel.
-    contact_row: object = None
-    contact_rest: object = None
-    contact_slot: dict = field(default_factory=dict)
-    result: object = None
-    contact_out: object = None
-    #: this craft's own ledger. The laws' ledgers are shared -- one
-    #: compiled kernel serves every craft -- so cost per CRAFT has to be
-    #: counted where the craft is, not where the law is.
+    #: the radial effective mass the contact law is given, so the mode it
+    #: forms can be read back out of what it publishes
+    RADIAL_MASS: float = 6.0
     calls: int = 0
     wall_s: float = 0.0
     world_s: float = 0.0
-    law_calls: int = 0
+    state_span: object = None
+
+    # -- addressing ----------------------------------------------------
+    def column(self, name: str):
+        return self.vehicle.column(name)
+
+    def put(self, name: str, value, row=None) -> None:
+        self.vehicle.put(name, value, row)
+
+    def got(self, name: str, row: int = 0) -> float:
+        return self.vehicle.get(name, row)
+
+    def out(self, name: str):
+        return self.vehicle.out(name)
 
     def reset_ledger(self) -> None:
-        self.calls = self.law_calls = 0
+        self.calls = 0
         self.wall_s = self.world_s = 0.0
+        self.vehicle.reset_ledger()
+        self.contact.reset_ledger()
 
     @property
     def tau(self) -> float:
-        """World seconds this body advanced per wall second spent."""
+        """World seconds these bodies advanced per wall second spent."""
         return self.world_s / self.wall_s if self.wall_s > 0.0 else 0.0
 
-    # -- the declared span: the law's whole input vector ----------------
+    # -- the declared span ---------------------------------------------
     def sync_state_span(self):
-        """The 341 law inputs as one contiguous array.
+        """Every craft's law inputs, concatenated.
 
-        `columns` already IS the body's state -- one value per port of the
-        vehicle law -- so the span is that vector rather than a new
-        representation invented for the compiler.
+        The columns already ARE the bodies' state -- one value per port
+        per craft -- so the span is that, not a new representation
+        invented for the compiler.
         """
-        self.state_span = np.array(self.columns, dtype=np.float64)
+        self.state_span = np.concatenate(
+            [np.asarray(self.vehicle.column(n)) for n in self.vehicle.input_names])
         return self.state_span
 
     def load_state_span(self, span=None) -> None:
         source = self.state_span if span is None else span
         if source is None:
             return
-        self.columns[:] = np.asarray(source, dtype=np.float64).reshape(-1)
+        flat = np.asarray(source, dtype=np.float64).reshape(-1)
+        width = self.vehicle.batch
+        for index, name in enumerate(self.vehicle.input_names):
+            self.vehicle.column(name)[:] = flat[index * width:(index + 1) * width]
 
-    def put(self, name: str, value: float) -> None:
-        slot = self.inputs.get(name)
-        if slot is not None:
-            self.columns[slot] = value
+    # -- the contact law, all wheels of all craft in one call ----------
+    def contact_rows(self, craft_row: int):
+        """The slice of contact rows belonging to one craft."""
+        start = craft_row * len(WHEEL_NAMES)
+        return slice(start, start + len(WHEEL_NAMES))
 
-    def scalar(self, name: str) -> float:
-        slot = self.inputs.get(name)
-        return 0.0 if slot is None else float(self.columns[slot])
+    def load_contact_defaults(self) -> None:
+        for key, value in self.contact_defaults.items():
+            self.contact.put(key, float(value))
 
-    def got(self, result, name: str) -> float:
-        slot = self.outputs.get(name)
-        return 0.0 if slot is None else float(result[slot])
-
-    def run_vehicle(self):
-        """The body law, once, on whatever is in `columns`."""
-        self.result = self.vehicle.call(self.columns, self.result)
-        return self.result
+    def probe_normal_force(self, compression) -> object:
+        """Every craft's corner through the contact law at stated depths."""
+        self.load_contact_defaults()
+        self.contact.put("dt", 1.0e-4)   # well inside the law's radial mode
+        self.contact.put("tire_radial_compression", compression)
+        self.contact.run()
+        return np.asarray(self.contact.out("chassis_force_y")).copy()
 
     def settle_on_its_tires(self) -> None:
         """Find the compression that carries a corner, BY ASKING THE LAW.
@@ -314,45 +332,30 @@ class VehicleGraph:
 
         That depth is bisected out of the contact law itself rather than
         divided out of a stiffness. There is no radial k*x tire spring to
-        divide by -- the law says so: "there is no radial k*x tire
-        spring" -- so a stiffness picked to stand in for one is a number
-        with no referent, which is what was here before.
+        divide by -- the law says so -- so a stiffness picked to stand in
+        for one is a number with no referent.
+
+        Bisecting the whole fleet at once costs 28 kernel calls for every
+        craft there is, instead of 28 per craft.
         """
         corner_load = self.mass_kg * 9.81 / len(WHEEL_NAMES)
-        low, high = 0.0, self.contact_defaults["tire_section_radius"] * 1.6
+        rows = self.contact.batch
+        low = np.zeros(rows)
+        high = np.full(rows, self.contact_defaults["tire_section_radius"] * 1.6)
         for _ in range(28):
             mid = 0.5 * (low + high)
-            if self.probe_normal_force(mid) < corner_load:
-                low = mid
-            else:
-                high = mid
-        self.static_deflection_m = 0.5 * (low + high)
-        for wheel in WHEEL_NAMES:
-            self.put(f"compression_{wheel}", self.static_deflection_m)
-            self.values[f"compression_{wheel}"] = self.static_deflection_m
-
-    def reset_contact_row(self) -> None:
-        self.contact_row[:] = self.contact_rest
-
-    def contact_put(self, name: str, value: float) -> None:
-        slot = self.contact_slot.get(name)
-        if slot is not None:
-            self.contact_row[slot] = value
-
-    def probe_normal_force(self, compression: float) -> float:
-        """One wheel through the contact law at a stated compression."""
-        self.reset_contact_row()
-        self.contact_put("dt", 1.0e-4)   # well inside the law's radial mode
-        self.contact_put("tire_radial_compression", max(compression, 0.0))
-        out = self.contact.call(self.contact_row, self.contact_out)
-        return float(out[1])
-
-    #: the radial effective mass the contact law is given, so the mode it
-    #: forms can be read back out of what it publishes
-    RADIAL_MASS = 6.0
+            carried = self.probe_normal_force(mid) >= corner_load
+            high = np.where(carried, mid, high)
+            low = np.where(carried, low, mid)
+        settled = 0.5 * (low + high)
+        for craft in self.craft.values():
+            depth = float(settled[self.contact_rows(craft.row)].min())
+            craft.static_deflection_m = depth
+            for wheel in WHEEL_NAMES:
+                self.put(f"compression_{wheel}", depth, craft.row)
 
     def stability_limit_s(self) -> float:
-        """The contact law's own stability limit, from what it published.
+        """The contact law's own limit, from what it published.
 
         The contact response is a real radial mode: the law forms a
         pneumatic stiffness from the patch it is standing on and rings it
@@ -365,81 +368,106 @@ class VehicleGraph:
         second copy of one law is two things to keep in step, and they do
         not stay in step.
 
-        Measured, and sharp: below this the law returns 32-44 kN across
-        the working range; above it, exactly 0 N, with nothing in
-        between. A craft stepped past it has no ground at all and its
-        wheels spin freely, which is what this is here to prevent.
+        THE FLEET TAKES THE TIGHTEST. A shared world has one floor.
         """
-        force = abs(self.last.get("contact_force_y", 0.0))
-        depth = self.last.get("compression_m", 0.0)
-        if force <= 0.0 or depth <= 0.0:
-            return float("inf")
-        return 2.0 / math.sqrt((force / depth) / self.RADIAL_MASS)
+        tightest = float("inf")
+        for craft in self.craft.values():
+            force = abs(craft.last.get("contact_force_y", 0.0))
+            depth = craft.last.get("compression_m", 0.0)
+            craft.limit_s = (float("inf") if force <= 0.0 or depth <= 0.0
+                             else 2.0 / math.sqrt((force / depth) / self.RADIAL_MASS))
+            tightest = min(tightest, craft.limit_s)
+        return tightest
 
     def publish_slip(self) -> None:
-        """Wheel speed against ground speed, per wheel.
+        """Wheel speed against ground speed, for every wheel of every craft.
 
         Longitudinal slip ratio in the usual sense: the surface speed of
         the tire minus the speed the hub is actually travelling, over
         whichever is larger. This is the quantity the law consumes and
         cannot form, because it does not know how big its wheels are.
         """
-        body = self.scalar("velocity_x")
+        body = np.abs(np.asarray(self.column("velocity_x")))
         for wheel in WHEEL_NAMES:
-            surface = self.scalar(f"wheel_omega_{wheel}") * self.rolling_radius_m
-            reference = max(abs(surface), abs(body), 0.5)
-            self.put(f"slip_longitudinal_{wheel}", (surface - body) / reference)
+            surface = (np.asarray(self.column(f"wheel_omega_{wheel}"))
+                       * self.rolling_radius_m)
+            reference = np.maximum(np.maximum(np.abs(surface), body), 0.5)
+            self.column(f"slip_longitudinal_{wheel}")[:] = (
+                (surface - np.asarray(self.column("velocity_x"))) / reference)
 
-    def wheel_compressions(self, result) -> list[float]:
-        out = []
-        for wheel in WHEEL_NAMES:
-            value = self.got(result, f"compression_{wheel}_next")
-            out.append(value if value > 0.0
-                       else getattr(self, "static_deflection_m", 0.01))
-        return out
+    def contact_wrench(self, dt: float):
+        """Every wheel of every craft through the contact law, in ONE call.
 
-    def contact_wrench(self, result, dt: float):
-        """Every wheel through the real contact law, summed to one wrench."""
-        force = [0.0, 0.0, 0.0]
-        torque = [0.0, 0.0, 0.0]
-        area = 0.0
-        for wheel in WHEEL_NAMES:
-            self.reset_contact_row()
-            compression = self.got(result, f"compression_{wheel}_next")
-            if compression <= 0.0:
-                compression = getattr(self, "static_deflection_m", 0.01)
-            self.contact_put("dt", dt)
-            self.contact_put("tire_radial_compression", compression)
-            self.contact_put("slip_longitudinal", self.got(
-                result, f"slip_longitudinal_{wheel}_next"))
-            self.contact_put("tire_radial_velocity", self.got(
-                result, f"compression_velocity_{wheel}_next"))
-            self.contact_put("sidewall_deformation_longitudinal", self.got(
-                result, f"tire_deformation_longitudinal_{wheel}_next"))
-            self.contact_put("sidewall_deformation_lateral", self.got(
-                result, f"tire_deformation_lateral_{wheel}_next"))
-            self.contact_put(
-                "sidewall_deformation_velocity_longitudinal", self.got(
-                    result,
-                    f"tire_deformation_velocity_longitudinal_{wheel}_next"))
-            self.contact_put("sidewall_deformation_velocity_lateral", self.got(
-                result, f"tire_deformation_velocity_lateral_{wheel}_next"))
-            out = self.contact.call(self.contact_row, self.contact_out)
-            for axis in range(3):
-                force[axis] += float(out[axis])
-                torque[axis] += float(out[3 + axis])
-            area += float(out[6])
+        Returns the force, torque and patch area summed per craft.
+        """
+        self.load_contact_defaults()
+        self.contact.put("dt", dt)
+        floor = np.array([self.craft_by_row[r // len(WHEEL_NAMES)].static_deflection_m
+                          for r in range(self.contact.batch)])
+        for index, wheel in enumerate(WHEEL_NAMES):
+            rows = slice(index, None, len(WHEEL_NAMES))
+            depth = np.asarray(self.out(f"compression_{wheel}_next")).copy()
+            self.contact.column("tire_radial_compression")[rows] = np.where(
+                depth > 0.0, depth, floor[rows])
+            self.contact.column("slip_longitudinal")[rows] = np.asarray(
+                self.out(f"slip_longitudinal_{wheel}_next"))
+            self.contact.column("tire_radial_velocity")[rows] = np.asarray(
+                self.out(f"compression_velocity_{wheel}_next"))
+            for port, produced in (
+                    ("sidewall_deformation_longitudinal",
+                     f"tire_deformation_longitudinal_{wheel}_next"),
+                    ("sidewall_deformation_lateral",
+                     f"tire_deformation_lateral_{wheel}_next"),
+                    ("sidewall_deformation_velocity_longitudinal",
+                     f"tire_deformation_velocity_longitudinal_{wheel}_next"),
+                    ("sidewall_deformation_velocity_lateral",
+                     f"tire_deformation_velocity_lateral_{wheel}_next")):
+                column = self.contact.column(port)
+                if column is not None:
+                    column[rows] = np.asarray(self.out(produced))
+        self.contact.run()
+
+        width = len(WHEEL_NAMES)
+        force = np.empty((len(self.craft), 3))
+        torque = np.empty((len(self.craft), 3))
+        area = np.empty(len(self.craft))
+        axes = ("x", "y", "z")
+        for craft in self.craft.values():
+            rows = self.contact_rows(craft.row)
+            for axis, letter in enumerate(axes):
+                force[craft.row, axis] = float(
+                    np.asarray(self.contact.out(f"chassis_force_{letter}"))[rows].sum())
+                torque[craft.row, axis] = float(
+                    np.asarray(self.contact.out(f"chassis_torque_{letter}"))[rows].sum())
+            area[craft.row] = float(
+                np.asarray(self.contact.out("contact_area"))[rows].sum())
+        _ = width
         return force, torque, area
 
-    def step(self, dt: float, *, shaft_omega: float, throttle: float,
-             steer: float, brake: float = 0.0) -> dict[str, float]:
-        """One tick of this craft's body, given its engine's exterior."""
+    def carry(self) -> None:
+        """Advance every state the law published, for the whole fleet.
+
+        One array assignment per carried state, not one per state per
+        craft. The two exclusions are the same two they always were.
+        """
+        for produced, into in self.feedback:
+            self.vehicle.column(into)[:] = np.asarray(self.vehicle.out(produced))
+
+    def lowest_compression(self, craft: Craft) -> float:
+        depths = [self.got(f"compression_{w}_next", craft.row) for w in WHEEL_NAMES]
+        depths = [d if d > 0.0 else craft.static_deflection_m for d in depths]
+        return min(depths)
+
+    # -- one tick of every body ----------------------------------------
+    def step(self, dt: float, *, shaft_omega: dict, throttle: dict,
+             brake: dict | None = None) -> dict:
         started = time.perf_counter()
-        before = self.vehicle.calls + self.contact.calls
-        self.put("engine_angular_speed", shaft_omega)
-        self.put("dt", dt)
-        self.put("throttle", throttle)
-        self.put("brake", brake)
+        brake = brake or {}
+        for name, craft in self.craft.items():
+            self.put("engine_angular_speed", float(shaft_omega.get(name, 0.0)),
+                     craft.row)
+            self.put("throttle", float(throttle.get(name, 0.0)), craft.row)
+            self.put("brake", float(brake.get(name, 0.0)), craft.row)
         self.put("drive_direction", 1.0)
 
         # THE STABILITY LIMIT DECIDES THE STEP. The contact law publishes
@@ -451,114 +479,101 @@ class VehicleGraph:
         step_dt = dt / self.substeps
         self.put("dt", step_dt)
 
-        raw_slip = {self.inputs.get(f"slip_longitudinal_{w}")
-                    for w in WHEEL_NAMES}
-        engine_slot = self.inputs.get("engine_angular_speed")
         for _ in range(self.substeps):
             self.publish_slip()
-            result = self.run_vehicle()
-            force, torque, area = self.contact_wrench(result, step_dt)
-            for axis, axis_name in enumerate("xyz"):
-                self.put(f"contact_wrench_force_{axis_name}", force[axis])
-                self.put(f"contact_wrench_torque_{axis_name}", torque[axis])
-            result = self.run_vehicle()
-            for out_slot, in_slot in self.feedback:
-                if in_slot == engine_slot:
-                    continue              # the real engine owns its speed
-                if in_slot in raw_slip:
-                    # THE FILTER'S OUTPUT IS NOT ITS INPUT.
-                    # `slip_longitudinal` is a raw MEASUREMENT the law
-                    # runs through a second-order sensor;
-                    # `slip_longitudinal_next` is the filtered result and
-                    # `previous_slip_longitudinal` is where it belongs.
-                    # Carried back onto the raw port it closes a loop with
-                    # no source, decays to zero and stays there -- which
-                    # reads exactly like a tire with no grip.
-                    continue
-                self.columns[in_slot] = result[out_slot]
+            self.vehicle.run()
+            force, torque, area = self.contact_wrench(step_dt)
+            for axis, letter in enumerate("xyz"):
+                self.column(f"contact_wrench_force_{letter}")[:] = force[:, axis]
+                self.column(f"contact_wrench_torque_{letter}")[:] = torque[:, axis]
+            self.vehicle.run()
+            self.carry()
             for wheel in WHEEL_NAMES:
-                self.put(f"previous_slip_longitudinal_{wheel}",
-                         self.got(result, f"slip_longitudinal_{wheel}_next"))
-            self.last["contact_force_y"] = force[1]
-            self.last["compression_m"] = min(self.wheel_compressions(result))
-        result = self.run_vehicle()
-        force, torque, area = self.contact_wrench(result, step_dt)
-        self.last = {
-            "clutch_torque_nm": self.got(result, "clutch_torque"),
-            "driveline_torque_nm": self.got(result, "driveline_torque"),
-            "x": self.got(result, "position_x_next"),
-            "z": self.got(result, "position_z_next"),
-            "speed_x": self.got(result, "velocity_x_next"),
-            "speed_z": self.got(result, "velocity_z_next"),
-            "wheel_omega": self.got(result, "wheel_omega_rear_left_next"),
-            "contact_force_x": force[0],
-            "contact_force_y": force[1],
-            "patch_cm2": area * 1e4,
-            "compression_m": min(self.wheel_compressions(result)),
-            "limit_ms": self.limit_s * 1e3,
-            "substeps": float(self.substeps),
-        }
+                self.column(f"previous_slip_longitudinal_{wheel}")[:] = np.asarray(
+                    self.out(f"slip_longitudinal_{wheel}_next"))
+            for craft in self.craft.values():
+                craft.last["contact_force_y"] = float(force[craft.row, 1])
+                craft.last["compression_m"] = self.lowest_compression(craft)
+
+        self.vehicle.run()
+        force, torque, area = self.contact_wrench(step_dt)
+        for name, craft in self.craft.items():
+            craft.last = {
+                "clutch_torque_nm": self.got("clutch_torque", craft.row),
+                "driveline_torque_nm": self.got("driveline_torque", craft.row),
+                "x": self.got("position_x_next", craft.row),
+                "z": self.got("position_z_next", craft.row),
+                "speed_x": self.got("velocity_x_next", craft.row),
+                "speed_z": self.got("velocity_z_next", craft.row),
+                "wheel_omega": self.got("wheel_omega_rear_left_next", craft.row),
+                "contact_force_x": float(force[craft.row, 0]),
+                "contact_force_y": float(force[craft.row, 1]),
+                "patch_cm2": float(area[craft.row]) * 1e4,
+                "compression_m": self.lowest_compression(craft),
+                "limit_ms": craft.limit_s * 1e3,
+                "substeps": float(self.substeps),
+            }
         self.wall_s += time.perf_counter() - started
         self.world_s += dt
-        self.law_calls += self.vehicle.calls + self.contact.calls - before
         self.calls += 1
-        return self.last
+        return {name: craft.last for name, craft in self.craft.items()}
+
+    def last(self, name: str) -> dict:
+        return self.craft[name].last
 
 
 def build_graphs(names: list[str]):
-    """One compile, shared by every craft: the law is the same law.
+    """One kernel per law for the WHOLE fleet: the law is the same law.
 
-    Shared all the way down to the kernel's own buffers, which is safe
-    only because a call writes every input before it runs -- see
-    `NativeLaw.write`. Two craft taking turns in one set of buffers is
-    otherwise exactly the kind of quiet cross-talk that reads as physics.
+    The batch axis is the fleet -- one row per craft for the body, one
+    per wheel of per craft for the contact law -- so a tick is two kernel
+    calls however many craft there are, instead of two per craft plus one
+    per wheel.
+
+    The producers are passed UNCALLED. Calling one builds the thing the
+    kernel cache exists to avoid building: even a HIT on the repository's
+    symbolic cache costs 19.6 s for the contact law and 95.2 s for the
+    body, of cloudpickle alone.
     """
-    # THE PRODUCERS, NOT THEIR RESULTS. Calling them here would build the
-    # very thing the emission cache exists to avoid building: a hit on the
-    # repository's symbolic cache still costs 115 s of cloudpickle for
-    # these two laws, and none of it is needed once the kernel exists.
-    vehicle = NativeLaw.build(compile_symbolic_vehicle_physics,
-                              "abstract_ui_vehicle_step")
-    contact = NativeLaw.build(compile_wheel_contact_ssa,
-                              "abstract_ui_wheel_contact")
-    vehicle_names = list(vehicle.input_names)
-    vehicle_outputs = list(vehicle.output_names)
-    contact_names = list(contact.input_names)
-    inputs = dict(vehicle.input_slot)
-    outputs = dict(vehicle.output_slot)
-    feedback = [(slot, inputs[name[:-5]])
-                for slot, name in enumerate(vehicle_outputs)
-                if name.endswith("_next") and name[:-5] in inputs]
+    fleet_size = len(names)
+    vehicle = build_law(compile_symbolic_vehicle_physics,
+                        "abstract_ui_vehicle_step", batch=fleet_size)
+    contact = build_law(compile_wheel_contact_ssa,
+                        "abstract_ui_wheel_contact",
+                        batch=fleet_size * len(WHEEL_NAMES))
+
+    produced = set(vehicle.output_names)
+    feedback = [(name, name[:-5]) for name in vehicle.output_names
+                if name.endswith("_next") and name[:-5] in vehicle.columns
+                # the real engine owns its speed, and a filter's output is
+                # not its input: `slip_longitudinal_next` is the FILTERED
+                # measurement and belongs on `previous_slip_longitudinal`.
+                # Carried onto the raw port it closes a loop with no
+                # source, decays to zero, and reads exactly like a tire
+                # with no grip.
+                and name[:-5] != "engine_angular_speed"
+                and not name[:-5].startswith("slip_longitudinal_")]
+    _ = produced
 
     parameters = craft_parameters()
-    mass_kg = float(parameters['_total_mass_kg'])
+    mass_kg = float(parameters["_total_mass_kg"])
     defaults = basic_craft_defaults(load_default_car_configuration())
-    contact_slot = dict(contact.input_slot)
-    rest = np.zeros(len(contact_names))
-    for key, value in defaults.items():
-        if key in contact_slot:
-            rest[contact_slot[key]] = float(value)
 
-    graphs = {}
-    for lane, name in enumerate(names):
-        values = {key: 0.0 for key in vehicle_names}
-        for key, value in parameters.items():
-            if key in values:
-                values[key] = float(value)
-        graph = VehicleGraph(
-            name=name, mass_kg=mass_kg, values=values,
-            columns=np.array([values[key] for key in vehicle_names]),
-            feedback=feedback, inputs=inputs, outputs=outputs,
-            vehicle=vehicle, contact=contact, contact_names=contact_names,
-            contact_defaults=defaults, contact_row=rest.copy(),
-            contact_rest=rest, contact_slot=contact_slot,
-            contact_out=np.empty(len(contact.output_names)))
-        # EACH CRAFT IN ITS OWN LANE. They start superimposed otherwise,
-        # and since the body law has no steering port they can only ever
-        # separate by speed -- so for a long stretch there is visibly one
-        # craft on screen and the other is underneath it.
-        graph.put("position_z", 4.0 * lane)
-        graph.values["position_z"] = 4.0 * lane
-        graph.settle_on_its_tires()
-        graphs[name] = graph
-    return graphs, len(vehicle_names), len(contact_names), len(feedback)
+    fleet = CraftFleet(
+        craft={name: Craft(name=name, row=row) for row, name in enumerate(names)},
+        vehicle=vehicle, contact=contact, feedback=feedback,
+        contact_defaults=defaults, mass_kg=mass_kg, values=dict(parameters))
+    fleet.craft_by_row = {craft.row: craft for craft in fleet.craft.values()}
+
+    for key, value in parameters.items():
+        if key in vehicle.columns:
+            vehicle.put(key, float(value))
+    # EACH CRAFT IN ITS OWN LANE. They start superimposed otherwise, and
+    # a craft with no steering hardware -- no rack, no knuckles, no tie
+    # rods -- can only ever separate by speed, so for a long stretch
+    # there is visibly one craft on screen and the other underneath it.
+    for craft in fleet.craft.values():
+        fleet.put("position_z", 4.0 * craft.row, craft.row)
+    fleet.settle_on_its_tires()
+    return (fleet, len(vehicle.input_names), len(contact.input_names),
+            len(feedback))

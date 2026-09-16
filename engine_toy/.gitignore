@@ -5,3 +5,5 @@ __pycache__/
 build/
 repo-cache/
 _tmp_test_mesh.obj
+time_trials/generated_ssa_helpers.py
+time_trials/ssa_helper_metadata.json

@@ -63,7 +63,7 @@ from craft_graph import EngineBatch, build_graphs, FLOOR_S     # noqa: E402
 from time_allocator import derive_dt_limit_s                   # noqa: E402
 
 
-def profile(batch, graphs, *, frames: int, dt: float) -> dict:
+def profile(batch, fleet, *, frames: int, dt: float) -> dict:
     """Run the real loop and keep the ledgers the subsystems keep.
 
     The loop is the game's loop, unchanged. A profiler that runs a
@@ -72,25 +72,22 @@ def profile(batch, graphs, *, frames: int, dt: float) -> dict:
     """
     for engine in (r.engine for r in batch.registrations):
         engine.reset_ledger()
-    for graph in graphs.values():
-        graph.reset_ledger()
-    laws = {"vehicle body": next(iter(graphs.values())).vehicle,
-            "wheel contact": next(iter(graphs.values())).contact}
-    for law in laws.values():
-        law.reset_ledger()
+    fleet.reset_ledger()
+    laws = {"vehicle body": fleet.vehicle, "wheel contact": fleet.contact}
 
+    names = list(fleet.craft)
+    throttle = {name: 0.9 for name in names}
     started = time.perf_counter()
     for _ in range(frames):
         batch.step(dt)
-        for name, graph in graphs.items():
-            omega, _torque = batch.exterior(name)
-            graph.step(dt, shaft_omega=omega, throttle=0.9, steer=0.0)
+        fleet.step(dt, shaft_omega={n: batch.exterior(n)[0] for n in names},
+                   throttle=throttle)
     wall = time.perf_counter() - started
     return {"wall_s": wall, "world_s": frames * dt, "frames": frames,
             "dt": dt, "laws": laws}
 
 
-def report(batch, graphs, run: dict) -> str:
+def report(batch, fleet, run: dict) -> str:
     wall, world = run["wall_s"], run["world_s"]
     frames, dt = run["frames"], run["dt"]
     lines = []
@@ -112,8 +109,7 @@ def report(batch, graphs, run: dict) -> str:
         engine = registration.engine
         rows.append((registration.name, engine.wall_s, engine.calls,
                      engine.tau))
-    for name, graph in graphs.items():
-        rows.append((f"{name}.body", graph.wall_s, graph.calls, graph.tau))
+    rows.append(("all bodies (one batch)", fleet.wall_s, fleet.calls, fleet.tau))
     accounted = sum(row[1] for row in rows)
     for name, seconds, calls, tau in sorted(rows, key=lambda r: -r[1]):
         lines.append(f"  {name:<26}{seconds / frames * 1e3:>10.4f}"
@@ -141,9 +137,9 @@ def report(batch, graphs, run: dict) -> str:
         limit = derive_dt_limit_s(sim.engine)
         if limit:
             floors.append((f"{name}.engine", limit))
-    for name, graph in graphs.items():
-        if graph.limit_s < float("inf"):
-            floors.append((f"{name}.contact", graph.limit_s))
+    for name, craft in fleet.craft.items():
+        if craft.limit_s < float("inf"):
+            floors.append((f"{name}.contact", craft.limit_s))
     for name, limit in sorted(floors, key=lambda f: f[1]):
         need = max(1, int(-(-dt // limit)))
         lines.append(f"  {name:<26}{limit * 1e3:>10.4f}{need:>16}")
@@ -187,7 +183,7 @@ def main(argv=None) -> None:
              "coupe": "vw-vr6-2800-12v"}
     started = time.perf_counter()
     batch = EngineBatch.build(craft)
-    graphs, n_in, n_contact, n_carry = build_graphs(list(craft))
+    fleet, n_in, n_contact, n_carry = build_graphs(list(craft))
     print(f"built in {time.perf_counter() - started:.1f}s  "
           f"({n_in} body inputs, {n_contact} contact inputs, "
           f"{n_carry} carried)")
@@ -196,9 +192,9 @@ def main(argv=None) -> None:
     # A settling pass first: the first frames pay for page faults, lazy
     # imports and a cold branch predictor, and reporting those as the
     # cost of a subsystem is a lie about the steady state.
-    profile(batch, graphs, frames=20, dt=dt)
-    run = profile(batch, graphs, frames=args.frames, dt=dt)
-    print(report(batch, graphs, run))
+    profile(batch, fleet, frames=20, dt=dt)
+    run = profile(batch, fleet, frames=args.frames, dt=dt)
+    print(report(batch, fleet, run))
 
 
 if __name__ == "__main__":

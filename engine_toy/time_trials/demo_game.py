@@ -31,7 +31,7 @@ import time
 from craft_graph import (EngineBatch, build_graphs, FLOOR_S, WHEEL_NAMES)
 
 
-def frame(batch, graph, dt, throttle, shaft_omega):
+def frame(batch, fleet, dt, throttle, shaft_omega):
     """One tick of the game, with the objects arriving as PARAMETERS.
 
     A record declaration alone does not clear `opaque-state-effect`: a
@@ -44,8 +44,8 @@ def frame(batch, graph, dt, throttle, shaft_omega):
     This is the same work, shaped so it can be bound.
     """
     batch.step(dt)
-    graph.step(dt, shaft_omega=shaft_omega, throttle=throttle, steer=0.0)
-    return graph.last
+    fleet.step(dt, shaft_omega=shaft_omega, throttle=throttle)
+    return fleet.craft
 
 
 def main(argv=None) -> None:
@@ -64,7 +64,7 @@ def main(argv=None) -> None:
 
     started = time.perf_counter()
     batch = EngineBatch.build(craft)
-    graphs, n_in, n_contact, n_carry = build_graphs(list(craft))
+    fleet, n_in, n_contact, n_carry = build_graphs(list(craft))
     print(f"built in {time.perf_counter() - started:.1f}s")
     print(f"   engine batch : {len(batch.sims)} sims in one dt round")
     for name, limit in batch.dt_limits().items():
@@ -73,17 +73,18 @@ def main(argv=None) -> None:
     print(f"   vehicle graph: {n_in} inputs, {n_contact} contact inputs, "
           f"{n_carry} carried states, one per craft")
     print(f"   static tire deflection "
-          f"{graphs[list(craft)[0]].static_deflection_m * 1000:.2f} mm\n")
+          f"{fleet.craft[list(craft)[0]].static_deflection_m * 1000:.2f} mm\n")
 
     dt = FLOOR_S * args.window
+    names = list(craft)
+    throttle = {name: args.throttle for name in names}
     for frame in range(args.frames):
         batch.step(dt)
-        for name, graph in graphs.items():
-            omega, _torque = batch.exterior(name)
-            graph.step(dt, shaft_omega=omega, throttle=args.throttle, steer=0.0)
+        fleet.step(dt, shaft_omega={n: batch.exterior(n)[0] for n in names},
+                   throttle=throttle)
         if frame % max(args.frames // 6, 1) == 0:
-            for name, graph in graphs.items():
-                row = graph.last
+            for name in names:
+                row = fleet.last(name)
                 print(f"   f{frame:4d} {name:<9} rpm "
                       f"{float(batch.sims[name].rpm or 0.0):7.1f}"
                       f"  clutch {row['clutch_torque_nm']:8.1f} Nm"
@@ -92,8 +93,8 @@ def main(argv=None) -> None:
                       f"  patch {row['patch_cm2']:6.1f} cm2"
                       f"  x {row['x']:8.3f} m")
     print(f"\nworld {args.frames * dt:.3f} s")
-    for name, graph in graphs.items():
-        row = graph.last
+    for name in names:
+        row = fleet.last(name)
         print(f"   {name:<10} x {row['x']:9.3f} m  z {row['z']:8.3f} m"
               f"  speed {row['speed_x']:7.3f} m/s"
               f"  rpm {float(batch.sims[name].rpm or 0.0):7.1f}")

@@ -109,7 +109,7 @@ def main(argv=None) -> None:
 
     started = time.perf_counter()
     batch = CG.EngineBatch.build(CRAFT)
-    graphs, n_in, n_contact, n_carry = CG.build_graphs(list(CRAFT))
+    fleet, n_in, n_contact, n_carry = CG.build_graphs(list(CRAFT))
     build_seconds = time.perf_counter() - started
     names = list(CRAFT)
 
@@ -158,7 +158,7 @@ def main(argv=None) -> None:
 
     def snapshot(name):
         row = blank_row()
-        row.update(graphs[name].last or {})
+        row.update(fleet.craft[name].last or {})
         return row
 
     published = {"rows": [snapshot(n) for n in names],
@@ -166,17 +166,21 @@ def main(argv=None) -> None:
     lock = threading.Lock()
     stop = threading.Event()
 
+    # one throttle per craft, so the second one trails and the two
+    # actually separate -- the body law has no steering hardware to
+    # separate them any other way.
+    throttle = {name: args.throttle * (1.0 if index == 0 else 0.55)
+                for index, name in enumerate(names)}
+
     def simulate():
         world = 0.0
         count = 0
         while not stop.is_set():
             started_frame = time.perf_counter()
             batch.step(dt)
-            for index, name in enumerate(names):
-                omega, _torque = batch.exterior(name)
-                throttle = args.throttle * (1.0 if index == 0 else 0.55)
-                graphs[name].step(dt, shaft_omega=omega,
-                                  throttle=throttle, steer=0.0)
+            fleet.step(dt,
+                       shaft_omega={n: batch.exterior(n)[0] for n in names},
+                       throttle=throttle)
             world += dt
             count += 1
             with lock:
