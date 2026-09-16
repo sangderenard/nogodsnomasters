@@ -108,38 +108,69 @@ the refusal, materialises nothing, and yields an empty body reported with
 zero shortfalls. A complaint now reports that case rather than leaving it
 silent.
 
-## The other blocker, which is separate
+## The other blocker, which is separate -- now closed
 
-The vehicle body will not lower through the batched route. Emission
-refuses because the call selects 144 aggregate positions while the callee
-produces 143. The region call is emitted at
-`src/compiler/precompile_to_ssa.py` around line 2930 carrying
-`output_ids` but no `output_slots`. The branch in
-`src/compiler/ssa_llvm_backend.py` around line 2874 resolves exactly this
-mismatch by mapping declared positions onto callee output indices, and it
-is reachable only when that attribute is present. The site that populates
-it correctly is `fortran_c_shell.py` around line 27570, whose own comment
-warns that caller and callee identifiers occupy independent numbering
-domains and must not be matched by value.
+The vehicle body would not lower through the batched route because
+emission refused a call that selected 144 aggregate positions while the
+callee produced 143. This is fixed in turing at `31329aa9`, and the
+mechanism was traced on a five-line source in seconds rather than argued
+from the body:
 
-Do not assume the cause is the one constant in the law's return. That was
-my inference and it does not survive testing: five small reproductions
-containing a literal, a pass-through parameter, a shared temporary and
-combinations of them all emit cleanly with no mismatch. Whatever produces
-the mismatch requires something those lack, most plausibly output count
-or the presence of several planned regions.
+    def tick(p0, p1, p2, p3):
+        z = 0
+        t0 = p0 * p1
+        t1 = t0 + z
+        return t0, t1, z
+
+The planner is correct: a canonical literal is control-owned, so every
+region's rematerialised copy stays private and the region publishes the
+computed outputs only. The control lowerer's `finish` in
+`src/compiler/precompile_to_ssa.py` then found no value for the returned
+literal -- no region publishes it, nothing had materialised it -- and
+dropped it from the Ret silently. The call-frame projection pass in
+`fortran_c_shell.py` around line 16400 later saw the authored output
+still missing, found the callee's private `Const` by id, and appended
+that id to the region call's declared `output_ids` after the callee's
+Ret was already fixed. The planner sorts its outputs and the pass
+appends, which is exactly why the body's declared list ascended through
+1933..4332 and ended on 349, the literal `t109 = 0`'s own id. Only two
+sites in the tree write `output_ids` on a region call; the other, in
+`ssa_call_input_adapters.py`, renames an id already present and cannot
+lengthen the list.
+
+The earlier reproductions emitted clean because a literal that is only
+returned takes a different path (it was already a provisional formal and
+the late literal recovery turned it into a `Const`). The literal has to be
+consumed inside a region as well. Measured while pinning this: literal
+occurrences do not pool -- `z = 0` and an inline `0` are two canonical
+ids, and a region owns only the copy it uses. So the body's `t109` must be
+consumed by name inside a region of its stage; that is the only way the
+projection pass can find id 349 in a callee.
+
+`finish` now resolves an authored output whose identity is a canonical
+literal through `external_value`, the provisional formal that
+`_materialize_control_constants` turns into the function's own `Const` --
+the rule a folded `flag = True; break` already followed on its break
+edge. The region call then declares exactly what the callee returns.
+Because the entry now exposes that output as a rank-0 buffer,
+`native_law_kernels._lower_law` serves any literal-bound output as a
+constant column whether or not `named_outputs` lists it; a per-row reader
+would otherwise index past a one-cell buffer. Pinned in
+`tests/test_control_returns_owned_literal.py` for all three shapes.
+
+What is not yet verified is the body lowering itself. That needs the
+batched route run on the real law, and the compiler edit has invalidated
+the kernel cache keyed on the lowering pipeline digest, so the next start
+of `time_trials` rebuilds it. Expect the shortfall to be gone; if a
+different shortfall appears, it is a different defect and this document
+should say so rather than absorb it.
 
 ## The plan
 
-Work the aggregate mismatch first, because it is the one that unblocks a
-measurable regression, and work it by bisection rather than by argument.
-Grow a synthetic case toward the real one along output count and region
-count. Each iteration costs seconds where the real build costs half an
-hour, and the amended diagnostic will name what is missing once it
-reproduces. If it does not reproduce even at the body's shape, that is
-itself informative and points at the class-surface path instead.
+The aggregate mismatch is closed above; the bisection took the axis
+"literal consumed inside the region", not output count or region count.
 
-Then take the class identity gap. The question is now specific: a
+Take the class identity gap. The question is now specific: a
 receiver acquires `class_ref` somewhere, and `self.ordnance` does not get
 one even though `self.ordnance = OrdnanceField()` appears in the same
 file the compiler is reading. Find where that resolution happens and why
