@@ -167,10 +167,26 @@ def volumetric_efficiency(engine, rpm: float) -> float:
         redline = max(1.0, float(getattr(engine, "redline_rpm", 4000.0)))
         f = max(0.0, min(1.0, rpm / redline))
         if getattr(fi, "kind") == "supercharger":
-            ramp = min(1.0, f / 0.85)          # geared to the crank
+            # RPM CANCELS. A positive-displacement blower is geared to
+            # the crank, so rotor speed and engine speed rise together
+            # and the ratio of displacements -- which is what sets the
+            # pressure ratio -- does not change with speed. A Roots or
+            # screw blower makes very nearly the same boost everywhere,
+            # which is the entire reason people fit them.
+            #
+            # engine_cycle_sim._step_forced_induction already says this
+            # explicitly and solves it properly, through a real belt
+            # with stiffness and damping so the boost LAGS rather than
+            # tracking rpm instantly. A ramp here was not a
+            # simplification of that, it was a contradiction of it.
+            ramp = 1.0
         else:
-            ramp = min(1.0, (f / 0.55) ** 2)   # exhaust-driven, comes on hard
-        ve *= 1.0 + ceiling * ramp
+            # a turbo is driven by exhaust energy, which rises far
+            # faster than linearly, so it makes almost nothing low down
+            # and then arrives all at once
+            ramp = min(1.0, (f / 0.55) ** 2)
+        boost_applied = ceiling * ramp
+        ve *= 1.0 + boost_applied
     return max(0.05, ve)
 
 
@@ -198,6 +214,11 @@ def derive(engine, rpm: float) -> DerivedPoint:
 
     ve = volumetric_efficiency(engine, rpm)
     air = ve * disp_m3 * AIR_DENSITY_KG_M3
+    fi = getattr(engine, "forced_induction", None)
+    boost_applied = 0.0
+    if fi is not None and getattr(fi, "kind", None) == "supercharger":
+        ceiling = max(0.0, float(getattr(fi, "max_boost_frac", 0.0) or 0.0))
+        boost_applied = ceiling
     afr = float(getattr(fuel, "stoich_afr", 14.7) or 14.7)
     # a diesel runs lean at anything but full fuelling; a petrol engine
     # at wide-open throttle runs slightly RICH for power, which is why
@@ -228,7 +249,30 @@ def derive(engine, rpm: float) -> DerivedPoint:
     imep = heat * eta / max(1e-9, disp_m3)
     sp = 2.0 * arch.stroke_m * max(0.0, rpm) / 60.0
     fmep = friction_mep_pa(sp, peak_pressure_pa=imep * 1.8, diesel=diesel)
-    bmep = max(0.0, imep - fmep)
+    # A BLOWER HAS TO BE DRIVEN, and on a heavily supercharged engine
+    # that is not a rounding error. Compressing the charge is real work
+    # taken off the crank before anything reaches the propeller:
+    #
+    #     w = cp . T_in . (PR^((g-1)/g) - 1) / eta
+    #
+    # per kilogram of air, and a two-stage wartime aero engine can be
+    # spending a sixth of its own output this way. Derived from the
+    # boost and the air mass already computed rather than absorbed into
+    # a realisation factor -- which is what the era factor was silently
+    # doing, and why applying full boost made the radials read high.
+    #
+    # A turbo pays for its drive differently, in exhaust back-pressure
+    # rather than shaft work, and that is already carried by the
+    # exhaust system's own restriction. Only the belt-driven case is
+    # charged here.
+    pump_mep = 0.0
+    if fi is not None and getattr(fi, "kind", None) == "supercharger":
+        pr = 1.0 + boost_applied
+        if pr > 1.001:
+            work_per_kg = (1005.0 * 288.0
+                           * (pr ** ((1.4 - 1.0) / 1.4) - 1.0) / 0.68)
+            pump_mep = air * work_per_kg / max(1e-9, disp_m3)
+    bmep = max(0.0, imep - fmep - pump_mep)
     span = (2.0 if two_stroke else 4.0) * math.pi
     torque = bmep * disp_m3 / span
     return DerivedPoint(rpm=rpm, ve=ve, air_kg_per_cycle=air,
