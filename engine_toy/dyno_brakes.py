@@ -233,18 +233,30 @@ class WaterBrake(Absorber):
         return self.water_outlet_k(power_w) >= self.water_boiling_k
 
 
-def for_engine(engine, kind: str = "eddy-current") -> Absorber:
+def for_engine(engine, kind: str = "eddy-current",
+               gear_ratio: float = 1.0) -> Absorber:
     """An absorber actually sized to this engine, from the engine's own
     declared envelope rather than from a catalogue of rigs.
+
+    gear_ratio IS NOT OPTIONAL IN PRACTICE, only in the signature. An
+    absorber coupled through a gearbox sees the engine's torque
+    MULTIPLIED by the overall ratio and its speed DIVIDED by it -- on
+    the AMC in fourth that is 3.84, so a brake sized for 421 Nm at the
+    crank is asked for 1600 Nm at the drum and saturates at every point
+    in the sweep. Sizing it at the crank and then using it at the drum
+    is the same class of error as comparing a drum torque reading
+    against a catalogue crank figure.
 
     The sizing rule is the same for both and it is not arbitrary: the
     brake must hold the engine's peak torque at the speed the engine
     makes it, with margin, or the cell cannot measure its own subject.
     Where the two differ is what that requirement implies about the rest
     of the range, which is the entire point of having both."""
-    peak_nm = float(getattr(engine, "peak_torque_nm", 0.0) or 0.0)
-    tpeak_rpm = float(getattr(engine, "torque_peak_rpm", 0.0) or 0.0)
-    redline = float(getattr(engine, "redline_rpm", 0.0) or 0.0)
+    g = max(float(gear_ratio), 1e-6)
+    # torque up, speed down, exactly as the gearing does it
+    peak_nm = float(getattr(engine, "peak_torque_nm", 0.0) or 0.0) * g
+    tpeak_rpm = float(getattr(engine, "torque_peak_rpm", 0.0) or 0.0) / g
+    redline = float(getattr(engine, "redline_rpm", 0.0) or 0.0) / g
     margin = 1.5   # a cell is built with headroom; a brake at its own limit cannot control
     if kind == "eddy-current":
         # Put the critical speed AT the engine's torque peak, which is

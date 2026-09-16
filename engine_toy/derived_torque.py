@@ -146,7 +146,7 @@ def volumetric_efficiency(engine, rpm: float) -> float:
     # resonance gain AND the exhaust scavenging assist gave every
     # naturally-aspirated engine a VE around 1.45, which no
     # naturally-aspirated engine has ever achieved.
-    ve = ports.volumetric_efficiency(rpm) * (0.88 if n_valves >= 4 else 0.82)
+    ve = port_limited_ve(ports, n_valves, rpm)
     fpr = engine.firing_events_per_rev()
     try:
         ve *= engine.intake_system.resonance_gain(rpm, fpr)
@@ -235,6 +235,27 @@ def volumetric_efficiency(engine, rpm: float) -> float:
         boost_applied = ceiling * ramp
         ve *= 1.0 + boost_applied
     return max(0.05, ve)
+
+
+def port_limited_ve(ports, n_valves: int, rpm: float) -> float:
+    """The project's ONE definition of volumetric efficiency.
+
+    port_flow.PortSet.volumetric_efficiency is NOT this. It returns the
+    port CHOKE fraction -- 1.0 meaning "not choked" -- so reading it as
+    volumetric efficiency reports 1.00 for any engine below its choke
+    rpm, which is nearly all of them nearly all of the time. A dyno
+    profile printed exactly that before this function existed.
+
+    Real VE is that choke fraction times what a head of this
+    construction achieves when it is NOT choked: no engine fills its
+    cylinder completely at atmospheric pressure, because overlap blows
+    some charge back out, residual burnt gas takes up room, and the
+    port heats the incoming air. Two-valve heads land near 0.82 and
+    four-valve near 0.88 at their best.
+
+    Exposed rather than left inline so that anything reporting a VE
+    reports the same one this derivation uses."""
+    return ports.volumetric_efficiency(rpm) * (0.88 if n_valves >= 4 else 0.82)
 
 
 def derive(engine, rpm: float) -> DerivedPoint:

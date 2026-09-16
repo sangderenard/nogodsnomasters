@@ -299,6 +299,14 @@ class StartingSystem:
         #: away. Never repairs itself; a real ring gear is replaced.
         self.ring_gear_damage = 0.0
         self.grinding = False
+        #: The mismatch AT THE MOMENT OF ENGAGEMENT, which is the only
+        #: moment it exists. Once the pinion is in mesh it turns with
+        #: the ring gear by definition, so a starter engaged correctly
+        #: from rest never grinds no matter how fast the engine then
+        #: spins up. Evaluating the mismatch every tick instead made a
+        #: perfectly normal start destroy 18% of the ring gear on the
+        #: way to idle, which is how this was found.
+        self._engaged_mismatch = 0.0
         self._flywheel_omega = 0.0
         self._flywheel_energy_j = 0.0
         self._rope_left_s = 0.0
@@ -388,7 +396,12 @@ class StartingSystem:
             # current, still makes its torque, and none of it reaches
             # the crank. That is the whole character of the fault --
             # loud, expensive, and completely ineffective.
-            mismatch = self.mesh_speed_mismatch(rpm)
+            # latched at engagement, not re-read every tick: see
+            # _engaged_mismatch. The first step after engage() IS the
+            # moment the solenoid throws the pinion.
+            if self.timer_s <= dt * 1.5:
+                self._engaged_mismatch = self.mesh_speed_mismatch(rpm)
+            mismatch = self._engaged_mismatch
             self.grinding = mismatch > 0.0
             if self.grinding:
                 # a partial mesh at the margin still bites a little; far

@@ -213,17 +213,67 @@ class Lubrication:
         return self.contact_frac > 0.0
 
 
+def entrained_film_m(viscosity_pa_s: float, sliding_speed_m_s: float,
+                     normal_force_n: float, bore_m: float, stroke_m: float) -> float:
+    """The hydrodynamic film the motion itself generates.
+
+    A sliding contact does not float on whatever oil happens to be
+    lying about -- it floats on oil it DRAGS IN, and the film thickness
+    follows the classic Reynolds-wedge grouping: it rises with viscosity
+    and speed and falls with load,
+
+        h  ~  k . sqrt(mu . U / P)
+
+    with P the load per unit contact area. Stop the engine and the film
+    goes to zero no matter how full the sump is, which is exactly right
+    and is why every start is a boundary-lubrication event.
+
+    WHY THIS IS NOT crankcase_state.film_kg. That quantity is the splash
+    film available for the rings to SCRAPE AND BURN -- it is the
+    engine's oil consumption, by its own docstring. Reading it as the
+    hydrodynamic film says a healthy engine at load runs in boundary
+    contact, because the film that survives scraping is thin by
+    definition. The two are related but they are not the same number:
+    the splash film is the SUPPLY, and entrainment is what the supply
+    gets turned into. See `lubrication`, which uses each for its own
+    job."""
+    contact_area = max(math.pi * bore_m * 0.02, 1e-6)   # ring pack land, real order
+    pressure = max(normal_force_n, 1e-9) / contact_area
+    if pressure <= 0.0 or sliding_speed_m_s <= 0.0:
+        return 0.0
+    return 2.3e-3 * math.sqrt(max(viscosity_pa_s, 1e-9)
+                              * max(sliding_speed_m_s, 0.0) / pressure)
+
+
 def lubrication(film_kg: float, bore_m: float, stroke_m: float,
                 normal_force_n: float, sliding_speed_m_s: float,
-                roughness_m: float = SURFACE_ROUGHNESS_COMBINED_M) -> Lubrication:
+                roughness_m: float = SURFACE_ROUGHNESS_COMBINED_M,
+                oil_temp_k: float = 363.15) -> Lubrication:
     """The Stribeck question, answered for one bore.
 
-    film_kg comes straight from crankcase_state, which is already
-    integrating it against splash, ring scrape and burn-off. This turns
-    that mass into the thing that decides whether the engine survives:
-    a thickness, compared against how rough the surfaces are."""
+    TWO DIFFERENT ROLES FOR TWO DIFFERENT QUANTITIES, which is the whole
+    correction here:
+
+      entrainment decides how thick the film COULD be -- viscosity at
+          this oil temperature, sliding speed, and load.
+      film_kg decides whether there is enough oil to make it. A bore
+          with nothing on it cannot float on anything, however fast it
+          is moving, so the splash film from crankcase_state acts as a
+          SUPPLY CEILING rather than as the film itself.
+
+    The engine is starved when the supply runs out and hydrodynamic when
+    both are satisfied, which is the real relationship."""
+    mu = oil_viscosity_pa_s(oil_temp_k)
+    h_possible = entrained_film_m(mu, sliding_speed_m_s, normal_force_n,
+                                  bore_m, stroke_m)
+    # what the supply can actually spread over the swept wall
     area = math.pi * max(bore_m, 1e-6) * max(stroke_m, 1e-6)
-    h = max(0.0, float(film_kg)) / (OIL_DENSITY_KG_M3 * area)
+    h_supply = max(0.0, float(film_kg)) / (OIL_DENSITY_KG_M3 * area)
+    # the ring pack concentrates the swept-wall film into its own much
+    # smaller land, so the supply available at the contact is richer
+    # than the bore average by that area ratio
+    h_supply *= max(1.0, stroke_m / 0.02)
+    h = min(h_possible, h_supply)
     sigma = max(roughness_m, 1e-12)
     lam = h / sigma
     if lam >= LAMBDA_FULL_FILM:
