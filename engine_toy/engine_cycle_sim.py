@@ -986,6 +986,10 @@ class EngineCycleSim:
         self._intake_supply_pressure_pa = 101_325.0
         self._intake_demand_kg_s = 0.0
         self._fuel_demand_kg_s = 0.0
+        #: how full the cylinder actually gets, relative to the
+        #: displacement demand at this MAP -- the breathing terms
+        #: the demand omits. 1.0 until the first tick solves it.
+        self._charge_fill_frac = 1.0
         self._fuel_cooling_kw = 0.0
         self._auxiliary_injection_cooling_kw = 0.0
         self._fuel_starvation_frac = 1.0
@@ -2546,6 +2550,10 @@ class EngineCycleSim:
         self._intake_supply_pressure_pa = 101_325.0
         self._intake_demand_kg_s = 0.0
         self._fuel_demand_kg_s = 0.0
+        #: how full the cylinder actually gets, relative to the
+        #: displacement demand at this MAP -- the breathing terms
+        #: the demand omits. 1.0 until the first tick solves it.
+        self._charge_fill_frac = 1.0
         self._fuel_cooling_kw = 0.0
         self._auxiliary_injection_cooling_kw = 0.0
         self._fuel_starvation_frac = 1.0
@@ -2700,6 +2708,10 @@ class EngineCycleSim:
         self._intake_supply_pressure_pa = 101_325.0
         self._intake_demand_kg_s = 0.0
         self._fuel_demand_kg_s = 0.0
+        #: how full the cylinder actually gets, relative to the
+        #: displacement demand at this MAP -- the breathing terms
+        #: the demand omits. 1.0 until the first tick solves it.
+        self._charge_fill_frac = 1.0
         self._fuel_cooling_kw = 0.0
         self._auxiliary_injection_cooling_kw = 0.0
         self._fuel_starvation_frac = 1.0
@@ -2750,6 +2762,42 @@ class EngineCycleSim:
     @property
     def power_kw(self) -> float:
         return self.state.power_kw
+
+    def _combustion_efficiency_now(self) -> float:
+        """How completely the charge burns AT THIS MIXTURE.
+
+        The engine's declared combustion_efficiency is a calibrated
+        figure for that engine at stoichiometric, and it stays exactly
+        that: this returns it unchanged at phi = 1.0, so no engine in
+        the catalogue moves at its own calibration point.
+
+        What it adds is the MIXTURE DEPENDENCE, which the sim had none
+        of -- combustion efficiency was a constant no matter how rich
+        the engine ran. Past stoichiometric there is not enough oxygen
+        to burn all the fuel and at most 1/phi of it can react, which is
+        real stoichiometry and the dominant term by far: at phi 1.25 a
+        fifth of the fuel has nothing to react with. That is also why
+        enrichment makes MORE power (it burns all the available AIR,
+        which is the actually limited quantity) while making specific
+        consumption worse, and the sim could not previously express
+        either half of that.
+
+        combustion_efficiency.completeness supplies the ratio; see its
+        module docstring for the crevice and wall-quench terms, and for
+        why the derived absolute value is NOT substituted here -- it
+        disagrees with the declaration by 78% on the hit-and-miss, whose
+        real losses are mixture preparation and are not modelled."""
+        declared = float(getattr(self.engine, "combustion_efficiency", 0.85) or 0.85)
+        try:
+            import combustion_efficiency as _ce
+            phi = float(getattr(self.state, "mixture_phi", 1.0) or 1.0)
+            here = _ce.for_engine(self.engine, phi).efficiency
+            stoich = _ce.for_engine(self.engine, 1.0).efficiency
+            if stoich > 1e-9:
+                return declared * max(0.2, min(1.0, here / stoich))
+        except Exception:
+            pass
+        return declared
 
     def _fuel_circuit(self):
         return next((c for c in self._drivetrain.fluid_circuits
@@ -3236,7 +3284,34 @@ class EngineCycleSim:
         # physics) drain faster on those fuels, a real consequence, not
         # a coincidence of the exhaust estimate's own gasoline constant.
         stoich_afr = fuel_stoich_afr(self.fuel_choice or eng.preferred_fuel_profile)
-        self._fuel_demand_kg_s = self._intake_demand_kg_s / max(stoich_afr, 0.1)
+        # METERED ON THE AIR THE CYLINDER ACTUALLY GETS, not the air the
+        # engine asks the tract for.
+        #
+        # _intake_demand_kg_s above is a DEMAND -- displacement rate at
+        # this tick's MAP -- and that is exactly right for what it is
+        # used for, comparing against the tract's choke ceiling. It is
+        # the wrong number to fuel against, because it omits every
+        # breathing term between the manifold and the cylinder:
+        # runner resonance, the head's own breathing ceiling, the
+        # chamber's wall-loss factor, and the charge's temperature
+        # density. Those are exactly the factors the per-cylinder
+        # strength calculation applies below, and the pressure term is
+        # deliberately NOT repeated here because the demand already
+        # carries it.
+        #
+        # Fuelling on demand over-fuels every engine by its own
+        # breathing shortfall -- about 16% on the catalogue's AMC 258 --
+        # which showed up as a brake thermal efficiency of 16-18% and a
+        # BSFC near 500 g/kWh against a real 25-30% and 280-330. A real
+        # engine meters on measured or speed-density-estimated CHARGE,
+        # never on unfulfilled demand.
+        #
+        # One tick of lag, the same lag waste_heat_kw and the supply
+        # pressure above already take, because the charge fraction is
+        # solved per cylinder later in this same tick.
+        self._fuel_demand_kg_s = (self._intake_demand_kg_s
+                                  * max(0.05, min(1.5, self._charge_fill_frac))
+                                  / max(stoich_afr, 0.1))
         # real evaporative + sensible charge cooling from the fuel
         # itself: a latent-heat term that's ALWAYS present (liquid fuel
         # boiling off in the charge absorbs real heat regardless of fuel
@@ -3614,9 +3689,16 @@ class EngineCycleSim:
                     charge_density_frac = REFERENCE_INTAKE_TEMP_K / max(self.state.intake_charge_temp_k, 200.0)
                     cyl_valve = float(self._cyl_valve_factor[cyl - 1]) if 0 < cyl <= len(self._cyl_valve_factor) else 1.0
                     cyl_valve *= self._effects.cylinder_factor.get(cyl, 1.0)      # node_effects: a holed/dead bore
+                    # the BREATHING half of the charge, for next tick's
+                    # fuel metering: resonance and the chamber factors
+                    # and the temperature density, with the pressure
+                    # term divided back out because _intake_demand_kg_s
+                    # already carries it and must not carry it twice
+                    _map = max(0.05, float(self.state.manifold_pressure_frac))
+                    self._charge_fill_frac = (cylinder_charge_frac * charge_density_frac) / _map
                     base_strength = (torque_fraction(eng, self.state.rpm) * cylinder_charge_frac
                                       * charge_density_frac
-                                      * fuel_quantity_frac * eng.combustion_efficiency * float_penalty
+                                      * fuel_quantity_frac * self._combustion_efficiency_now() * float_penalty
                                       * cyl_valve
                                       * (1.0 - egr_active_frac))
                     strength = 0.0 if cut else base_strength

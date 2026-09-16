@@ -283,6 +283,85 @@ _add(MaterialPhases(
                "OXYGEN-ENRICHED rather than inert as it ages."),
     )))
 
+# ---------------------------------------------------------------------
+# METALS, whose melting is a TRANSFORMATION INTO A FLUID
+#
+# Every row above describes something that was already a fluid changing
+# state. These describe something that was a PART. A melted casting does
+# not stop being matter: it pours, wets, drips and sprays, and every one
+# of those paths already exists for oil and fuel. fluids.py carries the
+# resulting liquid (molten-aluminium and friends, with real densities,
+# viscosities and surface tensions at pouring temperature); this carries
+# the transition into it.
+#
+# AND THEY EMIT. That is the one genuinely new thing about a molten
+# metal compared with every other fluid in the registry: it is far
+# hotter than anything it touches, so it radiates in its own right.
+# fluids.Fluid.emission_k is that temperature, and a renderer already
+# doing blackbody for exhaust and flame needs nothing else.
+# ---------------------------------------------------------------------
+
+_add(MaterialPhases(
+    material="aluminium",
+    transitions=(
+        *_pair(MELT, 933.47, 397_000.0,
+               "Becomes fluids.BY_KEY['molten-aluminium'] -- a real liquid at "
+               "2380 kg/m3 with a surface tension of 0.87 N/m, thirty times "
+               "water's. That is why a spill beads into fat blobs instead of "
+               "spreading: surface_wetting's capillary length goes with "
+               "sqrt(sigma/rho.g) and lands near 6 mm.",
+               volume_change=0.065),    # MELTING expands; the paired FREEZE contracts -- shrinkage porosity
+        Transition(VAPORISE, 2743.0, 10_900_000.0,
+                   "Reachable only in an arc or a thermite reaction, not by "
+                   "anything an engine does to itself."),
+    ),
+    note="Contracts about 6.5% on solidifying, which is why castings need "
+         "risers and why a cooled repair pulls away from the parent metal. "
+         "NOTE THE SIGN: liquid metal is LESS dense than solid, so melting "
+         "expands and freezing contracts -- the opposite of water, which is "
+         "the anomaly here and not the rule. Declared on MELT and paired, so "
+         "the two directions cannot disagree."))
+
+_add(MaterialPhases(
+    material="magnesium",
+    transitions=(
+        *_pair(MELT, 923.0, 349_000.0,
+               "ALREADY ABOVE ITS OWN IGNITION TEMPERATURE WHEN IT MELTS. "
+               "Magnesium ignites at about the same 923 K it melts at, so a "
+               "magnesium pour in air is not a hot liquid that might catch -- "
+               "it IS a fire, burning at 3400 K. fluids marks the molten row "
+               "flammable with exactly this autoignition temperature. See "
+               "spectacle.ScrapePlate.extinguishing_note for why it cannot be "
+               "put out with water, CO2, or an inert blanket.",
+               volume_change=0.041),
+    ),
+    note="The one metal here whose liquid phase is a combustion event rather "
+         "than merely a hot fluid."))
+
+_add(MaterialPhases(
+    material="iron",
+    transitions=(
+        *_pair(MELT, 1811.0, 247_000.0,
+               "Becomes molten-iron at 7000 kg/m3 and 1.87 N/m -- the highest "
+               "surface tension of anything in the registry, which is why a "
+               "weld pool stands up in a bead instead of running flat, and why "
+               "slag floats off it so cleanly.",
+               volume_change=0.030),
+    )))
+
+_add(MaterialPhases(
+    material="lead",
+    transitions=(
+        *_pair(MELT, 600.61, 23_200.0,
+               "A tiny latent heat -- a fortieth of aluminium's -- and a low "
+               "melting point, which together are the whole reason lead is the "
+               "metal you can melt on a camp stove and pour into a mould by "
+               "hand. It is also why a babbitt bearing is repairable in place "
+               "and an aluminium one is not.",
+               volume_change=0.035),
+    )))
+
+
 #: Cold behaviour that is NOT a phase transition, kept beside the table
 #: because that is precisely where someone will look for it and not find
 #: it in the transitions above.

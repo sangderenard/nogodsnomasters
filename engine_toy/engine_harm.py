@@ -247,7 +247,7 @@ def entrained_film_m(viscosity_pa_s: float, sliding_speed_m_s: float,
 
 def lubrication(film_kg: float, bore_m: float, stroke_m: float,
                 normal_force_n: float, sliding_speed_m_s: float,
-                roughness_m: float = SURFACE_ROUGHNESS_COMBINED_M,
+                roughness_m: float | None = None,
                 oil_temp_k: float = 363.15) -> Lubrication:
     """The Stribeck question, answered for one bore.
 
@@ -263,6 +263,7 @@ def lubrication(film_kg: float, bore_m: float, stroke_m: float,
 
     The engine is starved when the supply runs out and hydrodynamic when
     both are satisfied, which is the real relationship."""
+    roughness_m = SURFACE_ROUGHNESS_COMBINED_M if roughness_m is None else roughness_m
     mu = oil_viscosity_pa_s(oil_temp_k)
     h_possible = entrained_film_m(mu, sliding_speed_m_s, normal_force_n,
                                   bore_m, stroke_m)
@@ -309,10 +310,10 @@ class Fit:
 
 
 def cold_clearance_m(bore_m: float,
-                     design_piston_k: float = DESIGN_PISTON_TEMP_K,
-                     design_bore_k: float = DESIGN_BORE_TEMP_K,
+                     design_piston_k: float | None = None,
+                     design_bore_k: float | None = None,
                      assembly_temp_k: float = 293.15,
-                     running_frac: float = RUNNING_CLEARANCE_FRAC_OF_BORE) -> float:
+                     running_frac: float | None = None) -> float:
     """What the piston is cut to, cold, so that it runs right hot.
 
     The design rule, stated directly: cold clearance is the wanted
@@ -321,6 +322,17 @@ def cold_clearance_m(bore_m: float,
     differential means a looser cold fit, which is exactly why a forged
     piston (which expands more) is clearanced looser than a cast one and
     why a forged engine rattles until it warms up."""
+    # READ AT CALL TIME, NOT BOUND AT DEFINITION. Python evaluates
+    # default arguments once, when the def executes, so writing
+    # `design_piston_k: float = DESIGN_PISTON_TEMP_K` freezes whatever
+    # the module constant was at import and makes it permanently
+    # untunable -- a sweep or a fit would move the constant and see
+    # nothing change. jacobian_audit found exactly that: these three
+    # read a sensitivity of precisely 0.0 while being genuinely used.
+    design_piston_k = DESIGN_PISTON_TEMP_K if design_piston_k is None else design_piston_k
+    design_bore_k = DESIGN_BORE_TEMP_K if design_bore_k is None else design_bore_k
+    running_frac = (RUNNING_CLEARANCE_FRAC_OF_BORE if running_frac is None
+                    else running_frac)
     differential = ((ALUMINIUM_EXPANSION_PER_K * SKIRT_EXPANSION_RESTRAINT
                      * (design_piston_k - assembly_temp_k))
                     - (CAST_IRON_EXPANSION_PER_K * (design_bore_k - assembly_temp_k)))

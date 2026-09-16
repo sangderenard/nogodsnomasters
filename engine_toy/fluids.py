@@ -38,6 +38,13 @@ class Fluid:
     flammable: bool = False
     autoignition_k: float = 0.0         # what a spray needs to touch to light
     ullage_vapour: bool = False         # a part-empty vessel holds explosive vapour
+    #: Temperature this fluid RADIATES at, K. Zero for everything that
+    #: is near ambient and therefore invisible in its own right -- which
+    #: is every row here except the molten metals, whose whole visual
+    #: character is that they glow. A renderer already doing blackbody
+    #: for exhaust gas and flame needs nothing new to draw a pour; it
+    #: needs a temperature, and this is it.
+    emission_k: float = 0.0
     # ---- THE OTHER SIDE OF THE REACTION ----
     # This registry described only FUELS: `flammable` and an ignition
     # temperature. That is half a combustion model, and the missing half
@@ -177,6 +184,42 @@ _BASE_FLUIDS: tuple[Fluid, ...] = (
           keywords=("air", "gas", "exhaust", "steam", "nitrous", "boost",
                     "vapour", "vapor", "refrigerant", "nitrogen"),
           leak_material="leak_gas"),
+
+    # ---- MOLTEN METAL IS A FLUID, and belongs here rather than in a
+    # parallel table somewhere. A melted part does not stop being
+    # matter: it pours, it wets what it lands on, it drips, it sprays
+    # if something is pushing it, and every one of those paths already
+    # exists for oil and fuel. Adding a row is all it takes to make a
+    # melted casting behave like the liquid it now is.
+    #
+    # The numbers are at the metal's OWN pouring temperature, the same
+    # way every other row here is at its working temperature: cold
+    # aluminium is not a fluid at all, and quoting its solid density
+    # against a liquid viscosity would describe nothing real.
+    #
+    # THESE ROWS EMIT. Unlike everything above them, molten metal is
+    # far hotter than anything it touches, so it radiates visibly --
+    # emission_k is that temperature, and a renderer that already does
+    # blackbody for exhaust and flame needs nothing new. phase_table
+    # carries the melting points and latent heats; this carries what
+    # the liquid IS once it is over them.
+    Fluid("molten-aluminium", "molten aluminium", "liquid", 2380.0, 0.0013, 0.87,
+          keywords=("molten aluminium", "molten aluminum", "melt", "alloy pour"),
+          leak_material="leak_molten", emission_k=1000.0),
+    # Magnesium is the one that keeps reacting after it has melted:
+    # it is already above its own ignition point as a liquid, so a
+    # magnesium pour in air IS a fire. See spectacle.ScrapePlate for
+    # why that cannot be put out the usual way.
+    Fluid("molten-magnesium", "molten magnesium", "liquid", 1590.0, 0.0012, 0.56,
+          keywords=("molten magnesium", "burning magnesium", "mag pour"),
+          leak_material="leak_molten", flammable=True, autoignition_k=923.0,
+          emission_k=1200.0),
+    Fluid("molten-iron", "molten iron", "liquid", 7000.0, 0.0055, 1.87,
+          keywords=("molten iron", "molten steel", "slag", "tap"),
+          leak_material="leak_molten", emission_k=1800.0),
+    Fluid("molten-lead", "molten lead", "liquid", 10660.0, 0.0026, 0.46,
+          keywords=("molten lead", "babbitt", "white metal"),
+          leak_material="leak_molten", emission_k=700.0),
 )
 
 

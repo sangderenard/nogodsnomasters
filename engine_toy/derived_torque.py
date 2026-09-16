@@ -45,10 +45,8 @@ AIR_DENSITY_KG_M3 = 1.184          # 25 C, sea level
 #: centre. Real engines land near three quarters, and this is the one
 #: number here that is fitted rather than derived -- which is why
 #: prove() exists to check whether one value serves the whole catalogue.
-OTTO_REALISATION = 0.78
 #: Compression-ignition runs leaner and with a longer expansion, and
 #: reaches a higher share of its own ideal.
-DIESEL_REALISATION = 0.82
 
 
 def air_standard_efficiency(compression_ratio: float, gamma: float = 1.35) -> float:
@@ -487,7 +485,6 @@ def undeclared_compression() -> dict:
 
 #: Peak cycle temperature used for the Carnot comparison. Real
 #: peak-charge temperatures reach this and no engine sustains it.
-CYCLE_PEAK_TEMP_K = 2600.0
 AMBIENT_TEMP_K = 293.15
 #: Best volumetric efficiency ram tuning alone has ever delivered on a
 #: naturally aspirated engine. Past this something is pumping.

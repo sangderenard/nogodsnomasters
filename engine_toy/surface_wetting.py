@@ -84,6 +84,8 @@ import numpy as np
 #: Oil and the light fuels are close enough that the capillary length
 #: barely differs between them -- which is itself the reason a spill of
 #: any of them beads to about the same depth.
+#: FALLBACK ONLY. fluids.py is the registry and carries a surface
+#: tension per row; this remains for anything not in it.
 SURFACE_TENSION_N_PER_M = {
     "engine-oil": 0.032,
     "gear-oil": 0.033,
@@ -109,8 +111,23 @@ DIFFUSION_LIMITED_FRAC_AT_BOILING = 0.02
 
 
 def capillary_length_m(fluid: str, density_kg_m3: float) -> float:
-    """sqrt(sigma / rho.g) -- the depth a spill beads to."""
-    sigma = SURFACE_TENSION_N_PER_M.get(fluid, DEFAULT_SURFACE_TENSION_N_PER_M)
+    """sqrt(sigma / rho.g) -- the depth a spill beads to.
+
+    Surface tension comes from fluids.py, which already carries one per
+    row, rather than from the local table below. That table was a second
+    copy of the same data and it did not know about the molten metals at
+    all -- molten iron is 1.87 N/m against water's 0.073, so defaulting
+    it to a light hydrocarbon's 0.025 would have spread a weld pool out
+    like petrol instead of standing it up in a bead."""
+    try:
+        import fluids as _f
+        row = _f.BY_KEY.get(fluid)
+        if row is not None and row.surface_tension_n_m > 0.0:
+            sigma = row.surface_tension_n_m
+        else:
+            sigma = SURFACE_TENSION_N_PER_M.get(fluid, DEFAULT_SURFACE_TENSION_N_PER_M)
+    except Exception:
+        sigma = SURFACE_TENSION_N_PER_M.get(fluid, DEFAULT_SURFACE_TENSION_N_PER_M)
     return math.sqrt(sigma / (max(density_kg_m3, 1.0) * GRAVITY_M_S2))
 
 

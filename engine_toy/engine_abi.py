@@ -173,7 +173,8 @@ class EngineGraphABI:
 #: (`_surge_timer`) and the driver's own controls all live here.
 SIM_SCALARS = (
     '_antilag_cooldown', '_auxiliary_injection_cooling_kw', '_cascade_depth',
-    '_charge_energy_factor', '_crank_assist_nm', '_cylinder_volume_m3',
+    '_charge_energy_factor', '_charge_fill_frac', '_crank_assist_nm',
+    '_cylinder_volume_m3',
     '_dyno_drum_radius_m', '_dyno_inertia_kg_m2', '_dyno_mass_kg',
     '_dyno_pull_power_ema', '_dyno_pull_timer_s', '_dyno_pull_torque_ema',
     '_effects_tick', '_electric_fan_cmd', '_exhaust_demand_kg_s',

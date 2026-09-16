@@ -127,6 +127,19 @@ class Reading:
     oil_temp_k: float = 0.0
     oil_pressure_pa: float = 0.0
     bay_air_temp_k: float = 0.0
+    # --- what the COMBUSTION SIM itself says ------------------------------
+    #: Mass fraction burned at the end of each burn, straight off the
+    #: sim's own flame-propagation model (_burned_frac, driven by a
+    #: turbulent flame speed of laminar + gain x mean piston speed
+    #: crossing the bore). This is a MEASUREMENT of how completely the
+    #: charge burned, and it is the quantity the declared
+    #: Engine.combustion_efficiency scalar stands in for.
+    burn_completeness: float = 0.0
+    declared_combustion_efficiency: float = 0.0
+    #: burn_completeness / declared -- 1.0 means the sim agrees with the
+    #: declaration. Anything else is the two disagreeing about the same
+    #: physical quantity, which is worth seeing rather than averaging.
+    combustion_agreement: float = 0.0
     # --- combustion health ----------------------------------------------
     knock_flag: bool = False
     knock_intensity: float = 0.0
@@ -296,6 +309,12 @@ def _reading(sim, engine, absorber, acc: dict, n: int) -> Reading:
         r.bsfc_g_per_kwh = r.fuel_kg_s * 3.6e6 / r.crank_power_kw
         r.thermal_efficiency = r.crank_power_kw / max(r.fuel_power_kw, 1e-9)
 
+    # what the combustion sim measured, beside what the engine declares
+    r.declared_combustion_efficiency = float(getattr(engine, "combustion_efficiency", 0.0) or 0.0)
+    if acc.get("burn_n", 0.0) > 0.0:
+        r.burn_completeness = acc["burn"] / acc["burn_n"]
+        if r.declared_combustion_efficiency > 0.0:
+            r.combustion_agreement = r.burn_completeness / r.declared_combustion_efficiency
     r.mixture_phi = float(getattr(st, "mixture_phi", 0.0) or 0.0)
     r.manifold_pressure_frac = float(getattr(st, "manifold_pressure_frac", 0.0) or 0.0)
     r.boost_frac = float(getattr(st, "boost_frac", 0.0) or 0.0)
@@ -524,7 +543,7 @@ def profile(engine, points: int = 8, settle_s: float = DEFAULT_SETTLE_S,
             elapsed += dt
         settled = abs(sim.state.rpm - target) <= max(25.0, target * 0.04)
         acc = {k: 0.0 for k in ("rpm", "torque", "drum_rpm", "drum_torque",
-                                "absorbed", "fuel", "air")}
+                                "absorbed", "fuel", "air", "burn", "burn_n")}
         n = 0
         t = 0.0
         while t < record_s and elapsed < max_seconds:
@@ -544,6 +563,16 @@ def profile(engine, points: int = 8, settle_s: float = DEFAULT_SETTLE_S,
             # it is actually running, and at WOT no petrol engine is.
             acc["fuel"] += (float(getattr(sim, "_fuel_demand_kg_s", 0.0) or 0.0)
                             * min(float(getattr(st, "mixture_phi", 1.0) or 1.0), 2.0))
+            # THE COMBUSTION SIM'S OWN ANSWER, not a declared constant:
+            # how much of the charge its flame model actually got
+            # through. Sampled only where a burn is in progress, since
+            # a cylinder between events has nothing to report.
+            bf = getattr(sim, "_burned_frac", None)
+            if bf:
+                vals = [v for v in bf.values() if v > 0.0]
+                if vals:
+                    acc["burn"] += sum(vals) / len(vals)
+                    acc["burn_n"] += 1.0
             acc["air"] += float(getattr(sim, "_intake_demand_kg_s", 0.0) or 0.0)
             n += 1
         if n == 0:
@@ -601,7 +630,7 @@ def report(prof: Profile) -> str:
     L.append("")
     L.append("  GEARED SWEEP (engine's own exhaust, absorber holding each point)")
     L.append(f"    {'rpm':>5s} {'torque':>18s} {'power':>18s} {'bmep':>7s} {'VE':>5s} "
-             f"{'BSFC':>7s} {'eff':>5s} {'exh K':>6s} {'phi':>5s}  flags")
+             f"{'BSFC':>7s} {'eff':>5s} {'exh K':>6s} {'burn':>5s}  flags")
     for r in prof.sweep:
         flags = []
         if not r.settled:
@@ -620,9 +649,18 @@ def report(prof: Profile) -> str:
         L.append(f"    {r.rpm:5.0f} {units.torque(r.crank_torque_nm):>18s} "
                  f"{units.power(r.crank_power_kw):>18s} {r.bmep_pa / 1e5:6.2f}b "
                  f"{r.volumetric_efficiency_derived:5.2f} {r.bsfc_g_per_kwh:7.0f} "
-                 f"{r.thermal_efficiency:5.2f} {r.exhaust_temp_k:6.0f} {r.mixture_phi:5.2f}  "
+                 f"{r.thermal_efficiency:5.2f} {r.exhaust_temp_k:6.0f} {r.burn_completeness:5.2f}  "
                  + ", ".join(flags))
 
+    burns = [r.burn_completeness for r in prof.sweep if r.burn_completeness > 0.0]
+    if burns:
+        decl = prof.sweep[0].declared_combustion_efficiency
+        L.append("")
+        L.append(f"  COMBUSTION SIM says the charge burned {min(burns):.3f}-{max(burns):.3f} "
+                 f"complete; the engine DECLARES combustion_efficiency {decl:.3f}.")
+        L.append("  Those are the same physical quantity measured two ways, and the "
+                 "declared one is")
+        L.append("  applied on top of the simulated burn rather than instead of it.")
     pt, pp = prof.peak_torque(), prof.peak_power()
     L.append("")
     if pt:
