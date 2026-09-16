@@ -108,6 +108,20 @@ def volumetric_efficiency(engine, rpm: float) -> float:
     assist (ExhaustSystem). Nothing is invented here -- this composes
     what the engine already declares."""
     arch = engine.architecture
+    # A TWO-STROKE HAS NO INTAKE VALVE, so none of the poppet-valve
+    # machinery below applies to it. Its cylinder is filled through
+    # ports in the liner by something pushing air in, and what it ends
+    # up holding is a scavenging question -- delivery ratio times
+    # trapping efficiency -- not a curtain-area question.
+    import two_stroke as ts
+    sc = ts.scavenge_of(engine)
+    if sc:
+        fi_ = getattr(engine, "forced_induction", None)
+        boost = 0.0
+        if fi_ is not None and getattr(fi_, "kind", None) in ("turbo", "supercharger"):
+            boost = max(0.0, float(getattr(fi_, "max_boost_frac", 0.0) or 0.0))
+        rl = max(1.0, float(getattr(engine, "redline_rpm", 4000.0)))
+        return ts.charge(sc, boost_frac=boost, rpm_frac=rpm / rl).charging
     import port_flow as pf
     import cylinder_ports as cp
     try:
@@ -216,7 +230,9 @@ def derive(engine, rpm: float) -> DerivedPoint:
     air = ve * disp_m3 * AIR_DENSITY_KG_M3
     fi = getattr(engine, "forced_induction", None)
     boost_applied = 0.0
-    if fi is not None and getattr(fi, "kind", None) == "supercharger":
+    # a two-stroke's boost is already inside its delivery ratio
+    two_stroke_scav = bool(__import__("two_stroke").scavenge_of(engine))
+    if (not two_stroke_scav) and fi is not None and getattr(fi, "kind", None) == "supercharger":
         ceiling = max(0.0, float(getattr(fi, "max_boost_frac", 0.0) or 0.0))
         boost_applied = ceiling
     afr = float(getattr(fuel, "stoich_afr", 14.7) or 14.7)
