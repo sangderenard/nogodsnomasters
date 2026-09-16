@@ -140,10 +140,37 @@ def volumetric_efficiency(engine, rpm: float) -> float:
         ve *= 1.0 + engine.exhaust_system.scavenging_assist_frac(rpm, fpr)
     except Exception:
         pass
-    # forced induction multiplies the charge density outright
+    # FORCED INDUCTION MULTIPLIES THE CHARGE OUTRIGHT, and the field is
+    # max_boost_frac -- a fraction of an atmosphere, so 1.2 means the
+    # manifold sees 2.2 atmospheres absolute.
+    #
+    # This read a field called peak_boost_bar, which does not exist on
+    # ForcedInduction. getattr returned the 0.0 default every time, so
+    # every blown and turbocharged engine in the catalogue was being
+    # derived as though naturally aspirated -- which is most of why the
+    # Wartsila, running 2.5 atmospheres of boost, came out at a
+    # twentieth of its real output.
+    # AND BOOST IS NOT CONSTANT. max_boost_frac is the CEILING, reached
+    # at the top of the range and nowhere near it at the bottom.
+    # Applying it flat across the rev range gave every supercharged
+    # radial its full wartime manifold pressure at idle.
+    #
+    # The two kinds build it differently, and the difference is the
+    # whole reason people argue about them. A supercharger is geared to
+    # the crank, so its boost rises roughly in step with engine speed
+    # and is there the instant the throttle is. A turbo is driven by
+    # exhaust energy, which goes up far faster than linearly, so it
+    # makes almost nothing low down and then arrives all at once.
     fi = getattr(engine, "forced_induction", None)
     if fi is not None and getattr(fi, "kind", None) in ("turbo", "supercharger"):
-        ve *= 1.0 + float(getattr(fi, "peak_boost_bar", 0.0) or 0.0) / 1.01325
+        ceiling = max(0.0, float(getattr(fi, "max_boost_frac", 0.0) or 0.0))
+        redline = max(1.0, float(getattr(engine, "redline_rpm", 4000.0)))
+        f = max(0.0, min(1.0, rpm / redline))
+        if getattr(fi, "kind") == "supercharger":
+            ramp = min(1.0, f / 0.85)          # geared to the crank
+        else:
+            ramp = min(1.0, (f / 0.55) ** 2)   # exhaust-driven, comes on hard
+        ve *= 1.0 + ceiling * ramp
     return max(0.05, ve)
 
 
@@ -180,8 +207,24 @@ def derive(engine, rpm: float) -> DerivedPoint:
     lhv = float(getattr(fuel, "energy_density_j_per_kg", 43.4e6) or 43.4e6)
     heat = burn * lhv * float(getattr(engine, "combustion_efficiency", 0.85) or 0.85)
 
-    eta = air_standard_efficiency(cr, gamma) * (DIESEL_REALISATION if diesel
-                                                else OTTO_REALISATION)
+    # THE CYCLE AND THE ERA, instead of one fitted constant.
+    #
+    # OTTO_REALISATION was doing two jobs at once: bridging the ideal
+    # cycle to a real engine, AND expressing every difference between a
+    # hit-and-miss and a modern turbo diesel. thermo_cycles splits those
+    # -- the ideal comes from whichever cycle this engine actually runs,
+    # the era factor from what that technology achieved, and the scale
+    # factor from the engine's own bore, because heat loss goes with
+    # area and work goes with volume.
+    import thermo_cycles as tc
+    import engines as _eng
+    cyc = tc.cycle_of(engine)
+    pr, regen = _eng.TURBINE_CYCLES.get(getattr(engine, "identity", ""), (14.0, 0.0))
+    eta = tc.efficiency(
+        cyc, era_key=_eng.era_of(engine), bore_m=arch.bore_m,
+        compression_ratio=cr, gamma=gamma,
+        pressure_ratio=pr, regenerator=regen,
+    ).realised
     imep = heat * eta / max(1e-9, disp_m3)
     sp = 2.0 * arch.stroke_m * max(0.0, rpm) / 60.0
     fmep = friction_mep_pa(sp, peak_pressure_pa=imep * 1.8, diesel=diesel)

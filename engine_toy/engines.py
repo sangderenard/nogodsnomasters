@@ -3695,6 +3695,78 @@ CATALOGUE: list[Engine] = _apply_compression_ratios(_build_catalogue())
 BY_IDENTITY: dict[str, Engine] = {e.identity: e for e in CATALOGUE}
 
 
+
+#: WHAT TECHNOLOGY EACH ENGINE IS, which is a different question from
+#: how big it is or what cycle it runs. thermo_cycles.ERAS carries what
+#: each period actually achieved against its own ideal cycle; this says
+#: which period each catalogue entry belongs to.
+#:
+#: This replaces a single fitted realisation constant that was standing
+#: in for the whole spread between a hit-and-miss and a modern turbo
+#: diesel. One number could not do it, and the failure was visible:
+#: small old engines came out far too strong.
+ENGINE_ERAS: dict[str, str] = {
+    "fairbanks-morse-z-oilfield-hit-and-miss": "hit-and-miss",
+    "otto-langen-atmospheric-1867": "hit-and-miss",
+    "otto-langen-atmospheric-workshop": "hit-and-miss",
+    "curved-dash-1901-single": "brass-era",
+    "steam-traction-engine-1900": "steam",
+    "25cc-two-stroke-trimmer": "two-stroke-small",
+    "amc-258-jeep-i6": "pushrod-carb",
+    "buick-231-oddfire-v6-1975": "pushrod-carb",
+    "aircooled-flat-four-1584": "pushrod-carb",
+    "supercharged-drag-v8-8200": "pushrod-carb",
+    "monster-540-blown-methanol": "pushrod-carb",
+    "monster-632-twin-turbo": "pushrod-carb",
+    "radical-cam-bigblock-7400": "pushrod-carb",
+    "honda-style-commuter-i4-1500": "efi-2v",
+    "vw-vr6-2800-12v": "efi-2v",
+    "alfa-busso-v6-3000-12v": "efi-2v",
+    "twin-rotor-13b": "efi-2v",
+    "mazda-b6ze-miata-1990": "modern-4v",
+    "toyota-3sfe-camry-1990": "modern-4v",
+    "springtail-i4-1600": "modern-4v",
+    "superbike-i4-1340": "modern-4v",
+    "gt-flat-six-4000": "modern-4v",
+    "packard-merlin-v1650": "aero-supercharged",
+    "pw-r1340-wasp": "aero-supercharged",
+    "pw-r1830-twin-wasp": "aero-supercharged",
+    "pw-r2000-twin-wasp": "aero-supercharged",
+    "pw-r2800-double-wasp": "aero-supercharged",
+    "pw-r4360-wasp-major": "aero-supercharged",
+    "cat-c18-industrial-diesel": "industrial-diesel",
+    "ldt465-multifuel-deuce": "industrial-diesel",
+    "wartsila-rta96c-14cyl-marine-diesel": "large-slow-diesel",
+    "agt1500-abrams-turbine": "turbine",
+    "small-turboshaft-apu-class": "turbine",
+}
+
+#: Turbines have a compressor PRESSURE ratio and, sometimes, a
+#: regenerator. Neither is a compression ratio and neither belongs in
+#: EngineArchitecture, so they live here as (pressure ratio,
+#: regenerator effectiveness).
+#:
+#: The AGT1500's regenerator is the whole reason it is not simply a
+#: small jet: it recovers exhaust heat into the compressed air before
+#: the burner, which is what makes a modest pressure ratio worth
+#: running and what gives a tank engine tolerable fuel consumption at
+#: idle. Regenerated turbines get WORSE at high pressure ratios, which
+#: inverts the usual intuition.
+TURBINE_CYCLES: dict[str, tuple[float, float]] = {
+    "agt1500-abrams-turbine": (14.5, 0.72),
+    "small-turboshaft-apu-class": (7.0, 0.0),
+}
+
+
+def era_of(engine) -> str:
+    """Which technology period this engine belongs to.
+
+    Falls back on the most ordinary case rather than raising, so a
+    hand-built engine that is not in the catalogue still gets a
+    defensible answer instead of stopping the sim."""
+    return ENGINE_ERAS.get(getattr(engine, "identity", ""), "pushrod-carb")
+
+
 def spring_headroom_check() -> list[str]:
     """Early-baking sanity check: which catalogue engines are actually
     being asked to rev past what their chosen lifter spring can hold?"""
