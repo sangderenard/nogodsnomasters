@@ -377,11 +377,33 @@ methods (`normal`, `uniform`, `lognormal`, classified unknown). Whether the
 engine should be reaching those from the compiled step is a program
 question, not a compiler one.
 
-### What is still unverified
+### The engine probe's verdict, under the directory-root contract
 
-The engine lowering itself under the selective contract. The probe run
-during this work used the directory-root contract and takes about thirty
-minutes; its verdict, when it lands, says whether the loop lowers once the
-three field classes are ingested, not what the selective contract does
-with ballistics and engine_rays. Expect the next refusal, if any, to name
-one of those by file.
+3288 seconds, refused -- and the refusal MOVED. The three effects that
+had refused the engine all day are gone from the opaque inventory:
+`self.hole_emitters.step`, `self.bursts.step` and `self.ordnance.step` are
+now source-linked calls, and the pursued classes' own loops appear in the
+inventory in their place (`em.step_splash`, `em.step` inside
+hole_emitters, `b.step` inside burst, `self.on_loss`). The class-identity
+gap is closed on the real engine, not only on the reproduction.
+
+The refusal is now a different loop (`loop_node=122`, regions 2 and 3)
+with one blocker:
+
+    vol.add_exhaust(fuel_kg_s * (1.0 + AIR_PER_FUEL_MASS), ...)
+    'method_ref': None, 'receiver_class': None
+
+`vol` is `volumes.get(f.identity)` (engine_cycle_sim.py line 1593): a
+value fetched from a mapping. Nothing resolves the class of a mapping's
+values today -- the `.` step on `self` is field-based and this receiver is
+a lookup result -- so this is the next distinct wall, the one the earlier
+section listed as separate. `at = getattr(self, "automatic", None)` and
+`turb = self._turbine` (a conditional `build()` result) are the two after
+it, and both are still in the opaque inventory of this run.
+
+This run used the directory-root contract. Under the selective list the
+same three classes are admitted, so the same three effects resolve; what
+differs is that ordnance's reach into ballistics and engine_rays is
+rejected by name rather than admitted, and whether that changes the
+refusal order has not been run. A probe costs about an hour; do not spend
+one to learn what the sixty-second ingestion tally already states.
