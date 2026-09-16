@@ -199,9 +199,29 @@ class CycleEngine(DtCompatibleEngine):
         return out
 
     def snapshot(self):
-        return None
+        """The whole interior, exactly, as one flat span.
+
+        This used to return None, and I read that as a fact about the
+        engine rather than a stub in this adapter: the sim has had an
+        exact save/restore since `engine_state.py` -- every declared slot
+        of crank, cylinders, circuits, drivetrain wind-up, air plant,
+        catalyst and generator positions -- pinned by
+        `tests/test_engine_state_span.py::test_round_trip_is_exact` and
+        `::test_restore_is_exact_after_stepping_away`. The two other
+        engines in this file have always snapshotted their real arrays;
+        this one threw the capability away.
+
+        THE COPY IS NOT OPTIONAL. `sync_state_span` packs INTO
+        `self.state_span` in place and hands the same array back, so a
+        snapshot that did not copy would be silently rewritten by the
+        next step it was supposed to protect against.
+        """
+        return self.sim.sync_state_span().copy()
 
     def restore(self, snap):
+        if snap is None:
+            return None
+        self.sim.load_state_span(np.asarray(snap, dtype=np.float64))
         return None
 
     def step(self, dt: float, state=None, state_table=None):
