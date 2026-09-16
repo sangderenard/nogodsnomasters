@@ -513,9 +513,13 @@ def build_graphs(names: list[str]):
     `NativeLaw.write`. Two craft taking turns in one set of buffers is
     otherwise exactly the kind of quiet cross-talk that reads as physics.
     """
-    vehicle = NativeLaw.build(compile_symbolic_vehicle_physics(),
+    # THE PRODUCERS, NOT THEIR RESULTS. Calling them here would build the
+    # very thing the emission cache exists to avoid building: a hit on the
+    # repository's symbolic cache still costs 115 s of cloudpickle for
+    # these two laws, and none of it is needed once the kernel exists.
+    vehicle = NativeLaw.build(compile_symbolic_vehicle_physics,
                               "abstract_ui_vehicle_step")
-    contact = NativeLaw.build(compile_wheel_contact_ssa(),
+    contact = NativeLaw.build(compile_wheel_contact_ssa,
                               "abstract_ui_wheel_contact")
     vehicle_names = list(vehicle.input_names)
     vehicle_outputs = list(vehicle.output_names)
