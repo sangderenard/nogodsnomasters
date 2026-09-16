@@ -170,14 +170,9 @@ should say so rather than absorb it.
 The aggregate mismatch is closed above; the bisection took the axis
 "literal consumed inside the region", not output count or region count.
 
-Take the class identity gap. The question is now specific: a
-receiver acquires `class_ref` somewhere, and `self.ordnance` does not get
-one even though `self.ordnance = OrdnanceField()` appears in the same
-file the compiler is reading. Find where that resolution happens and why
-it does not reach these receivers. Only after that is it worth deciding
-whether the remedy is to let declared records inform the classifier or to
-resolve class references through attribute chains; the evidence currently
-favours declaration over copying, since the outputs already exist.
+The class identity gap is half closed; see the continuation section at
+the end. The half that remains is stated there as a measured fact with a
+one-second reproduction, and it is not the field read.
 
 Use `compile_probe.CompileProbe` for every compile rather than writing a
 new instrument each time. It records phases with timings, every state
@@ -205,3 +200,106 @@ form exists to enumerate boundaries rather than to declare success.
 Both repositories currently have other agents committing. Commit promptly
 rather than leaving edits in the working tree, and expect turing edits to
 invalidate the caches described above.
+
+## Continuation, 2026-09-16 later in the day
+
+Everything below was measured on reproductions that run in seconds, and
+the two compiler changes are committed in turing with pinning tests.
+
+### What was established about the class identity gap
+
+The classifier's behaviour when the receiver class IS known was measured
+first, on the same loop shape with the mutating method on `self`
+(`self.bump(dt)` inside `for i in range(4)`): the call resolves a
+`method_ref`, becomes a source-linked call, the classifier's own rule in
+`topological_reducer.py` (around line 4280: "a source-linked method is
+already an ordinary SSA call ... the callee's own GetAttr/SetAttr and
+calls carry its effects") skips it, no state effect is recorded, and the
+loop lowers with `bump` linked as its own function. So a resolved receiver
+class is sufficient; nothing else is missing for this shape.
+
+For a field that holds an object, the read `self.field` carried no class.
+The reducer's field-read resolution (around line 2145) uses the enclosing
+class only to look up the field's aggregate kind, and no table mapped a
+field to the class it holds. Turing `d2b33c82` adds that table
+(`(owner, field) -> class`, from `self.f = Cls()` in the owner's methods
+and from `f: Cls` annotations, published on the class table as
+`field_classes`), stamps `result_class_ref` on the field read, and lets
+the deployment side's `receiver_class` walk read `result_class_ref`. It
+is deliberately not `class_ref`: a dozen readers in
+`glsl_deployment_strategy.py` treat that attribute's presence as a
+construction. A field assigned two different classes is contested and
+stays unresolved. Pinned in `tests/test_field_object_receiver_class.py`
+for the direct read, the engine's `turb = self._turbine` alias spelling,
+and the contested negative; the ten existing reducer and loop-composer
+tests touching class references and opaque effects still pass.
+
+### What the engine probe said afterwards, and what it costs
+
+`EngineCycleSim.step` under the engine contract through
+`compile_probe.CompileProbe`: 1829.7 seconds, still refused, the same
+three effects, each with `receiver_class: None`. The probe's phase list
+accounts for about fourteen seconds of that; the rest falls after the
+last progress message, inside deployment preparation before the refusal
+is raised. This makes the engine probe unusable as an iteration tool.
+Do not iterate on it. The reproduction below answers the same question in
+under a second.
+
+### The remaining gap, stated as a fact
+
+`HoleEmitterField`, `BurstField` and `OrdnanceField` are imported into
+`engine_cycle_sim.py` from other modules. Measured with a two-module
+source (`from field_mod import Field` and `self.field = Field()`): after
+`reduce_abstract_tensor_topology`, the graph's class table has exactly one
+key, `Sim`. `Field` is not in `class_definitions`, so `field_classes` is
+empty and the field read carries nothing. The reducer fills
+`class_definitions` from `ClassDef` nodes in the graph (around line
+5106), and an imported class's `ClassDef` is never one of them.
+
+The same source with the instance constructed locally in `step`
+(`f = Field()` then `f.step(dt)` in the loop) refuses identically. So this
+is not about field reads at all for imported classes: a method call on an
+instance of an imported class has no `method_ref` even when the
+construction is on the previous line. The static-reference path in the
+reducer (`static_reference_node`, around line 1545) marks a constructor
+call with `class_ref` only when the class is already in the class table,
+which is the same circularity from the other side.
+
+Where to look next, in order:
+
+1. How the pursuit ingests an imported class. The reducer's comment at
+   line 1565 says "imported dataclasses enter the function table as
+   structural class references, but their defining ClassDef belongs to a
+   different source unit", and `_python_source_identity` tagging at line
+   5062 exists for classes from other modules, so there is a route by
+   which an external class's methods reach the function table with a
+   `method_owner`. The deployment side's `specialized_method_reference`
+   matches `entry.graph.G.graph["method_owner"]` against a receiver's
+   Python type, but only for `specializations`, which the engine contract
+   does not supply for these fields.
+2. Whether `class_table` should be populated for pursued external classes
+   from the function table's `method_owner` facts, so that the class name
+   resolved from a constructor (static reference `class_ref`) or from
+   `field_classes` finds methods. If it should, the field-class table
+   must also learn the class name from a constructor call whose callee is
+   a static reference rather than a local `ClassDef`; the table currently
+   requires `func.id in class_definitions`.
+3. Reproduce with `imported_class.py` in this session's scratchpad shape:
+   a two-file source, a spy on `reduce_abstract_tensor_topology` printing
+   the class table and the attribute node's attributes. It runs in under
+   a second and shows the exact table state.
+
+Also unresolved and separate: `vol = volumes.get(...)` (a mapping value),
+`at = getattr(self, "automatic", None)`, and
+`self._turbine = engine.turbine.build() if ... else None` (a conditional
+method result). None of these is a constructor assignment; each needs
+its own resolution route and none was attempted.
+
+### State of the trees
+
+Turing: `31329aa9` (returned literal is the control function's own
+output), `d2b33c82` (field-held class resolution). Both compiler edits
+invalidate the batched kernel cache; the first `time_trials` start after
+them rebuilds the contact and body kernels, and the body lowering itself
+has not been rerun. The expected outcome is that the aggregate mismatch
+is gone; a different shortfall would be a different defect.
