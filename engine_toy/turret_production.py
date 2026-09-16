@@ -299,6 +299,19 @@ class ProductionGraph:
         # section it already carries, plus whatever `support_stiffness_
         # n_per_m` the bracket contributes in parallel; and wrench_paths
         # then walks through it as the compliant link it is.
+        # A SUSPENSION IS A DECLARED STIFFNESS, not a bushing pack. A
+        # washer's tub hangs on springs of a few kN/m with dampers; that
+        # is nothing like an engine isolator and is authored as its own
+        # numbers on the edge, which wrench_paths reads as the compliant
+        # link it is.
+        suspension = attributes.pop("suspension", None)
+        if suspension is not None:
+            attributes["suspension"] = {
+                "model": "spring-and-damper",
+                "linear_stiffness_n_per_m": float(suspension["linear_stiffness_n_per_m"]),
+                "damping_ratio": float(suspension.get("damping_ratio", 0.2)),
+                "travel_m": float(suspension.get("travel_m", 0.03)),
+            }
         load_bearing = attributes.pop("load_bearing", False)
         helped = float(attributes.pop("support_stiffness_n_per_m", 0.0) or 0.0)
         if routed and load_bearing:

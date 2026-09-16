@@ -149,6 +149,10 @@ def _link_compliance(edge: dict) -> tuple:
     in series. Anything else that carries load is welded, bolted or
     pinned -- a pin is free in a rotation, not soft in a translation --
     and contributes nothing to the sum."""
+    suspension = edge.get("suspension")
+    if suspension:
+        return 1.0 / float(suspension["linear_stiffness_n_per_m"]), float(
+            suspension.get("damping_ratio", 0.2))
     support = edge.get("line_support")
     if support:
         # a routed line that declared itself load-bearing: the pipe's own

@@ -194,6 +194,14 @@ JOINT_TYPES = {
              "by tacks at a pitch. Rigid while it holds; the capacity is "
              "the tacks', which is far less than the bracket's, so a "
              "tacked bracket fails at the sheet and not in the bracket"),
+    "piano-hinge": JointType(
+        "piano-hinge", "piano hinge", (RIGID, RIGID, RIGID, RIGID, FREE, RIGID),
+        "bolted-preload",
+        note="a continuous pin the length of the door edge: free to turn "
+             "about its own line (ry, the line being vertical) and rigid "
+             "in everything else, because a pin that long cannot rack. "
+             "It carries the door OPEN; shut, the dogs carry the pressure "
+             "and the hinge is merely along for it"),
     "unibody-spot-welded": JointType(
         "unibody-spot-welded", "spot-welded unibody seam", (RIGID,) * 6,
         "spot-weld",
@@ -410,6 +418,9 @@ ONE_END, BOTH_ENDS = "b", "both"
 #: such a member carries along its axis comes from its own law, never
 #: from its section.
 SLIDING = (FREE, RIGID, RIGID, RIGID, RIGID, RIGID)
+#: A hinge: one rotation free, about the pin. ry, because a door's hinge
+#: line stands up.
+HINGED = (RIGID, RIGID, RIGID, RIGID, FREE, RIGID)
 #: Free in all three rotations: the honest idealisation of a bearing
 #: whose axis the member does not declare. It is under-stiff in torsion
 #: rather than infinitely over-stiff in bending, and of those two errors
@@ -887,6 +898,11 @@ _mc("screwed-seam", WELDED, material="steel-sheet",
          "and capacity, and the walk reads it as compliant")
 _mc("spot-welded-seam", WELDED, material="steel-sheet",
     note="the unibody's seam: spot welds at a pitch along a flange")
+_mc("piano-hinge", HINGED, release_ends=ONE_END, alloy="a36",
+    material="steel-sheet",
+    note="a door's continuous hinge: turns about its own line and nothing "
+         "else. Released at one end only, like a slider, so it locates the "
+         "door while letting it swing")
 _mc("tack-welded-bracket", WELDED, material="steel-sheet",
     note="a bracket on sheet casing: tacks at a pitch, each a short fillet "
          "no bigger than the sheet; the edge carries a Seam pack of tacks")
