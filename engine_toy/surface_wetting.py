@@ -109,6 +109,17 @@ SURFACE_FILM_HTC_W_PER_M2K = 25.0
 #: Clausius-Clapeyron and the flux follows the vapour pressure.
 DIFFUSION_LIMITED_FRAC_AT_BOILING = 0.02
 
+#: How much of a capillary depth a vertical or inverted surface still
+#: clings to. A wall is not dry.
+CLINGING_SKIN_FRAC_OF_CAPILLARY = 0.05
+
+#: Steepness of the sub-boiling evaporation falloff. Vapour pressure
+#: follows Clausius-Clapeyron so the flux is exponential in the
+#: temperature deficit; this is that exponent's scale, and it is the
+#: weakest number in this module -- the shape is right, the rate is not
+#: anchored to a measured drying curve.
+DIFFUSION_FALLOFF_EXPONENT = 8.0
+
 
 def capillary_length_m(fluid: str, density_kg_m3: float) -> float:
     """sqrt(sigma / rho.g) -- the depth a spill beads to.
@@ -143,7 +154,7 @@ def retention_kg_per_m2(fluid: str, density_kg_m3: float, normal_up: float) -> f
     upward = max(0.0, float(normal_up))
     # the clinging skin a vertical or inverted surface keeps regardless:
     # one roughness-scale film, far below a capillary depth
-    skin = 0.05 * l_c
+    skin = CLINGING_SKIN_FRAC_OF_CAPILLARY * l_c
     return density_kg_m3 * (skin + (l_c - skin) * upward)
 
 
@@ -185,7 +196,7 @@ def dry_rate_kg_s(fluid_spec, area_m2: float, surface_temp_k: float,
     reference_q = htc * area_m2 * max(1.0, boil - t)
     deficit = (boil - t) / max(boil, 1.0)
     return max(0.0, reference_q / latent * DIFFUSION_LIMITED_FRAC_AT_BOILING
-               * math.exp(-8.0 * deficit))
+               * math.exp(-DIFFUSION_FALLOFF_EXPONENT * deficit))
 
 
 @dataclass

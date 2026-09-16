@@ -179,6 +179,30 @@ def _solve_skirt_restraint() -> float:
 
 SKIRT_EXPANSION_RESTRAINT = _solve_skirt_restraint()
 
+#: Coefficient in the Reynolds-wedge film relation. Buried in the
+#: expression it was invisible to jacobian_audit, which only sees
+#: module-level names -- so a number with no justification could not
+#: even be asked whether it mattered.
+#:
+#: It sets the ABSOLUTE SCALE of the entrained film. The shape,
+#: sqrt(mu.U/P), is the standard result; this is the constant of
+#: proportionality for a ring-pack contact, calibrated so a healthy
+#: engine at load sits hydrodynamic and a starved one does not. Real
+#: measured ring films run 0.5-2 um and this reproduces that band. It is
+#: the one number here to refit if a better anchor turns up.
+ENTRAINED_FILM_COEFFICIENT = 2.3e-3
+
+#: A piston's real proportions, as fractions of bore. Real design
+#: ratios, not a fitted mass: crown thickness is set by gas load per
+#: unit area, which is bore-independent.
+PISTON_CROWN_THICKNESS_FRAC = 0.08
+PISTON_SKIRT_LENGTH_FRAC = 0.60
+PISTON_WALL_THICKNESS_FRAC = 0.045
+PISTON_ALLOY_DENSITY_KG_M3 = 2700.0
+#: A connecting rod splits roughly two-thirds rotating, one-third
+#: reciprocating, and only the small end counts as reciprocating mass.
+ROD_RECIPROCATING_SHARE = 1.33
+
 #: Rod bolts are torqued to a real preload and the rod cap parts when
 #: tension exceeds it. A rod bolt set is typically sized so the assembly
 #: carries around twice the inertia load at the engine's own redline --
@@ -241,7 +265,7 @@ def entrained_film_m(viscosity_pa_s: float, sliding_speed_m_s: float,
     pressure = max(normal_force_n, 1e-9) / contact_area
     if pressure <= 0.0 or sliding_speed_m_s <= 0.0:
         return 0.0
-    return 2.3e-3 * math.sqrt(max(viscosity_pa_s, 1e-9)
+    return ENTRAINED_FILM_COEFFICIENT * math.sqrt(max(viscosity_pa_s, 1e-9)
                               * max(sliding_speed_m_s, 0.0) / pressure)
 
 
@@ -378,14 +402,13 @@ def reciprocating_mass_kg(bore_m: float, stroke_m: float) -> float:
     scaling. The rod's small end adds about a third again, the standard
     split between a rod's reciprocating and rotating halves."""
     d = max(bore_m, 1e-6)
-    crown_t = 0.08 * d          # real proportion: crown thickness to bore
-    skirt_len = 0.60 * d        # a modern slipper skirt is around 0.6 of bore
-    wall_t = 0.045 * d
+    crown_t = PISTON_CROWN_THICKNESS_FRAC * d
+    skirt_len = PISTON_SKIRT_LENGTH_FRAC * d
+    wall_t = PISTON_WALL_THICKNESS_FRAC * d
     crown_vol = math.pi * d * d / 4.0 * crown_t
     skirt_vol = math.pi * d * wall_t * skirt_len
-    aluminium_density = 2700.0
-    piston = (crown_vol + skirt_vol) * aluminium_density
-    return piston * 1.33        # + the rod's reciprocating third
+    piston = (crown_vol + skirt_vol) * PISTON_ALLOY_DENSITY_KG_M3
+    return piston * ROD_RECIPROCATING_SHARE
 
 
 def inertia_force_at_tdc_n(rpm: float, bore_m: float, stroke_m: float,

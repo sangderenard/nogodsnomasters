@@ -384,3 +384,163 @@ def spec_for_rating(construction_key: str, rated_w: float, reference_omega_rad_s
     bore = (4.0 * per_cyl / math.pi) ** (1.0 / 3.0)
     return CompressorSpec(construction=construction_key, bore_m=bore, stroke_m=bore,
                           cylinders=cylinders, unit_mass_kg=unit_mass_kg)
+
+# ---------------------------------------------------------------------
+# THE SAME MACHINE AGAIN, POINTED THE OTHER WAY
+# ---------------------------------------------------------------------
+#
+# A vacuum pump is a compressor whose SUCTION is below atmosphere and
+# whose discharge is atmosphere. Nothing about the machine changes --
+# which is why it belongs in this module rather than in a new one -- but
+# one consequence of volumetric_efficiency above stops being an
+# inconvenience and becomes the defining property:
+#
+#   A SINGLE STAGE HAS AN ULTIMATE PRESSURE IT CANNOT BEAT.
+#
+# eta_v = 1 + c - c.r^(1/n) hits zero at a finite pressure ratio. Past
+# it, the clearance gas re-expands to fill the entire stroke, the
+# suction valve never opens, and the pump moves nothing at all while
+# still drawing power and making heat. Compressing, that shows up as a
+# delivery limit. Evacuating, it IS the vacuum limit, and it is why
+# ultimate pressure is quoted on every pump ever sold:
+#
+#   r_max = ((1 + c) / c)^n        P_ultimate = P_atmosphere / r_max
+#
+# A 3% clearance gets you about a 60:1 ratio, so roughly 1.7 kPa -- and
+# a two-stage pump, whose second stage discharges into the first's
+# suction, multiplies the ratios and squares the vacuum. That is the
+# whole reason two-stage pumps exist and it falls straight out of the
+# law already written above.
+
+#: Atmosphere, the discharge a vacuum pump works against.
+ATMOSPHERE_PA = 101_325.0
+
+
+@dataclass
+class VacuumPump:
+    """A pump that evacuates, sized by its own clearance.
+
+    `stages` is not a quality setting: each stage discharges into the
+    next one's suction, so the achievable ratios MULTIPLY and the
+    ultimate pressure falls by a power. Two stages is not twice as good,
+    it is squared."""
+    identity: str = "plant.vacuum_pump"
+    displacement_m3_s: float = 0.004        # ~14 m3/h, a small shop pump
+    clearance_frac: float = 0.03
+    polytropic_n: float = 1.3
+    stages: int = 1
+    motor_w: float = 750.0
+    #: Gas ballast admits a little atmosphere into the compression
+    #: stroke so condensable vapour leaves with it instead of
+    #: condensing into the pump oil. Real, necessary when pulling
+    #: anything wet, and it costs ultimate vacuum -- which is the trade
+    #: an operator actually makes.
+    gas_ballast: bool = False
+
+    def stage_ratio_limit(self) -> float:
+        """Where eta_v reaches zero for ONE stage."""
+        c = max(self.clearance_frac, 1e-6)
+        return ((1.0 + c) / c) ** self.polytropic_n
+
+    def ultimate_pa(self) -> float:
+        """The lowest pressure this pump can reach, ever.
+
+        Ratios multiply across stages, so the ultimate falls as a power
+        of the stage count."""
+        r = self.stage_ratio_limit() ** max(1, self.stages)
+        ult = ATMOSPHERE_PA / max(r, 1.0)
+        if self.gas_ballast:
+            # ballast air is admitted every stroke and has to be pumped
+            # back out, which lifts the floor substantially
+            ult *= 20.0
+        return ult
+
+    def speed_m3_s(self, pressure_pa: float) -> float:
+        """Pumping speed at this suction pressure.
+
+        Displacement times the volumetric efficiency at the ratio it is
+        currently working against -- the SAME function the compressors
+        use. Speed falls to zero at the ultimate, which is why the last
+        decade of a pumpdown takes as long as all the others."""
+        p = max(float(pressure_pa), 1e-9)
+        if p <= self.ultimate_pa():
+            return 0.0
+        ratio = ATMOSPHERE_PA / p
+        per_stage = ratio ** (1.0 / max(1, self.stages))
+        eta = volumetric_efficiency(per_stage, self.clearance_frac, self.polytropic_n)
+        return max(0.0, self.displacement_m3_s * eta)
+
+    def pumpdown_s(self, volume_m3: float, from_pa: float = ATMOSPHERE_PA,
+                   to_pa: float | None = None, steps: int = 400) -> float:
+        """How long to evacuate a chamber.
+
+        The textbook t = (V/S).ln(P0/P1) assumes constant speed, which
+        is exactly what a real pump does not have: S collapses as the
+        suction pressure approaches ultimate. Integrating numerically
+        over the real speed curve is the honest answer, and it is why a
+        pumpdown that reaches 10 kPa in a minute can take twenty to
+        reach 100 Pa."""
+        ult = self.ultimate_pa()
+        target = to_pa if to_pa is not None else ult * 1.5
+        if target <= ult:
+            return float("inf")
+        p0, p1 = max(from_pa, target), target
+        t = 0.0
+        # logarithmic steps, because the physics is logarithmic
+        import math as _m
+        lo, hi = _m.log(p1), _m.log(p0)
+        for i in range(steps):
+            a = _m.exp(hi - (hi - lo) * i / steps)
+            b = _m.exp(hi - (hi - lo) * (i + 1) / steps)
+            s_mid = self.speed_m3_s(0.5 * (a + b))
+            if s_mid <= 0.0:
+                return float("inf")
+            t += volume_m3 / s_mid * _m.log(a / b)
+        return t
+
+    def power_w(self, pressure_pa: float) -> float:
+        """Shaft power at this suction pressure.
+
+        The isothermal work of moving gas up a pressure ratio, which is
+        the honest lower bound: P.V.ln(r) per unit volume, times the
+        volume actually being moved.
+
+        It PEAKS PARTWAY DOWN, not at the start, and that is the real
+        and slightly surprising behaviour. At atmosphere the ratio is 1
+        and there is no compression work at all; near ultimate the pump
+        is barely moving any gas. In between there is both a real ratio
+        and real throughput, and that is where a pump trips its
+        overload."""
+        p = max(float(pressure_pa), 1.0)
+        if p >= ATMOSPHERE_PA:
+            return 0.0
+        return self.speed_m3_s(p) * p * math.log(ATMOSPHERE_PA / p)
+
+    def peak_power_w(self, samples: int = 200) -> tuple:
+        """Where the overload actually happens, and how big it is."""
+        ult = self.ultimate_pa()
+        best_p, best_w = ATMOSPHERE_PA, 0.0
+        for i in range(1, samples + 1):
+            frac = i / (samples + 1.0)
+            p = ult * (ATMOSPHERE_PA / ult) ** frac
+            w = self.power_w(p)
+            if w > best_w:
+                best_p, best_w = p, w
+        return best_p, best_w
+
+    def report(self, volume_m3: float = 0.25) -> str:
+        ult = self.ultimate_pa()
+        L = [f"{self.stages}-stage vacuum pump, {self.clearance_frac * 100:.0f}% clearance"
+             + (", gas ballast open" if self.gas_ballast else ""),
+             f"  stage ratio limit {self.stage_ratio_limit():.0f}:1  ->  ultimate "
+             f"{ult:.0f} Pa ({ult / 101325.0 * 1000:.2f} mbar)"]
+        for target in (50_000.0, 10_000.0, 2_500.0, 500.0):
+            if target <= ult:
+                L.append(f"  to {target:7.0f} Pa: UNREACHABLE -- below this pump's "
+                         f"{ult:.0f} Pa ultimate")
+                continue
+            t = self.pumpdown_s(volume_m3, to_pa=target)
+            L.append(f"  to {target:7.0f} Pa: {t:6.1f} s on a "
+                     f"{volume_m3 * 1000:.0f} L chamber")
+        return "\n".join(L)
+

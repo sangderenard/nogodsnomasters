@@ -40,8 +40,8 @@ MAGNESIUM SCRAPE PLATES -- sparks with a real ignition temperature.
   the sparks appear the instant the plate touches down and stop the
   instant it lifts.
 
-  Magnesium is used because of two real numbers. It ignites around
-  travel 923 K, far below steel's practical spark temperature, and it
+  Magnesium is used because of two real numbers. It ignites at about
+  923 K, far below steel's practical spark temperature, and it
   burns at roughly 3400 K -- hot enough to be brilliant white rather
   than the orange of a steel spark. It also burns in CO2 and in
   nitrogen, which is why a magnesium fire cannot be put out with a
@@ -193,6 +193,12 @@ FLAME_KIT_SPARK_ENERGY_MJ = 40.0
 #: flammable range, and inside the pipe it is far too rich.
 TAILPIPE_ENTRAINMENT_FRAC = 0.35
 
+#: Stoichiometric volume fraction of hydrocarbon vapour in air, which is
+#: what an unburnt-fuel MASS fraction must be converted through before
+#: it can be compared against lfl/ufl at all. Petrol vapour is about
+#: 1.8% by volume at stoichiometric with a flammable band of 1.4-7.6%.
+STOICH_HYDROCARBON_VOL_FRAC = 0.07
+
 
 @dataclass
 class FlameKit:
@@ -240,7 +246,7 @@ class FlameKit:
         if unburnt_frac <= 0.0:
             return 0.0
         # rough volumetric fuel fraction in the raw stream, then diluted
-        raw = unburnt_frac / max(phi, 1e-6) * 0.07   # stoich hydrocarbon vol frac ~7%
+        raw = unburnt_frac / max(phi, 1e-6) * STOICH_HYDROCARBON_VOL_FRAC
         pumped = self.air_pump_kg_s
         dilution = 1.0 + entrainment + pumped * 10.0
         return raw / dilution

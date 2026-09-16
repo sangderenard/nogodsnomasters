@@ -98,6 +98,15 @@ SHREDDED_BULK_DENSITY_KG_M3 = {
 #: Real design practice, and the limit shredded scrap actually hits.
 OUTLET_LUMP_CLEARANCE = 6.0
 
+#: Beverloo's discharge coefficient: a real published constant for
+#: granular outflow through an orifice, near 0.58 and remarkably
+#: insensitive to what the material is.
+BEVERLOO_COEFFICIENT = 0.58
+#: And its empirical lump offset -- the effective outlet is smaller than
+#: the real one by about 1.4 grain diameters, because grains cannot flow
+#: through the very edge.
+BEVERLOO_LUMP_OFFSET = 1.4
+
 #: Janssen's lateral-to-vertical stress ratio for a free-flowing
 #: granular solid. Real, standard, and only weakly material-dependent.
 JANSSEN_K = 0.4
@@ -222,17 +231,21 @@ class Hopper:
                           "and then rathole")
         return True, "mass flow: the whole contents move together"
 
-    def discharge_kg_s(self, discharge_coefficient: float = 0.58) -> float:
+    def discharge_kg_s(self, discharge_coefficient: float | None = None) -> float:
         """Beverloo-style outlet flow.
 
         Granular discharge is famously INDEPENDENT of head -- a hopper
         empties at the same rate full or nearly empty, which is the
         clearest possible demonstration that it is not a fluid. The rate
         goes with the outlet to the five-halves power."""
+        # read at call time, not bound at def time -- see the
+        # import-baked category in jacobian_audit
+        if discharge_coefficient is None:
+            discharge_coefficient = BEVERLOO_COEFFICIENT
         ok, _ = self.flows()
         if not ok:
             return 0.0
-        d = max(0.0, self.outlet_m - 1.4 * self.largest_lump_m)
+        d = max(0.0, self.outlet_m - BEVERLOO_LUMP_OFFSET * self.largest_lump_m)
         if d <= 0.0:
             return 0.0
         return (discharge_coefficient * self.bulk_density()

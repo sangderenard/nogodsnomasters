@@ -80,6 +80,13 @@ FLAME_SPEED_AT_COMPRESSION_M_S = 1.0
 #: is the standard order quoted for production pistons.
 CREVICE_FRAC_OF_DISPLACEMENT = 0.0025
 
+#: Ceiling on either geometric loss. Both are ratios against clearance
+#: volume and both diverge at an absurd compression ratio. Named rather
+#: than buried: a clamp that silently binds has a zero derivative on one
+#: side and a large one on the other, which is exactly what
+#: jacobian_audit exists to surface.
+MAX_GEOMETRIC_LOSS_FRAC = 0.15
+
 
 def quench_distance_m(flame_speed_m_s: float | None = None,
                       diffusivity_m2_s: float | None = None,
@@ -134,14 +141,14 @@ def completeness(bore_m: float, stroke_m: float, compression_ratio: float,
     crevice_frac = (CREVICE_FRAC_OF_DISPLACEMENT if crevice_frac is None
                     else crevice_frac)
     crevice_vol = crevice_frac * disp
-    crevice_loss = min(0.15, crevice_vol / max(clearance, 1e-12))
+    crevice_loss = min(MAX_GEOMETRIC_LOSS_FRAC, crevice_vol / max(clearance, 1e-12))
 
     # --- 3. wall quenching ---------------------------------------------
     # the chamber at TDC as a disc of bore diameter: two faces and a rim
     h = clearance / (math.pi * bore_m * bore_m / 4.0)
     wall_area = 2.0 * (math.pi * bore_m * bore_m / 4.0) + math.pi * bore_m * h
     dq = quench_distance_m()
-    quench_loss = min(0.15, wall_area * dq / max(clearance, 1e-12))
+    quench_loss = min(MAX_GEOMETRIC_LOSS_FRAC, wall_area * dq / max(clearance, 1e-12))
 
     eff = oxygen * (1.0 - crevice_loss) * (1.0 - quench_loss)
     bits = []
