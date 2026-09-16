@@ -107,6 +107,16 @@ GRAPH_RECORD = {
 }
 
 
+#: The engine's own modules the compiler may ingest, one file each. The
+#: three named here are the classes `EngineCycleSim.step` mutates through
+#: fields inside its loop; each was refused by name before it was listed.
+ENGINE_SOURCE_MODULES = (
+    "ordnance",
+    "burst",
+    "hole_emitters",
+)
+
+
 def contract(*, full_native: bool = True):
     """The contract engine_toy lowers under.
 
@@ -136,9 +146,19 @@ def contract(*, full_native: bool = True):
     # `unknown` and are rejected `provenance_not_declared`, so once source
     # pursuit resolves `self.ordnance.step(...)` to the real method, the
     # contract itself refuses to ingest it, the effect stays opaque, and
-    # the engine loop refuses. Declaring this directory as an authored root
-    # is the fact the contract was missing.
-    policy = policy.with_roots(authored=[Path(__file__).resolve().parent])
+    # the engine loop refuses.
+    #
+    # SELECTIVELY, BY NAME AND PATH, NEVER BY DIRECTORY. A directory root
+    # admits whatever the step happens to reach; this list admits exactly
+    # the modules the engine is meant to be built from. When a refusal
+    # names a module that is not here, that is the question to answer:
+    # add it because the engine genuinely uses it, or find out why the
+    # engine is reaching for something it should not.
+    here = Path(__file__).resolve().parent
+    policy = policy.with_sources([
+        (name, here / f"{name}.py")
+        for name in ENGINE_SOURCE_MODULES
+    ])
     if full_native:
         policy = policy.with_execution_file(FULL_NATIVE_EXECUTION)
     # Declared on top of whatever the repository sheet already states, not
