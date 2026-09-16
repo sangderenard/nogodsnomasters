@@ -322,3 +322,230 @@ def damage_record(section: TubeSection, rest_length_m: float, *,
         # fracture, and 320 mm of recoil came back as 178% strain.
         record["axial_travel_is_commanded"] = True
     return record
+
+
+# ---------------------------------------------------------------------
+# the sections machine frames are actually made of
+# ---------------------------------------------------------------------
+# A round chromoly tube is what a roll cage is made of. A machine frame
+# is not a roll cage: it is square hollow section, because square sits
+# flat on a floor and takes a bolt through a flat face, or it is angle,
+# because angle is the cheapest section that has two flat faces at
+# right angles to bolt a panel to. Both come in any material the mill
+# rolls -- steel angle is an ironmonger's commodity and square
+# aluminium tube is what a lightweight enclosure frame is welded from --
+# so the material is a declaration on the section, exactly as it is on
+# the round tube, and not a property of the shape.
+#
+# They present the same interface TubeSection does, so a member of
+# either is solved, damaged and reported by the same code that solves a
+# tube, and nothing downstream needs to know the shape it was given.
+
+@dataclass
+class SquareTubeSection:
+    """Square hollow section: a side and a wall."""
+    side_m: float
+    wall_m: float
+    material: str = "a36"
+    designation: str = ""
+    #: an outside corner radius, which every real SHS has and which
+    #: matters little enough to the section properties to be a nominal
+    corner_radius_m: float = 0.0
+
+    @property
+    def inner_side_m(self) -> float:
+        return max(0.0, self.side_m - 2.0 * self.wall_m)
+
+    @property
+    def area_m2(self) -> float:
+        return self.side_m ** 2 - self.inner_side_m ** 2
+
+    @property
+    def second_moment_m4(self) -> float:
+        """The same about either axis, which is the other reason a
+        machine frame is square: it does not care which way up it was
+        welded."""
+        return (self.side_m ** 4 - self.inner_side_m ** 4) / 12.0
+
+    @property
+    def radius_of_gyration_m(self) -> float:
+        return math.sqrt(self.second_moment_m4 / max(self.area_m2, 1e-12))
+
+    @property
+    def outer_diameter_m(self) -> float:
+        """The circle it fits in: what a drawing needs and nothing else."""
+        return self.side_m * math.sqrt(2.0)
+
+    @property
+    def mat(self) -> StructuralMaterial:
+        return MATERIAL_BY_KEY[self.material]
+
+    @property
+    def mass_per_m_kg(self) -> float:
+        return self.area_m2 * self.mat.density_kg_m3
+
+    def axial_yield_n(self) -> float:
+        return self.area_m2 * self.mat.yield_pa
+
+    def buckling_load_n(self, length_m: float, end_fixity: float = 1.0) -> float:
+        if length_m <= 0.0:
+            return float("inf")
+        effective = length_m / max(end_fixity, 1e-6)
+        return (math.pi ** 2 * self.mat.youngs_pa * self.second_moment_m4
+                / (effective * effective))
+
+    def capacity_n(self, length_m: float, end_fixity: float = 1.0) -> float:
+        return min(self.axial_yield_n(), self.buckling_load_n(length_m, end_fixity))
+
+    def describe(self) -> list:
+        m = self.mat
+        return [f"  {self.designation or 'SHS'}: {self.side_m * 1000:.0f} mm square "
+                f"x {self.wall_m * 1000:.1f} mm wall, {m.label} ({m.spec})",
+                f"    area {self.area_m2 * 1e6:.0f} mm2, I {self.second_moment_m4 * 1e12:.0f} mm4, "
+                f"{self.mass_per_m_kg:.2f} kg/m"]
+
+
+@dataclass
+class AngleSection:
+    """Equal angle: two legs and a thickness.
+
+    THE WEAK AXIS IS THE ONE THAT MATTERS. An angle is stiff about the
+    axis through its corner and soft about the diagonal, and a member
+    that can buckle picks the soft one, so `second_moment_m4` reports
+    the least principal value rather than the flattering one. That is
+    why an angle-iron frame is braced and a square-tube frame often is
+    not: same steel, a third the weak-axis stiffness."""
+    leg_m: float
+    thickness_m: float
+    material: str = "a36"
+    designation: str = ""
+
+    @property
+    def area_m2(self) -> float:
+        b, t = self.leg_m, self.thickness_m
+        return t * (2.0 * b - t)
+
+    @property
+    def centroid_m(self) -> float:
+        """From the outer face of either leg, the same both ways."""
+        b, t = self.leg_m, self.thickness_m
+        return (b * b + b * t - t * t) / (2.0 * (2.0 * b - t))
+
+    @property
+    def second_moment_leg_m4(self) -> float:
+        """About an axis through the centroid parallel to a leg."""
+        b, t = self.leg_m, self.thickness_m
+        c = self.centroid_m
+        # the leg along the axis, and the leg standing on it
+        i_flat = b * t ** 3 / 12.0 + b * t * (c - t / 2.0) ** 2
+        h = b - t
+        i_stand = t * h ** 3 / 12.0 + t * h * (t + h / 2.0 - c) ** 2
+        return i_flat + i_stand
+
+    @property
+    def second_moment_m4(self) -> float:
+        """The least principal second moment, about the diagonal."""
+        b, t = self.leg_m, self.thickness_m
+        c = self.centroid_m
+        i_xx = self.second_moment_leg_m4
+        # THE PRODUCT OF INERTIA, as the sum over the two rectangles of
+        # area times both centroidal offsets. The flat leg is b by t with
+        # its centre at (b/2, t/2) from the heel; the standing leg is t
+        # by (b - t) with its centre at (t/2, t + (b - t)/2); the section
+        # centroid is at (c, c). For a 40x40x4 this gives 2.7 cm4, and
+        # 4.47 - 2.7 = 1.74 cm4 least, against a table's 1.86 -- the
+        # difference being the root radius a rolled angle has and this
+        # sharp-cornered one does not.
+        h = b - t
+        i_xy = (b * t * (b / 2.0 - c) * (t / 2.0 - c)
+                + t * h * (t / 2.0 - c) * (t + h / 2.0 - c))
+        # equal angle: i_yy == i_xx, principal values are i_xx +/- |i_xy|
+        return max(i_xx - abs(i_xy), 1e-15)
+
+    @property
+    def radius_of_gyration_m(self) -> float:
+        return math.sqrt(self.second_moment_m4 / max(self.area_m2, 1e-12))
+
+    @property
+    def outer_diameter_m(self) -> float:
+        return self.leg_m * math.sqrt(2.0)
+
+    @property
+    def mat(self) -> StructuralMaterial:
+        return MATERIAL_BY_KEY[self.material]
+
+    @property
+    def mass_per_m_kg(self) -> float:
+        return self.area_m2 * self.mat.density_kg_m3
+
+    def axial_yield_n(self) -> float:
+        return self.area_m2 * self.mat.yield_pa
+
+    def buckling_load_n(self, length_m: float, end_fixity: float = 1.0) -> float:
+        if length_m <= 0.0:
+            return float("inf")
+        effective = length_m / max(end_fixity, 1e-6)
+        return (math.pi ** 2 * self.mat.youngs_pa * self.second_moment_m4
+                / (effective * effective))
+
+    def capacity_n(self, length_m: float, end_fixity: float = 1.0) -> float:
+        return min(self.axial_yield_n(), self.buckling_load_n(length_m, end_fixity))
+
+    def describe(self) -> list:
+        m = self.mat
+        return [f"  {self.designation or 'angle'}: {self.leg_m * 1000:.0f} x "
+                f"{self.leg_m * 1000:.0f} x {self.thickness_m * 1000:.0f} mm, "
+                f"{m.label} ({m.spec})",
+                f"    area {self.area_m2 * 1e6:.0f} mm2, least I "
+                f"{self.second_moment_m4 * 1e12:.0f} mm4, {self.mass_per_m_kg:.2f} kg/m"]
+
+
+@dataclass
+class SheetSection:
+    """A strip of sheet, for a panel or a seam: a width and a gauge."""
+    width_m: float
+    thickness_m: float
+    material: str = "a36"
+    designation: str = ""
+
+    @property
+    def area_m2(self) -> float:
+        return self.width_m * self.thickness_m
+
+    @property
+    def second_moment_m4(self) -> float:
+        return self.width_m * self.thickness_m ** 3 / 12.0
+
+    @property
+    def radius_of_gyration_m(self) -> float:
+        return math.sqrt(self.second_moment_m4 / max(self.area_m2, 1e-12))
+
+    @property
+    def outer_diameter_m(self) -> float:
+        return self.width_m
+
+    @property
+    def mat(self) -> StructuralMaterial:
+        return MATERIAL_BY_KEY[self.material]
+
+    @property
+    def mass_per_m_kg(self) -> float:
+        return self.area_m2 * self.mat.density_kg_m3
+
+    def axial_yield_n(self) -> float:
+        return self.area_m2 * self.mat.yield_pa
+
+    def buckling_load_n(self, length_m: float, end_fixity: float = 1.0) -> float:
+        if length_m <= 0.0:
+            return float("inf")
+        effective = length_m / max(end_fixity, 1e-6)
+        return (math.pi ** 2 * self.mat.youngs_pa * self.second_moment_m4
+                / (effective * effective))
+
+    def capacity_n(self, length_m: float, end_fixity: float = 1.0) -> float:
+        return min(self.axial_yield_n(), self.buckling_load_n(length_m, end_fixity))
+
+    def describe(self) -> list:
+        m = self.mat
+        return [f"  {self.designation or 'sheet'}: {self.width_m * 1000:.0f} mm wide "
+                f"x {self.thickness_m * 1000:.2f} mm, {m.label} ({m.spec})"]

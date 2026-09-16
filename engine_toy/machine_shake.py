@@ -100,6 +100,13 @@ class ShakeModel:
     foot_stiffness: dict = field(default_factory=dict, repr=False)
     static_forces: dict = field(default_factory=dict, repr=False)
     cg: tuple = (0.0, 0.0, 0.0)
+    #: THE FEET THAT ARE NOT TOUCHING, and by how much. They are not in
+    #: the stiffness -- that is the whole point of build() -- but they
+    #: are still under the frame, and a frame rocking on the others
+    #: strikes them when its travel at that corner exceeds the gap.
+    clearances: dict = field(default_factory=dict, repr=False)
+    clear_positions: dict = field(default_factory=dict, repr=False)
+    clear_stiffness: dict = field(default_factory=dict, repr=False)
 
     def critical_speeds_rpm(self) -> list:
         return sorted(m.rpm for m in self.modes if m.frequency_hz > 0.0)
@@ -122,6 +129,7 @@ def build(identity: str, stance: Stance, feet, rigid_body, g: Ground
     including it would stiffen a model of a frame that is, in fact,
     rocking -- the exact error that makes an unlevel machine look fine."""
     carrying = [f for f in feet if stance.forces.get(f.identity, 0.0) > 0.0]
+    clear = [f for f in feet if stance.forces.get(f.identity, 0.0) <= 0.0]
     cg = np.asarray(rigid_body.center_of_gravity, float)
     m = float(rigid_body.total_mass_kg)
     I = np.asarray(rigid_body.inertia_tensor_kg_m2, float)
@@ -146,6 +154,20 @@ def build(identity: str, stance: Stance, feet, rigid_body, g: Ground
         positions[f.identity] = (X, Z)
         stiff[f.identity] = k
 
+    # a lifted foot's remaining clearance is its gap less the frame's
+    # travel at that corner, in feet.stand's own sign convention: travel
+    # is the frame moving down, so compression = travel - gap and a foot
+    # with compression <= 0 is clear by exactly -compression
+    clearances, clear_pos, clear_k = {}, {}, {}
+    for f in clear:
+        X = float(f.position[0]) - float(cg[0])
+        Z = float(f.position[2]) - float(cg[2])
+        travel = stance.heave_m + stance.tilt_x * X + stance.tilt_z * Z
+        gap = float(stance.gaps_m.get(f.identity, 0.0))
+        clearances[f.identity] = max(0.0, gap - travel)
+        clear_pos[f.identity] = (X, Z)
+        clear_k[f.identity] = f.stiffness_n_per_m(g)
+
     zeta = GROUND_DAMPING.get(g.key, 0.10)
     modes = []
     if len(carrying) >= 3 and np.linalg.det(M) > 0:
@@ -166,7 +188,9 @@ def build(identity: str, stance: Stance, feet, rigid_body, g: Ground
                       stiffness_matrix=K, foot_positions=positions,
                       foot_stiffness=stiff,
                       static_forces=dict(stance.forces),
-                      cg=tuple(float(v) for v in cg))
+                      cg=tuple(float(v) for v in cg),
+                      clearances=clearances, clear_positions=clear_pos,
+                      clear_stiffness=clear_k)
 
 
 @dataclass(frozen=True)
@@ -181,10 +205,12 @@ class Response:
     lifts_off: tuple            # feet whose static load is being overcome
     nearest_mode: "Mode | None"
     amplification: float        # how far above the static deflection
+    clear_travel_m: dict = None # amplitude at feet that are NOT touching
+    strikes: tuple = ()         # clear feet the frame's travel reaches
 
     @property
     def hammering(self) -> bool:
-        return bool(self.lifts_off)
+        return bool(self.lifts_off) or bool(self.strikes)
 
     def describe(self) -> str:
         line = (f"  {self.rpm:7.0f} rpm ({self.hz:5.2f} Hz): "
@@ -194,6 +220,8 @@ class Response:
             line += f", nearest mode {self.nearest_mode.frequency_hz:.2f} Hz"
         if self.lifts_off:
             line += f"  HAMMERING: {', '.join(self.lifts_off)} leaves the floor"
+        if self.strikes:
+            line += f"  STRIKING: {', '.join(self.strikes)} hits the floor"
         return line
 
 
@@ -253,6 +281,19 @@ def respond(model: ShakeModel, rpm: float, *, unbalance_kg_m: float,
         if f > model.static_forces.get(ident, 0.0):
             lifts.append(ident)
 
+    # A FOOT THAT IS NOT TOUCHING CAN STILL BE HIT. The frame rocks on
+    # the feet that carry it; at a corner wound short of the floor the
+    # travel is unconstrained, and once it exceeds the clearance the pad
+    # lands on the floor every cycle. This is the "tiny freedom of one
+    # short foot" turned into a number: a small clearance is struck by a
+    # small amplitude, and the impact is sized by the overtravel.
+    clear_travel, strikes = {}, []
+    for ident, (X, Z) in model.clear_positions.items():
+        amp = abs(float(q[0] + q[1] * X + q[2] * Z))
+        clear_travel[ident] = amp
+        if amp > model.clearances.get(ident, 0.0):
+            strikes.append(ident)
+
     nearest = None
     if model.modes:
         nearest = min(model.modes, key=lambda m: abs(m.frequency_hz - hz))
@@ -261,7 +302,8 @@ def respond(model: ShakeModel, rpm: float, *, unbalance_kg_m: float,
     return Response(rpm=rpm, hz=hz, heave_m=abs(float(q[0])),
                     slope_x=float(q[1]), slope_z=float(q[2]),
                     foot_force_n=dyn, lifts_off=tuple(sorted(lifts)),
-                    nearest_mode=nearest, amplification=amp)
+                    nearest_mode=nearest, amplification=amp,
+                    clear_travel_m=clear_travel, strikes=tuple(sorted(strikes)))
 
 
 def sweep(model: ShakeModel, *, unbalance_kg_m: float, at=(0.0, 0.0, 0.0),
@@ -274,3 +316,100 @@ def sweep(model: ShakeModel, *, unbalance_kg_m: float, at=(0.0, 0.0, 0.0),
     return [respond(model, from_rpm + (to_rpm - from_rpm) * i / max(steps - 1, 1),
                     unbalance_kg_m=unbalance_kg_m, at=at)
             for i in range(steps)]
+
+
+# ---------------------------------------------------------------------
+# what a spinning body does to the modes
+# ---------------------------------------------------------------------
+
+def whirl_modes(model: ShakeModel, angular_momentum_y: float) -> list:
+    """The modes of the same frame with a gyroscope in it.
+
+    A rotor with angular momentum H resists being tilted, and it does so
+    by turning a tilt about one axis into a moment about the other. In
+    the frame's three coordinates -- heave and the two slopes -- that is
+    a skew coupling between the two slope RATES, of size H's component
+    along the vertical, because a vertical-axis rotor is the one whose
+    momentum the vertical feet can react. A horizontal rotor's gyroscopic
+    moment tries to yaw the frame, and vertical props do not resist yaw
+    at all: that is a real boundary of a three-freedom model and it is
+    stated rather than hidden.
+
+    THE SPLIT IS THE POINT. With a gyroscope the two rocking modes stop
+    being two frequencies and become a forward and a backward whirl that
+    move apart as the rotor speeds up -- so the mode a run-up crosses is
+    not the one measured at rest, and that is why the table is keyed by
+    operating state rather than computed once.
+
+    M q'' + G q' + K q = 0 is quadratic in the eigenvalue, so it is
+    solved as the first-order system of twice the size; the frequencies
+    are the imaginary parts of its eigenvalues. Undamped, deliberately:
+    the modal damping is applied per mode by respond(), and folding it
+    in here would shift the frequencies by amounts smaller than the
+    ground damping is known to."""
+    M, K = model.mass_matrix, model.stiffness_matrix
+    if not model.modes or np.linalg.det(M) <= 0.0:
+        return []
+    H = float(angular_momentum_y)
+    if abs(H) < 1e-12:
+        return list(model.modes)
+    G = np.array([[0.0, 0.0, 0.0],
+                  [0.0, 0.0, H],
+                  [0.0, -H, 0.0]])
+    Mi = np.linalg.inv(M)
+    A = np.block([[np.zeros((3, 3)), np.eye(3)],
+                  [-Mi @ K, -Mi @ G]])
+    vals, vecs = np.linalg.eig(A)
+    out = []
+    seen = []
+    zeta = model.modes[0].damping
+    for lam, v in zip(vals, vecs.T):
+        w = abs(float(lam.imag))
+        if w <= 1e-9 or any(abs(w - s) < 1e-6 * max(w, 1.0) for s in seen):
+            continue
+        seen.append(w)
+        phi = np.real(v[:3])
+        n = np.linalg.norm(phi)
+        phi = phi / n if n > 1e-12 else np.array([1.0, 0.0, 0.0])
+        out.append(Mode(index=len(out), frequency_hz=w / (2.0 * math.pi),
+                        shape=tuple(float(x) for x in phi), damping=zeta))
+    out.sort(key=lambda m: m.frequency_hz)
+    return [Mode(index=i, frequency_hz=m.frequency_hz, shape=m.shape,
+                 damping=m.damping) for i, m in enumerate(out)]
+
+
+# ---------------------------------------------------------------------
+# what hammering costs
+# ---------------------------------------------------------------------
+
+def hammering_power_w(model: ShakeModel, response: Response) -> dict:
+    """Energy per second going into each foot as impacts, not vibration.
+
+    TWO WAYS A FOOT HAMMERS, and they are sized the same way. A carrying
+    foot whose alternating force exceeds its static load parts from the
+    floor for a fraction of every cycle and lands again; the overshoot
+    -- the alternating force beyond the static -- is the part of the
+    travel the spring was not there for, and the energy of the landing
+    is that overshoot squared over twice the stiffness. A foot that is
+    not touching is struck when the frame's travel at that corner
+    exceeds its clearance; the overtravel is the same quantity from the
+    other side, and the same expression sizes it. One impact per cycle
+    in either case, so the power is the energy times the frequency.
+
+    THIS IS A BOUNDARY ESTIMATE. Past lift-off the linear model is
+    describing something that is no longer happening -- see the module
+    docstring -- so these numbers say how hard the boundary is being
+    crossed, not what happens on the far side of it. Commensurate is
+    the property they do have: zero exactly at the boundary, growing
+    continuously as it is crossed, and a foot that is barely short is
+    barely struck."""
+    out = {}
+    for ident, f in response.foot_force_n.items():
+        k = model.foot_stiffness[ident]
+        over = f - model.static_forces.get(ident, 0.0)
+        out[ident] = (over * over / (2.0 * k)) * response.hz if over > 0.0 else 0.0
+    for ident, amp in (response.clear_travel_m or {}).items():
+        k = model.clear_stiffness[ident]
+        over = amp - model.clearances.get(ident, 0.0)
+        out[ident] = (0.5 * k * over * over) * response.hz if over > 0.0 else 0.0
+    return out

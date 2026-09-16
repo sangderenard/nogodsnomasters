@@ -171,6 +171,20 @@ def build(identity: str = "plant.autoclave",
         "door_face": vessel.end_point("+"),
         "head_face": vessel.end_point("-"),
     }
+    # WHERE THE SHELL IS CARRIED, AND WHERE IT CARRIES. The saddles
+    # bear on the invert at each end and the basket rails are welded to
+    # the inner wall low on either flank. These are wrench points on the
+    # shell like any nozzle, and until they were declared here the
+    # vessel had no load path to its own feet: the seats were separate
+    # nodes at the shell surface, joined to the saddles and to nothing
+    # else, and wrench_paths reported 498 kg of vessel held by its
+    # steam line.
+    _saddle_z = CHAMBER_LENGTH_M / 2.0 - CHAMBER_RADIUS_M / 2.0
+    for _tag, _z in (("fixed", +_saddle_z), ("sliding", -_saddle_z)):
+        ports[f"saddle_{_tag}"] = vessel.side_point(
+            math.radians(180.0), along=(_z / (CHAMBER_LENGTH_M / 2.0)) * 0.9)
+    for _side, _ang in (("rail_l", 150.0), ("rail_r", 210.0)):
+        ports[_side] = vessel.side_point(math.radians(_ang), along=0.0)
     if with_vacuum:
         # ALSO HIGH, and for a reason worth stating: a vacuum line taken
         # from the invert draws the condensate standing there straight
@@ -210,8 +224,15 @@ def build(identity: str = "plant.autoclave",
                    normal=tuple(float(v) for v in ports[name].direction),
                    mating=name in ("door_face", "head_face"),
                    in_view="plant")
+            # A NOZZLE IS WELDED INTO THE SHELL. It was authored as a
+            # port-face-seal, which joints marks as carrying fluid and
+            # no load -- and so every nozzle, and everything hanging off
+            # one, was structurally adrift. A gasket is what the DOOR
+            # has; the rest is metal burned to metal.
+            # -- and so is a door ring or a dished head: the DOOR seals
+            # on its gasket, but the ring it seals against is welded on.
             g.edge(f"{identity}.port.{name}.seat", node_of[name],
-                   f"{identity}.port.{name}", "port-face-seal",
+                   f"{identity}.port.{name}", "shell-attachment-weld",
                    radius=0.004, part_role="port-seat")
 
     # ---- the door is a real part that opens -------------------------
@@ -225,6 +246,10 @@ def build(identity: str = "plant.autoclave",
     g.edge(f"{identity}.door.seal", d_nodes["face"], node_of["door_face"],
            "port-face-seal", radius=0.006, part_role="door-gasket",
            attributes_note="the pressure boundary is only closed when this is")
+    # the gasket seals; the quick-release ring is what HOLDS the door
+    # on, and the door's 38 kg reach the vessel through it
+    g.edge(f"{identity}.door.clamp", d_nodes["face"], node_of["door_face"],
+           "bolted-flange-mount", radius=0.010, part_role="door-clamp-ring")
 
     # ---- INSIDE: the load basket hangs off the INNER surface --------
     # This is why the vessel is a tube. The basket attaches to the wall
@@ -259,6 +284,11 @@ def build(identity: str = "plant.autoclave",
         g.edge(f"{identity}.rail.{side}.mount", f"{identity}.rail.{side}",
                b_nodes[side], "bolted-flange-mount", radius=0.008,
                part_role="basket-rail")
+        # and the rail's foot is welded to the shell: the wall thickness
+        # apart from the outer-surface wrench point, which is the shell
+        g.edge(f"{identity}.rail.{side}.weld", node_of[side],
+               f"{identity}.rail.{side}", "shell-attachment-weld",
+               radius=0.006, part_role="rail-foot-weld")
 
     # ---- the steam spreader, also inside ---------------------------
     spreader = Prism(identity=f"{identity}.spreader", kind="steam-spreader",
@@ -273,6 +303,9 @@ def build(identity: str = "plant.autoclave",
     # THE THROUGH-PORT: the spreader is inside, the steam line is
     # outside, and this member is the only thing that crosses. It is
     # short by construction because both ends are on surfaces.
+    g.edge(f"{identity}.spreader.flange", f"{identity}.port.steam_in",
+           s_nodes["feed"], "bolted-flange-mount", radius=0.012,
+           part_role="spreader-flange")
     g.edge(f"{identity}.steam.through", f"{identity}.port.steam_in",
            s_nodes["feed"], "steam-line", radius=0.012,
            circuit_identity="steam", part_role="through-port",
@@ -350,6 +383,10 @@ def build(identity: str = "plant.autoclave",
                f"{identity}.saddle.{tag}", "bolted-flange-mount", radius=0.014,
                part_role="saddle-bearing",
                load_path="the-shell-carried-on-its-saddle-horns")
+        g.edge(f"{identity}.saddle.{tag}.wear_plate", node_of[f"saddle_{tag}"],
+               f"{identity}.saddle.{tag}.seat", "shell-attachment-weld",
+               radius=0.014, part_role="saddle-wear-plate",
+               load_path="the-shell-carried-on-its-saddle-horns")
 
     # ---- OUTSIDE: vent pipe, and where it goes ---------------------
     # A vent is not a hole in the air. It carries hot gas somewhere it
@@ -362,6 +399,8 @@ def build(identity: str = "plant.autoclave",
                  attributes={"in_view": "plant"})
     v_ports = {"inlet": vent.end_point("-"), "outlet": vent.end_point("+")}
     v_nodes = emit_prism(g, vent, v_ports, assembly="autoclave")
+    g.edge(f"{identity}.vent.flange", f"{identity}.port.vent", v_nodes["inlet"],
+           "bolted-flange-mount", radius=0.019, part_role="vent-flange")
     g.edge(f"{identity}.vent.through", f"{identity}.port.vent", v_nodes["inlet"],
            "steam-line", radius=0.019, circuit_identity="steam",
            part_role="through-port")
@@ -398,8 +437,19 @@ def build(identity: str = "plant.autoclave",
                                           "machinery"})
     c_ports = {"inlet": collector.end_point("+"),
                "skim": collector.side_point(math.radians(90.0), along=+0.10),
-               "water_out": collector.side_point(math.radians(270.0), along=-0.15)}
+               "water_out": collector.side_point(math.radians(270.0), along=-0.15),
+               # WHAT IT HANGS BY. A collector under a vessel is strapped
+               # to the saddle nearest it; without these its 69 kg -- and
+               # 36 more when it is full -- reached the frame through a
+               # 19 mm condensate line, which is a finding wrench_paths
+               # makes and not a mounting.
+               "hang_l": collector.side_point(math.radians(0.0), along=+0.8),
+               "hang_r": collector.side_point(math.radians(180.0), along=+0.8)}
     c_nodes = emit_prism(g, collector, c_ports, assembly="autoclave")
+    for side, mount in (("hang_l", "left"), ("hang_r", "right")):
+        g.edge(f"{identity}.collector.strap.{side}", c_nodes[side],
+               f"{identity}.saddle.sliding.port.{mount}", "rigid-distance",
+               radius=0.010, part_role="collector-hanger-strap")
     g.edge(f"{identity}.drain.line", f"{identity}.port.drain", c_nodes["inlet"],
            "condensate-line", radius=0.019, circuit_identity="condensate",
            part_role="drain-line",
@@ -412,8 +462,28 @@ def build(identity: str = "plant.autoclave",
                      half_extent=(0.16, 0.12, 0.11), material="cast-iron",
                      attributes={"in_view": "plant",
                                  "stages": 2, "clearance_frac": 0.03})
-        p_ports = {"suction": pump.face_point("-x"), "motor": pump.face_point("+x")}
+        p_ports = {"suction": pump.face_point("-x"), "motor": pump.face_point("+x"),
+                   "base": pump.face_point("-y")}
+        # THE PUMP SPINS, AND SAYS SO. A two-stage rotary vane pump of
+        # this size turns a 9 kg rotor at 1450 rpm; it is balanced to
+        # G6.3, which is the ordinary grade for pumps and fans, and it
+        # runs only while the chamber is being evacuated. Every one of
+        # those is read by operating_states, and none of them is
+        # inferred from the word "pump".
+        pump.attributes.update({
+            "rotor_axis": (1.0, 0.0, 0.0), "rotor_rated_rpm": 1450.0,
+            "rotor_shape": "vaned-rotor", "rotor_mass_kg": 9.0,
+            "rotor_radius_m": 0.055, "balance_grade_mm_s": 6.3,
+            "runs_in": ("evacuate",)})
         p_nodes = emit_prism(g, pump, p_ports, assembly="autoclave")
+        # ON ISOLATORS. A pump bolted hard to the frame shakes the frame
+        # with its whole unbalance at every speed; on elastomer mounts
+        # it shakes it less above the mount frequency and more AT it,
+        # which is the trade an isolator is. The bracket lands on the
+        # fixed saddle's foot, the mount nearest it.
+        g.edge(f"{identity}.vacuum_pump.isolator", p_nodes["base"],
+               f"{identity}.saddle.fixed.port.right", "engine-mount-isolator",
+               radius=0.012, part_role="pump-isolator-bracket")
         g.edge(f"{identity}.vacuum.line", f"{identity}.port.vacuum",
                p_nodes["suction"], "vacuum-line", radius=0.016,
                circuit_identity="vacuum", part_role="through-port")
@@ -588,3 +658,54 @@ def describe(g) -> str:
 if __name__ == "__main__":
     g = build()
     print(describe(g))
+
+
+# ---------------------------------------------------------------------
+# what the machine does, as the thing its modes depend on
+# ---------------------------------------------------------------------
+
+#: What a full basket weighs on an ordinary cycle: investment shells
+#: on a rack. Declared, because it is a load the vessel carries and
+#: the frame feels, and a mode table evaluated for an empty basket
+#: would be a table for a machine nobody runs.
+BASKET_LOAD_KG = 40.0
+#: The collector is 36 litres; condensate is water.
+COLLECTOR_FULL_KG = 36.0
+
+
+def cycle(identity: str = "plant.autoclave", *, with_vacuum: bool = True,
+          live_vibration: bool = False):
+    """The autoclave's operating states, in order.
+
+    PURGE      steam displaces air downward and out of the drain;
+               nothing spins, the basket is loaded, the collector empty
+    EVACUATE   the vacuum pump runs up and holds; the only state with
+               a rotor in it, sampled along its run-up because the
+               crossing is where the damage is
+    STERILISE  holding at pressure; the pump is off, condensate is
+               collecting
+    EXHAUST    blowing down; the collector is at its fullest and the
+               machine at its heaviest
+
+    Two of these differ from each other by nothing but a mass in a
+    container, and that is enough to move the modes."""
+    from operating_states import Cycle, OperatingState, run_up
+    basket = f"{identity}.basket"
+    coll = f"{identity}.collector"
+    states = [
+        OperatingState("purge", charges_kg={basket: BASKET_LOAD_KG},
+                       note="downward displacement; nothing spins"),
+        OperatingState("evacuate", charges_kg={basket: BASKET_LOAD_KG},
+                       curve=run_up(10) if with_vacuum else (1.0,),
+                       note="vacuum pump runs up and holds"),
+        OperatingState("sterilise",
+                       charges_kg={basket: BASKET_LOAD_KG,
+                                   coll: COLLECTOR_FULL_KG / 3.0},
+                       note="holding at pressure; condensate collecting"),
+        OperatingState("exhaust",
+                       charges_kg={basket: BASKET_LOAD_KG,
+                                   coll: COLLECTOR_FULL_KG},
+                       note="blowdown; collector full"),
+    ]
+    return Cycle(machine=identity, states=tuple(states),
+                 live_vibration=live_vibration)

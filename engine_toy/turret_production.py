@@ -265,7 +265,18 @@ class ProductionGraph:
         alloy = attributes.pop("alloy", None) or mc.alloy
         wall = attributes.pop("wall_m", None) or max(
             0.0025, min(radius * 0.42, 0.0045 + radius * 0.16))
-        section = TubeSection(outer_diameter_m=radius * 2.0, wall_m=wall,
+        # A MEMBER MAY SAY WHAT SECTION IT IS. A machine frame is square
+        # hollow section or angle, not round tube, and a panel is sheet;
+        # a declared section is used as given and the round tube below
+        # is only what a member that declared nothing gets. The drawn
+        # radius follows the section so the picture is the paper.
+        declared = attributes.pop("section", None)
+        seam = attributes.pop("seam", None)
+        if declared is not None:
+            section = declared
+            radius = float(getattr(declared, "outer_diameter_m", radius * 2.0)) / 2.0
+        else:
+          section = TubeSection(outer_diameter_m=radius * 2.0, wall_m=wall,
                               material=alloy,
                               designation=f"{radius * 2000:.0f} mm OD x "
                                           f"{wall * 1000:.1f} mm {alloy}")
@@ -279,6 +290,34 @@ class ProductionGraph:
         if damage is not None and section_properties:
             damage.update(section_properties)
         bushing = _bushing(frame_mount) if mc.bushed else None
+        # A LINE IS STRUCTURAL WHEN IT WANTS TO BE. A hose carries no
+        # load, and `routed` says so; but a rigid drain, a conduit, a
+        # steel steam line CAN carry what hangs on its end -- a trap, a
+        # valve, a junction box -- and often does, with a small bracket
+        # to help. An author who declares `load_bearing=True` on a routed
+        # member gets its real cantilever stiffness, 3EI/L^3 from the
+        # section it already carries, plus whatever `support_stiffness_
+        # n_per_m` the bracket contributes in parallel; and wrench_paths
+        # then walks through it as the compliant link it is.
+        load_bearing = attributes.pop("load_bearing", False)
+        helped = float(attributes.pop("support_stiffness_n_per_m", 0.0) or 0.0)
+        if routed and load_bearing:
+            m = section.mat
+            k_pipe = (3.0 * m.youngs_pa * section.second_moment_m4
+                      / max(rest_length, 1e-3) ** 3)
+            attributes["line_support"] = {
+                "model": "cantilever-pipe-plus-bracket",
+                "pipe_stiffness_n_per_m": k_pipe,
+                "bracket_stiffness_n_per_m": helped,
+                "linear_stiffness_n_per_m": k_pipe + helped,
+                "damping_ratio": 0.02,
+                "section_designation": section.designation,
+            }
+        if seam is not None:
+            # a seam's pack is sized by the seam's own length: the count
+            # of fasteners is the length over the pitch
+            attributes["seam"] = (seam.pack(rest_length) if hasattr(seam, "pack")
+                                  else dict(seam))
         self.edges.append({
             "identity": identity, "a": a, "b": b, "constraint": constraint,
             "assembly": self.assembly,

@@ -83,6 +83,28 @@ BONDS = {
         "bolted-preload", "preloaded bolted flange", 620e6, 830e6,
         note="grade 8 in the bolt, but the joint slips at friction long "
              "before the bolt sees that"),
+    # ---- what holds sheet metal and light frames together ----------
+    "sheet-metal-screw": BondMaterial(
+        "sheet-metal-screw", "self-tapping sheet metal screw", 480e6, 620e6,
+        note="case-hardened, so the screw itself is never the weak part: "
+             "the SHEET is, and it fails by the thread stripping or the "
+             "hole tearing, which is why a seam's capacity is per screw "
+             "in a given gauge and not per screw"),
+    "spot-weld": BondMaterial(
+        "spot-weld", "resistance spot weld", 300e6, 420e6,
+        note="a nugget the size of the electrode tip, every few "
+             "centimetres: a unibody is a few thousand of them"),
+    "tack-weld": BondMaterial(
+        "tack-weld", "tack weld", 290e6, 483e6,
+        note="an E70 fillet a centimetre long: the way a bracket is put "
+             "on a sheet casing, because a full seam would warp the sheet. "
+             "Each tack is a short fillet with a real throat and the "
+             "bracket's capacity is the tacks' sum"),
+    "snap-fit": BondMaterial(
+        "snap-fit", "moulded cantilever snap", 40e6, 60e6,
+        note="held by the retention of a plastic hook, which is a "
+             "force, not a strength: it lets go at that force and is "
+             "undamaged by having done so, which is what it is for"),
 }
 
 
@@ -153,6 +175,31 @@ JOINT_TYPES = {
         "bolted-flange", "preloaded bolted flange", (RIGID,) * 6, "bolted-preload",
         note="rigid while the preload holds and a slip plane once it does "
              "not, which is a failure mode rather than a stiffness"),
+    # ---- sheet and light frame ------------------------------------
+    "screwed-seam": JointType(
+        "screwed-seam", "sheet metal screwed seam", (COMPLIANT,) * 6,
+        "sheet-metal-screw",
+        note="a lap of sheet with a screw every so many inches. Not "
+             "rigid: each screw is a stiffness in bearing against its "
+             "hole, and the seam's stiffness is that times the count. "
+             "Not bushed: it has no damping worth the name. See Seam"),
+    "snap-fastened": JointType(
+        "snap-fastened", "snap-fitted panel", (COMPLIANT,) * 6, "snap-fit",
+        note="a panel held by hooks: stiff enough to locate it, and it "
+             "releases at the retention force rather than breaking -- so "
+             "its capacity is small and its failure is reversible"),
+    "tack-welded": JointType(
+        "tack-welded", "tack-welded bracket", (RIGID,) * 6, "tack-weld",
+        note="a bracket, a stiffener or a stand-off on sheet casing, held "
+             "by tacks at a pitch. Rigid while it holds; the capacity is "
+             "the tacks', which is far less than the bracket's, so a "
+             "tacked bracket fails at the sheet and not in the bracket"),
+    "unibody-spot-welded": JointType(
+        "unibody-spot-welded", "spot-welded unibody seam", (RIGID,) * 6,
+        "spot-weld",
+        note="sheet folded into a box and spot welded along its flanges: "
+             "the case IS the frame. Rigid, because a spot weld does not "
+             "slip, and light, because there is nothing but the skin"),
 }
 
 
@@ -697,3 +744,150 @@ SPRING_TOKENS = frozenset(m.token for m in MEMBER_CONSTRAINTS.values()
                           if m.spring_like)
 ZERO_LENGTH_TOKENS = frozenset(m.token for m in MEMBER_CONSTRAINTS.values()
                                if m.zero_length)
+
+
+# =====================================================================
+#  A SEAM: fasteners along a length, which is how sheet is joined
+# =====================================================================
+# "A sheet metal screw every three inches" is the whole specification a
+# tinsmith gives, and it is enough, because everything else follows:
+# how many screws there are is the length over the pitch; what each
+# one carries is set by the sheet it is in, not by the screw; and what
+# each one is worth as a stiffness is the screw bearing on the hole it
+# cut, which is the sheet's modulus times its thickness, scaled by how
+# much of the hole is actually in bearing. Spot welds and snap hooks
+# are the same shape of declaration with different per-fastener
+# numbers, so one record covers all three.
+
+#: Per-fastener bearing stiffness as a fraction of E.t -- the sheet's
+#: modulus times its thickness -- which is the classical lap-joint
+#: fastener flexibility written the other way up. About a quarter for
+#: a screw in a hole it cut itself, which is a loose fit; a spot weld
+#: is a fused nugget and takes nearly all of it.
+FASTENER_BEARING_FRACTION = {
+    "sheet-metal-screw": 0.25,
+    "tack-weld": 0.80,
+    "spot-weld": 0.90,
+    "snap-fit": 0.05,
+}
+
+#: Where a fastener's capacity comes from. A screw in thin sheet fails
+#: by the sheet tearing or the thread stripping: bearing area (d.t)
+#: times the sheet's ultimate, times a knock-down for tear-out. A spot
+#: weld fails by shearing its nugget. A snap hook does not fail; it
+#: releases at a declared force.
+INCH_M = 0.0254
+
+
+@dataclass(frozen=True)
+class Seam:
+    """Fasteners along a joint, declared the way a shop declares them."""
+    fastener: str = "sheet-metal-screw"
+    #: how many per inch of seam, because that is how it is specified.
+    #: A screw every three inches is 1/3.
+    per_inch: float = 1.0 / 3.0
+    #: the sheet the fastener is in, which is what it is worth
+    sheet_thickness_m: float = 0.0015
+    sheet_material: str = "a36"
+    #: the screw's nominal diameter (a #10 is 4.8 mm), a spot weld's
+    #: nugget diameter, a snap hook's width
+    fastener_diameter_m: float = 0.0048
+    #: SNAP HOOKS ONLY: the force each hook lets go at
+    release_force_n: float = 0.0
+
+    @property
+    def per_m(self) -> float:
+        return self.per_inch / INCH_M
+
+    @property
+    def bond(self) -> BondMaterial:
+        return BONDS[self.fastener]
+
+    def _sheet(self):
+        from milspec import MATERIAL_BY_KEY
+        return MATERIAL_BY_KEY[self.sheet_material]
+
+    def stiffness_per_fastener_n_per_m(self) -> float:
+        """The fastener bearing on the sheet it is in."""
+        return (FASTENER_BEARING_FRACTION[self.fastener]
+                * self._sheet().youngs_pa * self.sheet_thickness_m)
+
+    def capacity_per_fastener_n(self) -> float:
+        if self.fastener == "snap-fit":
+            return float(self.release_force_n)
+        if self.fastener == "spot-weld":
+            nugget = math.pi * (self.fastener_diameter_m / 2.0) ** 2
+            return nugget * self.bond.shear_strength_pa
+        if self.fastener == "tack-weld":
+            # a short fillet: its throat is the leg over root two and
+            # its length is `fastener_diameter_m`, read as the tack's
+            # length; the leg is the sheet's thickness, because a tack
+            # on sheet cannot be bigger than the sheet
+            throat = self.sheet_thickness_m * math.sqrt(0.5)
+            return throat * self.fastener_diameter_m * self.bond.shear_strength_pa
+        # a screw: the sheet bears on the shank and tears out at about
+        # half its bearing ultimate, which is the ordinary allowance for
+        # a hole near a sheet edge
+        bearing = self.fastener_diameter_m * self.sheet_thickness_m
+        return 0.5 * bearing * self._sheet().ultimate_pa
+
+    def stiffness_n_per_m(self, length_m: float) -> float:
+        return self.stiffness_per_fastener_n_per_m() * self.count(length_m)
+
+    def capacity_n(self, length_m: float) -> float:
+        return self.capacity_per_fastener_n() * self.count(length_m)
+
+    def count(self, length_m: float) -> int:
+        """Whole fasteners, and never fewer than two: one screw is a
+        hinge, and a seam with one is not a seam."""
+        return max(2, int(round(self.per_m * float(length_m))))
+
+    def pack(self, length_m: float) -> dict:
+        """What the edge carries, in the same field names the bushing
+        pack uses for the numbers that mean the same thing -- so a walk
+        that reads a bushing's linear stiffness reads a seam's the same
+        way."""
+        n = self.count(length_m)
+        return {
+            "model": "fastened-seam",
+            "fastener": self.fastener,
+            "per_inch": self.per_inch,
+            "count": n,
+            "sheet_thickness_m": self.sheet_thickness_m,
+            "sheet_material": self.sheet_material,
+            "linear_stiffness_n_per_m": self.stiffness_per_fastener_n_per_m() * n,
+            "capacity_n": self.capacity_per_fastener_n() * n,
+            "releases": self.fastener == "snap-fit",
+            # a seam has no damper in it; what damping it has is the
+            # sheet rubbing on itself, and that is small
+            "damping_ratio": 0.03,
+        }
+
+    def describe(self, length_m: float) -> str:
+        n = self.count(length_m)
+        return (f"{self.fastener} every {1.0 / self.per_inch:.1f} in "
+                f"({n} over {length_m:.2f} m) in {self.sheet_thickness_m * 1000:.1f} mm "
+                f"{self.sheet_material}: {self.stiffness_n_per_m(length_m) / 1e6:.1f} MN/m, "
+                f"{'releases' if self.fastener == 'snap-fit' else 'holds'} "
+                f"{self.capacity_n(length_m) / 1000:.1f} kN")
+
+
+# ---- the member spellings that carry a seam or attach to a shell -----
+_mc("shell-attachment-weld", WELDED, zero_length=True, material="steel-plate",
+    note="a nozzle, a wear plate, a rail foot: metal burned to the shell it "
+         "sits on. Two surfaces in contact and everything transmitted, which "
+         "is what a port-face-seal was being used to mean and is not")
+_mc("screwed-seam", WELDED, material="steel-sheet",
+    note="sheet lapped on sheet or on a frame flange, held by screws at a "
+         "declared pitch; the edge carries a Seam pack with its stiffness "
+         "and capacity, and the walk reads it as compliant")
+_mc("spot-welded-seam", WELDED, material="steel-sheet",
+    note="the unibody's seam: spot welds at a pitch along a flange")
+_mc("tack-welded-bracket", WELDED, material="steel-sheet",
+    note="a bracket on sheet casing: tacks at a pitch, each a short fillet "
+         "no bigger than the sheet; the edge carries a Seam pack of tacks")
+_mc("snap-seam", WELDED, material="plastic-sheet",
+    note="hooks at a pitch along a panel edge; releases at a force and is "
+         "not damaged by releasing")
+SEAM_CONSTRAINTS = frozenset(("screwed-seam", "spot-welded-seam", "snap-seam",
+                              "tack-welded-bracket"))

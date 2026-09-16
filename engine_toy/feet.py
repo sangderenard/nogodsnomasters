@@ -568,3 +568,35 @@ def levelling_jobs(identity: str, feet_, g: Ground, *, floor_height=0.0,
             requires_shutdown=True, interruptible=False,
             clears="levelling", label=identity))
     return jobs
+
+
+def from_mounts(doc: dict, *, pad_diameter_m: float = 0.100, **foot_kw) -> list:
+    """One levelling foot under every declared structural mount.
+
+    A machine's feet are where its mounts are -- the same nodes
+    machine_package collects and installation mates -- so they are read
+    off the graph by what the node DECLARES and never by its name.
+    `foot_kw` is the foot's own hardware (pad, thread, setting) and is
+    the same for every foot, because a set of levelling feet is bought
+    as a set."""
+    from machine_package import MOUNT_PORT_ROLE
+    out = []
+    for n in doc["nodes"]:
+        if n.get("port_role") != MOUNT_PORT_ROLE:
+            continue
+        out.append(LevellingFoot(n["identity"],
+                                 tuple(float(v) for v in n["reference_position"]),
+                                 pad_diameter_m=pad_diameter_m, **foot_kw))
+    if not out:
+        raise ValueError(f"{doc.get('identity', 'machine')}: no node declares "
+                         f"port_role={MOUNT_PORT_ROLE!r}, so there is nothing "
+                         "to stand it on")
+    return out
+
+
+def underside_y(doc: dict) -> float:
+    """The frame's underside: the lowest declared mount."""
+    from machine_package import MOUNT_PORT_ROLE
+    ys = [float(n["reference_position"][1]) for n in doc["nodes"]
+          if n.get("port_role") == MOUNT_PORT_ROLE]
+    return min(ys) if ys else 0.0
