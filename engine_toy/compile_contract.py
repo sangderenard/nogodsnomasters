@@ -95,7 +95,11 @@ BATCH_RECORD = {
 }
 
 GRAPH_RECORD = {
-    "identity": "craft_graph.VehicleGraph",
+    # The craft stopped being one object per vehicle and became rows in one
+    # set of columns, so this named a class that no longer exists -- and a
+    # record whose identity resolves to nothing cannot be matched against
+    # anything, silently.
+    "identity": "craft_graph.CraftFleet",
     "fields": {
         "state_span": {"storage": "span", "dtype": "float64",
                        "rank": 1, "mutable": True},
@@ -134,7 +138,7 @@ def contract(*, full_native: bool = True):
     records = program_abi.setdefault("records", {})
     records["EngineCycleSim"] = ENGINE_RECORD
     records["EngineBatch"] = BATCH_RECORD
-    records["VehicleGraph"] = GRAPH_RECORD
+    records["CraftFleet"] = GRAPH_RECORD
     # A RECORD IS NOT ENOUGH ON ITS OWN. `program_abi.bindings` is what
     # attaches a declared layout to a named parameter of a named function;
     # without one the compiler has a description of a class and no reason
@@ -153,7 +157,7 @@ def contract(*, full_native: bool = True):
     ])
     program_abi.setdefault("bindings", []).extend([
         {"function": "*frame", "parameter": "batch", "record": "EngineBatch"},
-        {"function": "*frame", "parameter": "graph", "record": "VehicleGraph"},
+        {"function": "*frame", "parameter": "fleet", "record": "CraftFleet"},
     ])
     return policy.with_program_abi(program_abi)
 

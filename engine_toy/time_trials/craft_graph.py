@@ -61,7 +61,6 @@ from src.common.dt_system.engine_api import EngineRegistration        # noqa: E4
 from src.common.dt_system.state_table import StateTable               # noqa: E402
 from src.common.dt_system.realtime import RealtimeConfig              # noqa: E402
 
-from src.common.tensors import AbstractTensor as AT                   # noqa: E402
 from src.compiler.abstract_ui_vehicles import (                       # noqa: E402
     compile_symbolic_vehicle_physics, compile_wheel_contact_ssa,
     load_default_car_configuration, basic_craft_defaults,

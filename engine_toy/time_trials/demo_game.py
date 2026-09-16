@@ -7,20 +7,29 @@ reporting. What a craft IS lives in `craft_graph.py`, and what the game
 LOOKS like lives in `watch.py`. They were one file until it was pointed
 out that a car definition and a demo loop are not the same thing.
 
-Compiling this file is the point of the split. Handed to
-`lower_ast_source_to_ssa` under engine_toy's contract, everything here
-lowers except two calls, and the compiler says which ones:
+Compiling this file is the point of the split, and what stops it is now
+known by name rather than by category. Lowering `EngineCycleSim.step`
+directly refuses like this:
 
     CompilationSubdivisionRequired: a loop's body regions are scheduled
-    but the loop itself could not compile ...
-      blockers=('opaque-state-effect',)  batch.step(dt)
-      blockers=('opaque-state-effect',)  graph.step(dt, shaft_omega=...)
+    but the loop itself could not compile, which would otherwise silently
+    run the body once with no iteration ...
+      blockers=('opaque-state-effect',)
+      self.hole_emitters.step(...)  self.bursts.step(...)
+      self.ordnance.step(...)
 
-Both are methods on objects whose state is not declared in
-`program_abi.records`. For the engine that declaration is now writable --
-`engine_state.py` carries the whole live sim as 3156 flat slots with an
-exact restore -- and it is the work between that message and a compiled
-game.
+`opaque-state-effect` is not a diagnosis, it is the DEFAULT: the
+classifier in `topological_reducer.py` recognises a loop-body mutation
+only when the state is a built-in container and the method is one of
+eight names. Every `.step()` ever written falls through it.
+
+Counted across that whole lowering: 60 state effects, of which 34 are
+`sequence_mutation`, 6 are `mapping_mutation`, and 20 are the catchall --
+seven receivers, four operator names. The engine's own flat span
+(`engine_state.py`, a stride per topology rather than one number) is what
+a fix is expected to be built on, because a copy of declared state around
+an unknown call gives the effect the output value the loop recurrence
+needs.
 """
 from __future__ import annotations
 

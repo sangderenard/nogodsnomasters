@@ -19,10 +19,13 @@ frame 12 will look wholly different by frame 400, and reporting the
 largest difference at the end tells you only that the engine is
 sensitive. So the report is ordered by WHEN, not by HOW MUCH.
 
-WHAT IT DOES NOT DO YET. It diffs state, not cost. Attributing wall time
-to a span -- the thing that would say "your part costs 40 ms a frame and
-tightens the stability floor to 0.2 ms" -- needs the laws compiled, since
-at present an eager step dominates anything a plugin could do.
+IT DIFFERS FROM THE COST SIDE, WHICH NOW EXISTS. This names WHAT
+changed; `time_trials/profile_frame.py` names what it COST and what it
+did to the world's step floor. They are deliberately separate readings:
+this one is exact and about state, that one is statistical and about the
+host. The note here used to say cost attribution "needs the laws
+compiled" -- they are compiled now, and the reading it was waiting for
+is the one in that file.
 """
 from __future__ import annotations
 
