@@ -659,7 +659,25 @@ for _k in ("coolant-line", "oil-line", "exhaust-flow-path", "fuel-line",
            # A service shaft belongs to the runnable rigid power graph.
            # Its torque reaction reaches the beam model through the
            # mounted machine body; it is not itself a beam member.
-           "shaft-service-drive"):
+           "shaft-service-drive",
+           # ---- the autoclave's three, declared rather than borrowed ----
+           # A steam line is not a hydraulic line with a different name.
+           # It carries a compressible fluid whose temperature is fixed
+           # by its pressure, it must be lagged or it condenses in the
+           # run, and it drains downhill to a trap. Borrowing
+           # "pressure-rated-air-line" would have assembled it as the
+           # right kind of member with the wrong contents, which is
+           # exactly the silent-misspelling failure this table exists to
+           # end.
+           "steam-line",
+           # Condensate runs by GRAVITY and carries whatever the cycle
+           # put into it -- water, and on a dewax cycle molten wax that
+           # is recovered rather than discarded.
+           "condensate-line",
+           # A vacuum line is the only one here whose inside is at LOWER
+           # pressure than its outside, so it fails by collapsing rather
+           # than by bursting and is the one that needs wall support.
+           "vacuum-line"):
     _mc(_k, WELDED, routed=True, material="steel-pipe")
 _mc("port-face-seal", WELDED, routed=True, zero_length=True,
     material="steel-pipe")
