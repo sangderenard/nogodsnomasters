@@ -280,7 +280,7 @@ def main(argv=None) -> None:
             f"engines batched in one dt round; built in "
             f"{build_seconds:.0f}s", True, MUTED), (16, top + 78))
         surface.blit(small.render(
-            f"{len(names)} craft, no steering port; "
+            f"{len(names)} craft, no steering gear fitted; "
             f"{frame_ms:.0f} ms per sim frame", True, MUTED), (16, top + 98))
 
         x = 430
