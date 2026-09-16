@@ -128,13 +128,74 @@ def measure_prism(nodes) -> Prism:
     return Prism(tuple(float(v) for v in lo), tuple(float(v) for v in hi))
 
 
+def _axis_frame(axis) -> np.ndarray:
+    """A rotation whose third column is the body's own axis."""
+    a = np.asarray(axis, float)
+    n = float(np.linalg.norm(a))
+    a = a / n if n > 1e-12 else np.array([0.0, 0.0, 1.0])
+    helper = (np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9
+              else np.array([0.0, 1.0, 0.0]))
+    u = np.cross(a, helper)
+    u /= np.linalg.norm(u)
+    v = np.cross(a, u)
+    return np.column_stack([u, v, a])
+
+
+def body_inertia_kg_m2(node: dict) -> np.ndarray:
+    """One body's own inertia about its own centre, from the shape it
+    declares.
+
+    A POINT MASS HAS NO INERTIA OF ITS OWN, and that is not a small
+    approximation here. This autoclave's vessel is 498 kg -- fifty-nine
+    per cent of the machine -- and it sits within millimetres of the
+    centre of gravity, so summing point masses gave it a contribution of
+    almost exactly nothing. Its real tube inertia is 56 kg.m2 about a
+    transverse axis, against a whole-machine total of 43 that had been
+    computed without it. The tensor was not slightly low; the largest
+    single term was missing.
+
+    It matters because the rocking modes go as one over the root of it:
+    a tensor that is half the truth puts every rocking frequency forty
+    per cent high, and a mode table is what those frequencies are for.
+
+    Nothing is guessed. Every body in the production vocabulary already
+    declares what shape it is -- emit_prism writes tube_outer_radius_m,
+    drum_radius_m or half_extent_m according to the prism it came from
+    -- so this reads a declaration rather than inferring a solid from a
+    bounding box."""
+    m = float(node.get("mass_kg", 0.0))
+    if m <= 0.0:
+        return np.zeros((3, 3))
+    if "tube_outer_radius_m" in node:
+        ro = float(node["tube_outer_radius_m"])
+        ri = float(node.get("tube_inner_radius_m", 0.0))
+        L = float(node.get("drum_length_m", 0.0))
+        axial = m * (ro * ro + ri * ri) / 2.0
+        trans = m * (3.0 * (ro * ro + ri * ri) + L * L) / 12.0
+        local = np.diag([trans, trans, axial])
+        R = _axis_frame(node.get("tube_axis", (0.0, 0.0, 1.0)))
+        return R @ local @ R.T
+    if "drum_radius_m" in node:
+        r = float(node["drum_radius_m"])
+        L = float(node.get("drum_length_m", 0.0))
+        axial = m * r * r / 2.0
+        trans = m * (3.0 * r * r + L * L) / 12.0
+        local = np.diag([trans, trans, axial])
+        R = _axis_frame(node.get("drum_axis", (0.0, 0.0, 1.0)))
+        return R @ local @ R.T
+    h = np.asarray(node.get("body_half_extent_m", (0.0, 0.0, 0.0)), float)
+    return np.diag([m * (h[1] ** 2 + h[2] ** 2) / 3.0,
+                    m * (h[0] ** 2 + h[2] ** 2) / 3.0,
+                    m * (h[0] ** 2 + h[1] ** 2) / 3.0])
+
+
 def mass_properties(nodes) -> RigidBodyProperties:
     """What the machine weighs and where it balances.
 
     Excludes `wrench_point` bodies, which are proxies for a surface and
     not metal, and counts everything else -- see the module docstring on
     why `mass_in_total` is the wrong filter here."""
-    masses, positions = [], []
+    masses, positions, counted = [], [], []
     for n in nodes:
         if n.get("wrench_point"):
             continue
@@ -143,12 +204,16 @@ def mass_properties(nodes) -> RigidBodyProperties:
             continue
         masses.append(w)
         positions.append(n["reference_position"])
+        counted.append(n)
     if not masses:
         return RigidBodyProperties(0.0, (0.0, 0.0, 0.0), np.zeros((3, 3)))
     m = np.asarray(masses, float)
     p = np.asarray(positions, float)
     total = float(m.sum())
     cg = (m[:, None] * p).sum(axis=0) / total
+    # PARALLEL AXIS, ON TOP OF EACH BODY'S OWN. The point-mass term says
+    # where the mass is; the body term says what shape it is. Dropping
+    # either one is wrong, and dropping the second was the larger error.
     r = p - cg
     r2 = np.sum(r * r, axis=1)
     inertia = np.zeros((3, 3))
@@ -158,6 +223,8 @@ def mass_properties(nodes) -> RigidBodyProperties:
         for b in range(3):
             if a != b:
                 inertia[a, b] = float(-np.sum(m * r[:, a] * r[:, b]))
+    for n in counted:
+        inertia = inertia + body_inertia_kg_m2(n)
     return RigidBodyProperties(total, tuple(float(v) for v in cg), inertia)
 
 
@@ -335,3 +402,51 @@ class MachinePackage:
             lines.append(f"    {c.label:12s} {c.circuit:10s} "
                          f"bore {c.bore_m * 1000:5.1f} mm")
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------
+# the same shape, from the engine side
+# ---------------------------------------------------------------------
+
+def from_engine_package(package, *, identity: str | None = None
+                        ) -> "MachinePackage":
+    """An EnginePackage, presented as the same installable unit.
+
+    So there is ONE seam into a chassis rather than two. An engine's
+    mounts come from engine_mounts' modal-driven policy and a vessel's
+    come from where its saddles are; by the time either reaches a bay
+    both are a position, a hardware grade and a face that points at the
+    frame, and the bay does not need to know which kind of thing it is
+    carrying.
+
+    THE FACE POINTS DOWN. A mount sits ON something, so its mating face
+    looks at the frame -- and assembly_ports will only pair two ports
+    that face each other, which is what stops a mount being matched to
+    one on the same side of the joint."""
+    engine_prism = package.prism
+    mounts = [PartPort(identity=m.identity,
+                       part=identity or getattr(package.engine, "identity",
+                                                "engine"),
+                       kind=MOUNT_PORT_ROLE,
+                       position=np.asarray(m.position, float),
+                       direction=np.array([0.0, -1.0, 0.0]),
+                       radius_m=0.014, mating=True, fluid="", closure="",
+                       joint=("solid-welded"
+                              if m.hardware.stiffness_n_per_m is None
+                              else "bushed"))
+              for m in package.mounting.mounts]
+    connectors = [Connector(identity=c.identity, kind=c.kind,
+                            inside_node=c.built_in_node,
+                            outside_node=c.supplied_node,
+                            position=tuple(float(v) for v in c.position))
+                  for c in package.connectors]
+    return MachinePackage(
+        identity=identity or getattr(package.engine, "identity", "engine"),
+        prism=Prism(tuple(float(v) for v in engine_prism.min_corner),
+                    tuple(float(v) for v in engine_prism.max_corner)),
+        connectors=connectors, mounts=mounts,
+        rigid_body=package.mounting.rigid_body,
+        technique=package.mounting.technique,
+        built_in_node_ids=package.built_in_node_ids,
+        supplied_node_ids=package.supplied_node_ids,
+        document={})

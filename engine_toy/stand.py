@@ -409,6 +409,20 @@ def emit_stand(g, stand: Stand, *, motion_group: str = "frame",
             g.node(ident, (x, y, z), "chassis-load-node",
                    material=stand.material, mass_in_total=False,
                    mass_kg=90.0, part_role="engine-bay-corner",
+                   # A BAY CORNER IS A MOUNT POINT AND NOW SAYS SO. It
+                   # always was one -- station_reference draws four
+                   # mounts onto these -- but nothing here declared it,
+                   # so anything wanting to install a machine had to
+                   # recognise a bay by the shape of its identity. The
+                   # word is the one assembly_ports already pairs with
+                   # itself and station_reference already stamps on the
+                   # engine mounts it draws, so declaring it here joins
+                   # two halves rather than adding a third.
+                   port_role="structural-mount",
+                   # a machine is lowered onto these, so the face that
+                   # takes it points up
+                   outward=(0.0, 1.0, 0.0),
+                   bolt_radius_m=0.016,
                    bay=side, half_extent_m=(0.12, 0.11, 0.12))
             pts[tag] = ident
         made["bays"][side] = pts

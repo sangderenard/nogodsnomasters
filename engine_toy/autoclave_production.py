@@ -365,9 +365,21 @@ def build(identity: str = "plant.autoclave",
     g.edge(f"{identity}.vent.through", f"{identity}.port.vent", v_nodes["inlet"],
            "steam-line", radius=0.019, circuit_identity="steam",
            part_role="through-port")
+    # WHERE IT LETS GO IS NOT THE MACHINE'S TO DECIDE. How high a vent
+    # stack runs and where it points are decided by the building it is
+    # installed in -- what is above it, who walks past it, which way the
+    # prevailing wind goes. The machine supplies the pipe to its own
+    # boundary and the site supplies the rest, which is exactly the
+    # distinction engine_parts.py already draws with `chassis_side` for
+    # a muffler and a tailpipe: hung from the body, not bolted to the
+    # engine. Declaring it moved this crate from 2.25 m tall -- too tall
+    # for a bay it otherwise fits with room to spare -- to its real
+    # height, because a stack somebody else routes was being measured as
+    # part of the box it has to be lifted in.
     g.node(f"{identity}.vent.discharge", vent.end_point("+").position,
-           "discharge-point", in_view="plant",
-           note="open to atmosphere, above head height")
+           "discharge-point", in_view="plant", chassis_side=True,
+           note="open to atmosphere, above head height -- the site decides "
+                "how far above and which way")
 
     # ---- the drain, and the collector it drains INTO ---------------
     # Condensate is not waste on every cycle. Dewaxing an investment

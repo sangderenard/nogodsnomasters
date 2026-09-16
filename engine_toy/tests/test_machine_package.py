@@ -144,7 +144,12 @@ def test_the_prism_is_measured_from_metal_not_from_centres():
     extent, and ignoring it under-reports the crate by the vessel's own
     radius."""
     pkg = mp.MachinePackage.build(ap.build())
-    nodes = [n for n in ap.build().nodes if not n.get("wrench_point")]
+    # the vent's discharge point is the site's to place, not the crate's
+    # -- machine_package leaves chassis_side nodes out of the box for
+    # exactly that reason, so the bare span it is measured against must
+    # leave them out too
+    nodes = [n for n in ap.build().nodes
+             if not n.get("wrench_point") and not n.get("chassis_side")]
     centres_only = np.asarray([n["reference_position"] for n in nodes], float)
     bare = centres_only.max(axis=0) - centres_only.min(axis=0)
     assert all(a >= b for a, b in zip(pkg.prism.size_m, bare))
