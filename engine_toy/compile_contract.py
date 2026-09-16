@@ -129,6 +129,16 @@ def contract(*, full_native: bool = True):
     from src.compiler.extraction_contract import ExtractionContract
 
     policy = ExtractionContract(PROGRAM_EXTRACTION)
+    # THIS PROGRAM IS NOT UNDER THE REPOSITORY ROOT. The sheet declares
+    # `roots: repository: ..` relative to itself, which is the turing tree;
+    # engine_toy sits beside it. Measured 2026-09-16: under this contract
+    # `ordnance.OrdnanceField.step` and `burst.BurstField.step` classify
+    # `unknown` and are rejected `provenance_not_declared`, so once source
+    # pursuit resolves `self.ordnance.step(...)` to the real method, the
+    # contract itself refuses to ingest it, the effect stays opaque, and
+    # the engine loop refuses. Declaring this directory as an authored root
+    # is the fact the contract was missing.
+    policy = policy.with_roots(authored=[Path(__file__).resolve().parent])
     if full_native:
         policy = policy.with_execution_file(FULL_NATIVE_EXECUTION)
     # Declared on top of whatever the repository sheet already states, not
