@@ -64,6 +64,12 @@ CURTAIN_THROAT_CROSSOVER = 0.25
 #: choke index: the port is still passing everything asked of it, but
 #: the time available to fill the cylinder is no longer generous.
 VE_KNEE_MACH_INDEX = 0.30
+#: Below this Mach index the charge is moving slowly enough that valve
+#: overlap works against the cylinder instead of for it.
+VE_LOW_SPEED_MACH = 0.16
+#: What is left at cranking speed, when overlap has had the longest to
+#: undo the intake stroke.
+VE_IDLE_FLOOR = 0.55
 
 
 # ---------------------------------------------------------------------
@@ -179,12 +185,34 @@ class PortSet:
         # time the choke index is reached. Putting the knee at 0.45
         # meant a 4.2-litre pushrod six held 100% VE to six thousand
         # rpm, which is not an engine anyone has driven.
+        # AND IT FALLS OFF AT THE BOTTOM TOO, which is why a torque
+        # curve has a peak in the middle instead of being highest at
+        # idle.
+        #
+        # Valve overlap is the mechanism. Both valves are open around
+        # top dead centre, and what happens then depends entirely on how
+        # fast the gas is moving. At speed its own inertia carries the
+        # incoming charge past the open exhaust valve and helps scavenge
+        # the cylinder. Slowly, there is time for it to go the other
+        # way: exhaust back into the intake, intake back out of the
+        # exhaust, and the cylinder ends up holding less than it would
+        # with no overlap at all. That is the lumpy idle of a big-cam
+        # engine, and it is the same mechanism.
+        #
+        # Without this the model had volumetric efficiency flat right
+        # down to cranking speed, so torque was highest at the lowest
+        # rpm swept and every curve peaked at the bottom of its range --
+        # 74 to 80 per cent below where these engines really peak.
         z = self.mach_index(rpm)
+        low = 1.0
+        if z < VE_LOW_SPEED_MACH:
+            f = max(0.0, z / VE_LOW_SPEED_MACH)
+            low = VE_IDLE_FLOOR + (1.0 - VE_IDLE_FLOOR) * f ** 0.65
         knee = VE_KNEE_MACH_INDEX
         if z <= knee:
-            return 1.0
+            return low
         over = (z - knee) / max(1e-6, CHOKE_MACH_INDEX - knee)
-        return max(0.12, 1.0 / (1.0 + 1.35 * over * over))
+        return max(0.12, low / (1.0 + 1.35 * over * over))
 
     def report(self, rpm: float) -> dict:
         return {"side": self.side, "valves_this_side": self.valves_this_side,

@@ -182,7 +182,23 @@ def volumetric_efficiency(engine, rpm: float) -> float:
         ceiling = max(0.0, float(getattr(fi, "max_boost_frac", 0.0) or 0.0))
         redline = max(1.0, float(getattr(engine, "redline_rpm", 4000.0)))
         f = max(0.0, min(1.0, rpm / redline))
-        if getattr(fi, "kind") == "supercharger":
+        if getattr(fi, "kind") == "supercharger" and                 str(getattr(fi, "blower_type", "roots")) == "centrifugal":
+            # A CENTRIFUGAL BLOWER IS NOT A PUMP, IT IS A FAN. It does
+            # not trap and carry a fixed volume; it flings air outward,
+            # and the pressure it raises goes with the SQUARE of tip
+            # speed. So its boost is nearly absent low down and all
+            # there at the top -- the opposite behaviour to a Roots, and
+            # the reason a Merlin makes its power high up.
+            #
+            # ForcedInduction.blower_type already declares this, and its
+            # own docstring names "a Merlin's two-stage wheelcase
+            # blower" as the example. The catalogue had every radial and
+            # the Merlin correctly marked centrifugal and the drag
+            # motors as roots. Treating them all as positive-
+            # displacement put their torque peaks 50 to 80 per cent
+            # below where they belong.
+            ramp = f * f
+        elif getattr(fi, "kind") == "supercharger":
             # RPM CANCELS. A positive-displacement blower is geared to
             # the crank, so rotor speed and engine speed rise together
             # and the ratio of displacements -- which is what sets the
@@ -401,3 +417,125 @@ def undeclared_compression() -> dict:
                    "only thing here that distinguishes a diesel from a petrol engine. "
                    "While it is defaulted, no derived output can be better than the "
                    "default"}
+
+
+# ---------------------------------------------------------------------
+# CONSERVATION, WHICH MATTERS MORE THAN AGREEMENT
+# ---------------------------------------------------------------------
+#
+# prove_catalogue measures distance from the published figure, and that
+# is a weaker test than it looks. The catalogue is not a ground truth --
+# thirty-four of its entries carried a defaulted compression ratio until
+# this week -- so tuning toward it rewards matching a number rather than
+# obeying a law, and a model can be made to agree with it by cheating in
+# ways that would be obvious if anyone checked the books.
+#
+# These check the books. Every one is a law rather than a target, so
+# failing any of them is a defect regardless of how close the torque
+# figure lands, and passing them all says the model is at least honest
+# even where it is inaccurate.
+#
+#   FIRST LAW        work out cannot exceed the chemical energy in.
+#   CYCLE CEILING    realised efficiency cannot exceed the ideal cycle
+#                    it claims to be running.
+#   CARNOT           and the ideal cycle itself cannot exceed Carnot
+#                    between the same temperature limits.
+#   FRICTION SIGN    brake work cannot exceed indicated work. An engine
+#                    cannot be helped by its own friction.
+#   BREATHING        a naturally aspirated engine cannot trap more than
+#                    ram tuning can give it; anything more needs a
+#                    blower, and the blower has to be declared.
+#   TRAPPING         scavenging must lie between perfect displacement
+#                    and perfect mixing. Outside those two bounds is not
+#                    a scavenging system, it is an arithmetic error.
+
+#: Peak cycle temperature used for the Carnot comparison. Real
+#: peak-charge temperatures reach this and no engine sustains it.
+CYCLE_PEAK_TEMP_K = 2600.0
+AMBIENT_TEMP_K = 293.15
+#: Best volumetric efficiency ram tuning alone has ever delivered on a
+#: naturally aspirated engine. Past this something is pumping.
+MAX_NA_VOLUMETRIC = 1.15
+
+
+def conservation_check(engine, rpm: float) -> list:
+    """Every law this operating point might be breaking. Empty is good."""
+    import thermo_cycles as tc
+    import engines as _eng
+    faults = []
+    arch = engine.architecture
+    p = derive(engine, rpm)
+    fuel = _fuel(engine)
+    lhv = float(getattr(fuel, "energy_density_j_per_kg", 43.4e6) or 43.4e6)
+    disp_m3 = float(engine.displacement_l) / 1000.0
+
+    # FIRST LAW
+    chemical_j = p.fuel_kg_per_cycle * lhv
+    indicated_j = p.imep_pa * disp_m3
+    if indicated_j > chemical_j + 1e-9:
+        faults.append(f"first law: {indicated_j:.0f} J indicated from {chemical_j:.0f} J "
+                      "of fuel -- work created from nothing")
+
+    # CYCLE CEILING and CARNOT
+    cr = float(getattr(arch, "compression_ratio", 9.0) or 9.0)
+    cyc = tc.cycle_of(engine)
+    pr, regen = _eng.TURBINE_CYCLES.get(getattr(engine, "identity", ""), (14.0, 0.0))
+    res = tc.efficiency(cyc, era_key=_eng.era_of(engine), bore_m=arch.bore_m,
+                        compression_ratio=cr, pressure_ratio=pr, regenerator=regen)
+    if res.realised > res.ideal + 1e-9:
+        faults.append(f"cycle ceiling: realised {res.realised:.3f} exceeds ideal "
+                      f"{cyc} {res.ideal:.3f}")
+    carnot = 1.0 - AMBIENT_TEMP_K / CYCLE_PEAK_TEMP_K
+    if res.ideal > carnot + 1e-9:
+        faults.append(f"carnot: ideal {cyc} {res.ideal:.3f} exceeds Carnot {carnot:.3f}")
+
+    # FRICTION SIGN
+    if p.bmep_pa > p.imep_pa + 1e-9:
+        faults.append(f"friction sign: brake {p.bmep_pa/1e5:.2f} bar exceeds indicated "
+                      f"{p.imep_pa/1e5:.2f} bar")
+
+    # BREATHING
+    fi = getattr(engine, "forced_induction", None)
+    blown = fi is not None and getattr(fi, "kind", None) in ("turbo", "supercharger")
+    if not blown and p.ve > MAX_NA_VOLUMETRIC:
+        faults.append(f"breathing: VE {p.ve:.2f} with no declared blower "
+                      f"(ram tuning tops out near {MAX_NA_VOLUMETRIC})")
+
+    # TRAPPING, for anything scavenged
+    import two_stroke as ts
+    sc = ts.scavenge_of(engine)
+    if sc:
+        boost = float(getattr(fi, "max_boost_frac", 0.0) or 0.0) if blown else 0.0
+        r = ts.charge(sc, boost_frac=boost, bore_m=arch.bore_m,
+                      stroke_m=arch.stroke_m, rpm=rpm)
+        lo = ts.perfect_mixing_trapping(r.delivery_ratio)
+        hi = ts.perfect_displacement_trapping(r.delivery_ratio)
+        if not (lo - 1e-9 <= r.trapping <= hi + 1e-9):
+            faults.append(f"trapping {r.trapping:.3f} outside the Hopkinson bounds "
+                          f"[{lo:.3f}, {hi:.3f}] at DR {r.delivery_ratio:.2f}")
+    return faults
+
+
+def audit_catalogue() -> dict:
+    """Run every law over every engine at several speeds.
+
+    This is the test that matters. Distance from the catalogue is
+    informative; a broken conservation law is disqualifying."""
+    import engines as _eng
+    bad = {}
+    checked = 0
+    for ident, e in _eng.BY_IDENTITY.items():
+        if getattr(e, "kind", "") != "combustion" or not getattr(e.architecture, "bore_m", 0.0):
+            continue
+        rl = max(1.0, float(getattr(e, "redline_rpm", 4000.0)))
+        for frac in (0.2, 0.4, 0.6, 0.8, 1.0):
+            checked += 1
+            try:
+                f = conservation_check(e, rl * frac)
+            except Exception as exc:
+                f = [f"raised: {str(exc)[:70]}"]
+            if f:
+                bad.setdefault(ident, []).extend(
+                    f"@{rl*frac:.0f} rpm: {x}" for x in f)
+    return {"points_checked": checked, "engines_with_faults": len(bad),
+            "faults": bad}

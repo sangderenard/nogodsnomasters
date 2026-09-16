@@ -76,21 +76,31 @@ from dataclasses import dataclass
 REFERENCE_BORE_M = 0.090
 
 
+#: Bore at which half the heat that CAN be lost to the walls is.
+#: Derived from the reference: a 90 mm bore keeps about 85 per cent,
+#: which fixes this length once and for all.
+WALL_LOSS_BORE_M = REFERENCE_BORE_M * (1.0 / 0.85 - 1.0)
+
+
 def scale_realisation(bore_m: float) -> float:
-    """How much of its heat an engine of this size keeps.
+    """Fraction of its heat an engine of this size KEEPS.
 
-    Surface-to-volume goes as 1/bore, so heat loss per unit of work does
-    too. Expressed as a factor against a reference automotive bore. A
-    small engine is genuinely, unavoidably worse at this and no amount
-    of development fixes it -- which is why model aircraft engines are
-    inefficient and ship engines are the most efficient heat engines
-    ever built.
+    Surface-to-volume goes as 1/bore, so wall heat loss per unit of work
+    does too, and the share kept is bore/(bore + k). A small engine is
+    genuinely, unavoidably worse at this and no amount of development
+    fixes it -- which is why model aircraft engines are inefficient and
+    ship engines are the most efficient heat engines ever built.
 
-    The exponent is well below 1 because wall heat loss is only part of
-    the total loss; blowdown, friction and incomplete combustion do not
-    scale the same way."""
-    b = max(0.005, float(bore_m))
-    return (b / REFERENCE_BORE_M) ** 0.18
+    CONSERVATIVE BY CONSTRUCTION, which the previous form was not. This
+    was (bore/reference)^0.18, which exceeds 1.0 for any bore larger
+    than the reference -- and a heat-retention factor above one means
+    NEGATIVE heat loss. On the Wartsila it reached 1.58 and pushed
+    realised efficiency above the ideal Diesel cycle the engine claims
+    to run, which the conservation audit caught. This form approaches 1
+    and never reaches it, so realised efficiency cannot exceed ideal no
+    matter what bore is passed."""
+    b = max(1e-4, float(bore_m))
+    return b / (b + WALL_LOSS_BORE_M)
 
 
 @dataclass(frozen=True)
@@ -291,7 +301,15 @@ def efficiency(cycle: str, *, era_key: str, bore_m: float = REFERENCE_BORE_M,
     scale = scale_realisation(bore_m)
     return CycleResult(cycle=c, ideal=ideal, era_factor=e.realisation,
                        scale_factor=scale,
-                       realised=max(0.01, min(0.72, ideal * e.realisation * scale)),
+                       # THE CEILING IS THE IDEAL CYCLE, not a number.
+                       # This was clamped to 0.72, which is above the
+                       # ideal efficiency of several real cycles and so
+                       # permitted a realised efficiency that beat the
+                       # cycle it claimed to be running. Both factors
+                       # are now at most 1, so the product cannot
+                       # exceed the ideal and the clamp is redundant --
+                       # kept only as a floor.
+                       realised=max(0.01, ideal * e.realisation * scale),
                        why=e.why)
 
 
