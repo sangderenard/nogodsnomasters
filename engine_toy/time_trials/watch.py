@@ -96,6 +96,12 @@ def draw_craft(surface, row, colour, centre, scale, heading):
 def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--png", type=int, default=0)
+    parser.add_argument("--every", type=int, default=40,
+                        help="world frames between saved stills. "
+                             "At the 1 ms floor 40 frames is 40 ms "
+                             "of world time, which is far too little "
+                             "to see anything move -- that is what "
+                             "the first capture showed.")
     parser.add_argument("--throttle", type=float, default=0.85)
     parser.add_argument("--substeps", type=int, default=16)
     parser.add_argument("--out", default="time_trials/frames")
@@ -123,6 +129,7 @@ def main(argv=None) -> None:
     dt = CG.FLOOR_S * args.substeps
     frame = 0
     written = 0
+    last_written = -1
     wall0 = time.perf_counter()
     world_s = 0.0
 
@@ -298,7 +305,9 @@ def main(argv=None) -> None:
             x += 320
 
         if headless:
-            if written < args.png and frame % 40 == 1:
+            if (written < args.png and frame % args.every == 1
+                    and frame != last_written):
+                last_written = frame
                 path = Path(args.out) / f"craft_{written:02d}.png"
                 pygame.image.save(surface, str(path))
                 print(f"  wrote {path}  world {world_s:.2f}s  wall {wall:.2f}s")
