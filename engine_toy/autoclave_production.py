@@ -71,6 +71,26 @@ CHAMBER_RADIUS_M = 0.30
 BOILER_PLATE_ALLOWABLE_PA = 100e6
 CORROSION_ALLOWANCE_M = 0.0015
 JOINT_EFFICIENCY = 0.85          # a real welded seam, radiographed
+AMBIENT_K = 293.15
+#: Carbon steel, per kelvin. Real and standard; it is the number that
+#: decides whether a mounting has to slide.
+STEEL_EXPANSION_PER_K = 12.0e-6
+STEEL_MODULUS_PA = 200e9
+#: A saddle has to wrap far enough around the shell to spread the load
+#: into it. Real practice puts the minimum at 120 degrees, and the
+#: reason is the horn: below that, the local stress where the saddle
+#: edge meets the shell climbs steeply.
+SADDLE_WRAP_DEG = 120.0
+SADDLE_HEIGHT_M = 0.22
+
+
+def restrained_growth_stress_pa(delta_t_k: float) -> float:
+    """What a vessel does when its mounting will not let it grow.
+
+    E.alpha.dT, and it does not depend on the length -- a long vessel
+    grows further and develops exactly the same stress. That is why
+    "it is only a millimetre" is never the answer."""
+    return STEEL_MODULUS_PA * STEEL_EXPANSION_PER_K * float(delta_t_k)
 
 
 def wall_thickness_m(pressure_pa: float, radius_m: float = CHAMBER_RADIUS_M) -> float:
@@ -107,27 +127,56 @@ def build(identity: str = "plant.autoclave",
                    centre=(0.0, 0.0, 0.0), shape="tube", axis=(0.0, 0.0, 1.0),
                    radius=r_out, inner_radius=CHAMBER_RADIUS_M,
                    length=CHAMBER_LENGTH_M, material="boiler-plate",
+                   # UP. Every angle below is a clock position from top
+                   # dead centre, and says so because the vessel says
+                   # which way that is.
+                   clock=(0.0, 1.0, 0.0),
                    attributes={"working_pressure_pa": working_pressure_pa,
                                "wall_thickness_m": t_wall,
                                "in_view": "plant"})
 
-    # Ports around the shell, each at a real angle and a real place.
-    # Angles are chosen by FUNCTION, not for looks: steam enters high so
-    # it displaces downward, the vent is at top dead centre because gas
-    # collects there, and the drain is at bottom dead centre because
-    # condensate collects there. A vessel with those three in the wrong
-    # places does not purge and does not drain.
+    # Ports around the shell, each at a real CLOCK POSITION from top
+    # dead centre -- which the vessel now declares (`clock` above)
+    # instead of leaving to a cross product.
+    #
+    # THE FIRST DRAFT OF THIS GOT IT WRONG, and the comment it was
+    # written under said so plainly: "the vent is at top dead centre
+    # because gas collects there, and the drain is at bottom dead centre
+    # because condensate collects there". They were authored at 90 and
+    # 270 degrees, which on a z-axis body is the LEFT AND RIGHT FLANKS.
+    # A vent on the flank leaves an air pocket above it that a
+    # displacement purge never reaches; a drain on the flank leaves the
+    # condensate it was supposed to remove sitting under it, and on a
+    # dewax cycle that is a shell half full of wax. Neither is visible
+    # in a render -- the nozzle is simply there, on a round thing, and
+    # every angle looks equally plausible.
+    #
+    # So the stations below are declared by what each port CARRIES, and
+    # check_port_stations refuses the ones that contradict gravity.
     ports = {
-        "steam_in": vessel.side_point(math.radians(60.0), along=+0.30),
-        "vent": vessel.side_point(math.radians(90.0), along=-0.35),
-        "drain": vessel.side_point(math.radians(270.0), along=-0.40),
-        "gauge": vessel.side_point(math.radians(120.0), along=+0.38),
-        "relief": vessel.side_point(math.radians(75.0), along=+0.40),
+        # gas leaves from the crown, because that is where it collects
+        "vent": vessel.side_point(math.radians(0.0), along=-0.35),
+        # a relief valve must open into the vapour space; one that can
+        # be covered by liquid cannot pass its rated flow
+        "relief": vessel.side_point(math.radians(20.0), along=+0.40),
+        # high, above any condensate: a gauge tapped low reads its own
+        # water leg on top of the real pressure
+        "gauge": vessel.side_point(math.radians(330.0), along=+0.38),
+        # steam enters high so it displaces the air below it downward
+        # and out of the drain, which is the whole mechanism of a
+        # downward-displacement purge
+        "steam_in": vessel.side_point(math.radians(45.0), along=+0.30),
+        # condensate and molten wax leave from the invert
+        "drain": vessel.side_point(math.radians(180.0), along=-0.40),
         "door_face": vessel.end_point("+"),
         "head_face": vessel.end_point("-"),
     }
     if with_vacuum:
-        ports["vacuum"] = vessel.side_point(math.radians(300.0), along=+0.20)
+        # ALSO HIGH, and for a reason worth stating: a vacuum line taken
+        # from the invert draws the condensate standing there straight
+        # into the pump, and a vane pump that swallows water loses its
+        # oil seal. It comes off the vapour space like the relief does.
+        ports["vacuum"] = vessel.side_point(math.radians(315.0), along=+0.20)
     node_of = emit_prism(g, vessel, ports, assembly="autoclave")
 
     # ---- what is IN each hole -------------------------------------
@@ -188,7 +237,13 @@ def build(identity: str = "plant.autoclave",
                    attributes={"in_view": "plant", "inside": True})
     b_ports = {"rail_l": basket.face_point("-x"), "rail_r": basket.face_point("+x")}
     b_nodes = emit_prism(g, basket, b_ports, assembly="autoclave")
-    for side, ang in (("rail_l", 200.0), ("rail_r", 340.0)):
+    # BOTH LOW, STRADDLING THE INVERT. Authored at 200 and 340 degrees
+    # these straddled nothing: one sat near the bottom of the shell and
+    # the other near the CROWN, so the basket had a rail above it and a
+    # rail below it and rested on neither. A basket runs on two rails at
+    # the same height, one either side of the drain, clear of it so the
+    # condensate running to the invert is not dammed by the rail feet.
+    for side, ang in (("rail_l", 150.0), ("rail_r", 210.0)):
         # ON THE INNER SURFACE, not the outer one. A tube prism knows
         # both radii, so the rail sits on the wall the basket actually
         # rests against -- which is the whole reason this vessel is a
@@ -222,6 +277,79 @@ def build(identity: str = "plant.autoclave",
            s_nodes["feed"], "steam-line", radius=0.012,
            circuit_identity="steam", part_role="through-port",
            medium_rate_state="steam-pressure-and-temperature")
+
+    # ---- WHAT IT STANDS ON, and what that has to let it do ----------
+    # Two saddles, and two is not a simplification. A horizontal vessel
+    # on three or more supports is statically indeterminate: settle one
+    # of them a millimetre and the load redistributes in a way nobody
+    # can predict from the drawing. Two saddles is determinate, and it
+    # is what real vessels sit on for exactly that reason.
+    #
+    # WHERE THEY GO is Zick's result, and it is not arbitrary: a saddle
+    # placed within about half the shell radius of the tangent line lets
+    # the DISHED HEAD act as a stiffening ring against the shell going
+    # oval under its own load. Move the saddle inboard of that and the
+    # shell has to carry the ovalling alone and needs stiffener rings
+    # welded in to do it. So the saddles here sit at R/2 from each end,
+    # which also satisfies the other real limit, A <= 0.2L.
+    #
+    # ONE IS FIXED AND ONE SLIDES, and this is the fact that makes the
+    # mounting a negotiation rather than four bolts. A vessel working at
+    # saturated steam runs a hundred and forty degrees above the frame
+    # holding it, and it GROWS. Anchor both saddles in round holes and
+    # the shell cannot grow: the stress it develops instead is E.alpha.
+    # dT, which for steel across this temperature rise comes to about
+    # 334 MPa -- past the yield of the plate it is made of. The vessel
+    # does not push its frame apart, it deforms. So one saddle takes the
+    # anchor bolts in round holes and owns the axial position, and the
+    # other takes them in slots and lets the shell move under it.
+    from gas_works import _steam_properties
+    t_sat_k, _ = _steam_properties(working_pressure_pa)
+    saddle_a_m = CHAMBER_RADIUS_M / 2.0
+    saddle_z = CHAMBER_LENGTH_M / 2.0 - saddle_a_m
+    saddle_span_m = 2.0 * saddle_z
+    growth_m = STEEL_EXPANSION_PER_K * saddle_span_m * (t_sat_k - AMBIENT_K)
+    base_y = -(r_out + SADDLE_HEIGHT_M)
+    for tag, z, fixed in (("fixed", +saddle_z, True), ("sliding", -saddle_z, False)):
+        saddle = Prism(
+            identity=f"{identity}.saddle.{tag}", kind="vessel-saddle",
+            centre=(0.0, -(r_out + SADDLE_HEIGHT_M / 2.0), z), shape="box",
+            half_extent=(r_out * 0.87, SADDLE_HEIGHT_M / 2.0, 0.05),
+            material="steel-plate",
+            attributes={"in_view": "plant",
+                        # a saddle has to wrap far enough round the shell
+                        # to spread the load; below about 120 degrees the
+                        # local stress at its horns rises steeply
+                        "wrap_angle_deg": SADDLE_WRAP_DEG,
+                        "anchor": "round-holes" if fixed else "slotted-holes",
+                        "slot_travel_m": 0.0 if fixed else round(growth_m + 0.004, 4),
+                        "note": ("the anchor: this saddle owns the vessel's "
+                                 "axial position") if fixed else
+                                ("slotted: the shell grows "
+                                 f"{growth_m * 1000:.1f} mm toward this end "
+                                 "and the slot has to let it")})
+        # THE FEET ARE THE MOUNT POINTS, and they are declared as such --
+        # the same word station_reference.py stamps on an engine-bay
+        # mount and the same kind assembly_ports pairs with itself, so
+        # these mate with a chassis through machinery that already
+        # exists rather than a second opinion about what a mount is.
+        feet = {"left": saddle.face_point("-y", across=(-0.72, 0.0)),
+                "right": saddle.face_point("-y", across=(+0.72, 0.0))}
+        emit_prism(g, saddle, feet, assembly="autoclave",
+                   port_kwargs={"port_role": "structural-mount",
+                                "joint": "solid-welded" if fixed else "bolted-flange",
+                                "anchor": "round-holes" if fixed else "slotted-holes",
+                                "bolt_radius_m": 0.010,
+                                "slot_travel_m": 0.0 if fixed else round(growth_m + 0.004, 4)})
+        # the saddle carries the shell above it, at the shell's surface
+        seat = vessel.side_point(math.radians(180.0), along=(z / (CHAMBER_LENGTH_M / 2.0)) * 0.9)
+        g.node(f"{identity}.saddle.{tag}.seat", tuple(float(v) for v in seat.position),
+               "vessel-port", port_kind="saddle_seat", closure="saddle-wear-plate",
+               bore_m=0.0, in_view="plant")
+        g.edge(f"{identity}.saddle.{tag}.bear", f"{identity}.saddle.{tag}.seat",
+               f"{identity}.saddle.{tag}", "bolted-flange-mount", radius=0.014,
+               part_role="saddle-bearing",
+               load_path="the-shell-carried-on-its-saddle-horns")
 
     # ---- OUTSIDE: vent pipe, and where it goes ---------------------
     # A vent is not a hole in the air. It carries hot gas somewhere it
@@ -299,6 +427,85 @@ def harness(identity: str = "plant.autoclave") -> "object":
         return Harness(identity=f"{identity}.harness")
     except TypeError:
         return None
+
+
+#: WHERE EACH PORT HAS TO BE, and why. A port is not free to sit
+#: anywhere on a round shell: what it carries decides, because gravity
+#: decides where that collects. Declared per service, so the check below
+#: is reading a statement rather than a list of angles someone liked.
+#:
+#:   crown         gas leaves here, because gas collects here
+#:   invert        liquid leaves here, for the same reason
+#:   vapour-space  anywhere above the midline: it must not be coverable
+#:                 by the liquid standing in the bottom of the vessel
+#:   end           a head or a door: no clock position to be wrong about
+PORT_STATIONS = {
+    "vent": "crown",
+    "drain": "invert",
+    "relief": "vapour-space",
+    "gauge": "vapour-space",
+    "vacuum": "vapour-space",
+    "steam_in": "vapour-space",
+    "door_face": "end",
+    "head_face": "end",
+}
+
+#: How far off the crown or the invert a port may be and still be at it.
+#: A nozzle is a finite hole in a curved shell and cannot be a point, so
+#: some tolerance is real; thirty degrees on a 300 mm vessel is 157 mm
+#: of arc, which is a generous allowance for a 40 mm nozzle and still
+#: refuses anything on the flank.
+STATION_TOLERANCE_DEG = 30.0
+
+
+def check_port_stations(g, up=(0.0, 1.0, 0.0)) -> list:
+    """No port may sit where what it carries does not collect.
+
+    THIS IS THE CHECK THAT WOULD HAVE CAUGHT THE FIRST DRAFT. Its vent
+    and its drain were authored at ninety and two hundred and seventy
+    degrees under a comment claiming they were at the crown and the
+    invert, and on a z-axis body those angles are the two flanks. The
+    vessel drew correctly, reported correctly, and would have held its
+    air and its condensate.
+
+    The station is read from the port's own real position relative to
+    the vessel's centre, not from the angle it was authored at, so an
+    angle that means something different than its author thought is
+    caught by where the nozzle actually ended up."""
+    import numpy as _np
+    up = _np.asarray(up, float)
+    up = up / float(_np.linalg.norm(up))
+    body = next((n for n in g.nodes if n.get("kind") == "pressure-vessel"), None)
+    if body is None:
+        return []
+    axis = _np.asarray(body.get("tube_axis", (0.0, 0.0, 1.0)), float)
+    axis = axis / float(_np.linalg.norm(axis))
+    centre = _np.asarray(body["reference_position"], float)
+    faults = []
+    for n in g.nodes:
+        if n.get("kind") != "vessel-port":
+            continue
+        want = PORT_STATIONS.get(n.get("port_kind"))
+        if want in (None, "end"):
+            continue
+        r = _np.asarray(n["reference_position"], float) - centre
+        r = r - axis * float(_np.dot(r, axis))       # around the shell only
+        if float(_np.linalg.norm(r)) < 1e-9:
+            continue
+        cos = float(_np.dot(r / _np.linalg.norm(r), up))
+        off_crown = math.degrees(math.acos(max(-1.0, min(1.0, cos))))
+        if want == "crown" and off_crown > STATION_TOLERANCE_DEG:
+            faults.append(f"{n['identity']}: {n['port_kind']} is "
+                          f"{off_crown:.0f} deg off the crown -- gas collects "
+                          "above it and never leaves")
+        elif want == "invert" and (180.0 - off_crown) > STATION_TOLERANCE_DEG:
+            faults.append(f"{n['identity']}: {n['port_kind']} is "
+                          f"{180.0 - off_crown:.0f} deg off the invert -- "
+                          "liquid collects below it and never leaves")
+        elif want == "vapour-space" and off_crown > 90.0:
+            faults.append(f"{n['identity']}: {n['port_kind']} is below the "
+                          "midline, where standing liquid can cover it")
+    return faults
 
 
 def check_through_ports(g) -> list:

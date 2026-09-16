@@ -32,8 +32,8 @@ WHAT IT RECORDS
               it was assigned. `opaque` is the DEFAULT, not a detection:
               `topological_reducer.py` classifies a loop-body mutation
               only when the state is a built-in container AND the method
-              is one of eight names (add/append/clear/extend/pop,
-              update/pop/setdefault). Everything else -- every `.step()`
+              is one of seven (add/append/clear/extend/pop/setdefault/
+              update -- `pop` serves both). Everything else -- every `.step()`
               ever written -- falls through. So the opaque inventory is
               the list of state transitions this compiler has no model
               for, and that list is the specification for what a record

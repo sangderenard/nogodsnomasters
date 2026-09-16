@@ -52,13 +52,42 @@ def _unit(v):
 
 def _frame(axis):
     """The axis plus two perpendiculars, so an angle around a round body
-    means the same thing every time it is asked for."""
+    means the same thing every time it is asked for.
+
+    IT MEANS THE SAME THING AND IT DOES NOT SAY WHAT. The perpendicular
+    this builds angle zero from falls out of a cross product with a
+    helper axis, so where zero lands depends on which way the body
+    points -- and nothing anywhere told an author which way that was.
+    The autoclave was authored believing ninety degrees was the top of
+    its shell; zero is, and its vent and its drain both ended up on the
+    sides of a vessel whose own comments said they were at the crown and
+    the invert. Declare `clock` on the prism and the question is
+    answered on the part instead of guessed at the call site."""
     a = _unit(axis)
     helper = (np.array([1.0, 0.0, 0.0]) if abs(a[0]) < 0.9
               else np.array([0.0, 1.0, 0.0]))
     u = _unit(np.cross(a, helper))
     v = _unit(np.cross(a, u))
     return a, u, v
+
+
+def _clocked_frame(axis, clock):
+    """The same frame, with angle zero put where the part says it is.
+
+    `clock` is the direction angle zero points in -- for a horizontal
+    vessel that is up, so an angle is a real clock position around the
+    shell and top dead centre is zero. Only the component perpendicular
+    to the axis can mean anything, so it is projected; a clock parallel
+    to the axis says nothing and falls back."""
+    a = _unit(axis)
+    if clock is None:
+        return _frame(a)
+    c = np.asarray(clock, dtype=np.float64)
+    c = c - a * float(np.dot(c, a))
+    if float(np.linalg.norm(c)) < 1e-9:
+        return _frame(a)
+    u = _unit(c)
+    return a, u, _unit(np.cross(a, u))
 
 
 @dataclass(frozen=True)
@@ -101,6 +130,12 @@ class Prism:
     length: float = 0.10
     material: str = "steel-plate"
     mass_kg: float | None = None
+    #: WHERE ANGLE ZERO POINTS on a round body. Left unset, it falls
+    #: out of a cross product and is whatever it is -- which is how a
+    #: vessel came to have its vent and its drain on its flanks. Set it
+    #: to up on anything that has a crown and an invert, and an angle
+    #: around the shell becomes a clock position anyone can read.
+    clock: tuple | None = None
     attributes: dict = field(default_factory=dict)
 
     # ---------------------------------------------------------------- #
@@ -130,7 +165,7 @@ class Prism:
                   angle_rad: float = 0.0) -> PrismPort:
         """A point on the flat end of a cylinder or tube. `end` is
         "rear" (against the axis) or "front" (along it)."""
-        a, u, v = _frame(self.axis)
+        a, u, v = _clocked_frame(self.axis, self.clock)
         sign = -1.0 if end == "rear" else 1.0
         r = self.radius * float(radius_fraction)
         if self.shape == "tube" and radius_fraction:
@@ -147,7 +182,7 @@ class Prism:
         which is where anything concentric inside it makes contact."""
         if self.shape == "box":
             raise ValueError(f"{self.identity}: a box has no curved side")
-        a, u, v = _frame(self.axis)
+        a, u, v = _clocked_frame(self.axis, self.clock)
         r = self.radius if surface == "outer" else self.inner_radius
         if surface == "inner" and self.shape != "tube":
             raise ValueError(f"{self.identity}: only a tube has a bore; "
@@ -163,7 +198,7 @@ class Prism:
         """The machined flat a round body is held by: the chord cut at
         `angle_rad`, and how far across it is usable."""
         port = self.side_point(angle_rad)
-        a, u, v = _frame(self.axis)
+        a, u, v = _clocked_frame(self.axis, self.clock)
         radial = u * math.cos(angle_rad) + v * math.sin(angle_rad)
         tangent = _unit(np.cross(_unit(self.axis), radial))
         return {"centre": port.position, "normal": port.direction,
@@ -177,7 +212,7 @@ class Prism:
         if self.shape == "box":
             h = np.asarray(self.half_extent, dtype=np.float64) * (1.0 - margin)
             return bool(np.all(np.abs(p) <= h))
-        a, u, v = _frame(self.axis)
+        a, u, v = _clocked_frame(self.axis, self.clock)
         along = float(np.dot(p, a))
         radial = float(np.linalg.norm(p - a * along))
         if abs(along) > self.length / 2.0 * (1.0 - margin):

@@ -251,6 +251,56 @@ VACUUM_SET = OptionalAssembly(
     note="without it the purge is downward-displacement only, which cannot "
          "reach air trapped in a porous load")
 
+DIAPHRAGM_VACUUM_SET = OptionalAssembly(
+    identity="autoclave.diaphragm_vacuum_set",
+    label="PTFE diaphragm pump set",
+    # THE SECOND THING IT PROVIDES IS THE WHOLE REASON IT EXISTS. Both
+    # pumps pull a vacuum. Only this one may pull one through solvent
+    # vapour, and saying so as a separate provision is what lets a
+    # solvent duty REQUIRE it and be refused the other.
+    provides=("vacuum", "solvent-safe-vacuum"),
+    requires=("electricity",),
+    # SAME BAY AS THE OIL-SEALED SET, which makes them alternatives
+    # without anyone declaring them alternatives -- they want the same
+    # space and space_conflicts says so.
+    claims=(Claim(identity="autoclave.pump_bay",
+                  min=(0.34, -0.40, 0.05), max=(0.72, -0.05, 0.42),
+                  note="pump, motor and the room to change diaphragms"),),
+    mass_kg=31.0,
+    casing_ports=("vacuum-line", "pump-exhaust"),
+    # NO DRAIN. An oil-sealed pump has one because it has oil to drop;
+    # this has none, and it grows an EXHAUST instead, because what it
+    # pulls out of the chamber has to be taken somewhere rather than
+    # blown across the room.
+    note="oil-free: the only wetted parts are the PTFE diaphragm and its "
+         "valves, so there is nothing for a solvent to ruin")
+
+#: WHY THE OIL-SEALED PUMP IS NOT MERELY WORSE HERE, in the order the
+#: problems actually bite:
+#:
+#:   IT STOPS WORKING. Solvent vapour drawn into an oil-sealed pump
+#:   condenses and dissolves into the sealing oil. Oil is what fills
+#:   that pump's clearance and is the entire reason its ultimate is
+#:   three decades below a diaphragm pump's; contaminated oil has a
+#:   vapour pressure of its own and the pump can no longer reach the
+#:   vacuum it was chosen for. Gas ballast exists to fight this and
+#:   costs ultimate vacuum to do it -- compressors.VacuumPump already
+#:   models that trade.
+#:
+#:   IT IS AN IGNITION SOURCE. Flammable vapour, hot oil and a motor
+#:   in one housing is the arrangement nobody wants.
+#:
+#:   IT CORRODES. Chlorinated solvent and water make acid, and the
+#:   pump internals are what it gets to.
+#:
+#: AND WHAT IT COSTS TO SWAP: ultimate vacuum, by three decades. That
+#: sounds decisive and is not, because the DUTY here is a pre-vacuum
+#: purge -- air out of a porous load before the steam goes in, which
+#: wants something like 50 to 100 mbar absolute. A three-stage
+#: diaphragm pump reaches about 1 mbar and is comfortably enough. The
+#: oil-sealed pump's extra three decades buy nothing this machine
+#: needs, and cost it every cycle that has a solvent in it.
+
 LARGE_CHAMBER = OptionalAssembly(
     identity="autoclave.long_chamber",
     label="extended chamber",
@@ -266,17 +316,36 @@ LARGE_CHAMBER = OptionalAssembly(
     casing_ports=(),
     note="a longer vessel, which has to grow into whatever is behind it")
 
-CATALOGUE = (INTEGRAL_BOILER, SHORE_STEAM, VACUUM_SET, LARGE_CHAMBER)
+CATALOGUE = (INTEGRAL_BOILER, SHORE_STEAM, VACUUM_SET,
+             DIAPHRAGM_VACUUM_SET, LARGE_CHAMBER)
 
 #: What a site can hand a machine through its casing. Declaring this is
 #: what makes "no boiler" a configuration rather than a fault.
+#: A site can pipe steam, wire power and run a fuel line. It cannot
+#: hand a machine a pump that is safe to put solvent through -- that is
+#: hardware the machine either carries or does not, which is why
+#: "solvent-safe-vacuum" is deliberately absent from this list.
 SITE_SUPPLIES = ("steam", "electricity", "fuel", "feedwater", "vacuum")
 
 
-def configuration(*options, base_requires=("steam",),
+#: WHAT THE MACHINE IS BEING ASKED TO DO, as requirements. A duty is
+#: not a mode flag: it is a thing the configuration has to be able to
+#: supply, checked by exactly the mechanism that checks everything else.
+#: Declaring the solvent duty this way is what makes fitting the wrong
+#: pump an UNBUILDABLE machine rather than a machine that quietly ruins
+#: its pump on the first cycle.
+DUTIES = {
+    "steam-sterilising": ("steam",),
+    "porous-load": ("steam", "vacuum"),
+    "solvent-dewax": ("steam", "vacuum", "solvent-safe-vacuum"),
+}
+
+
+def configuration(*options, base_requires=("steam",), duty: str | None = None,
                   shore=SITE_SUPPLIES) -> Configuration:
+    needs = tuple(DUTIES[duty]) if duty else tuple(base_requires)
     return Configuration(machine="plant.autoclave", fitted=tuple(options),
-                         base_requires=tuple(base_requires),
+                         base_requires=needs,
                          shore_supplies=tuple(shore))
 
 

@@ -21,7 +21,7 @@ directly refuses like this:
 `opaque-state-effect` is not a diagnosis, it is the DEFAULT: the
 classifier in `topological_reducer.py` recognises a loop-body mutation
 only when the state is a built-in container and the method is one of
-eight names. Every `.step()` ever written falls through it.
+seven. Every `.step()` ever written falls through it.
 
 Counted across that whole lowering: 60 state effects, of which 34 are
 `sequence_mutation`, 6 are `mapping_mutation`, and 20 are the catchall --
