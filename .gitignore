@@ -32,29 +32,8 @@
 /.DS_Store
 /Thumbs.db
 
-# engine_toy generates three kinds of file that are not source and must
-# not be tracked. They were committed once, in 8387de4, before these
-# rules existed.
-#
-#   RENDERS AND LOGS. Every trial and reference script writes a PNG or
-#   an animated PNG beside itself, and the live windows write run logs.
-#   They are outputs of the scripts that are tracked, reproducible by
-#   running them, and they were 73 files in one commit.
-/engine_toy/*.png
-/engine_toy/*.log
-
-#   BAKED NATIVE ARTIFACTS. `structure_native` and `interior_ballistics`
-#   build into baked/<law>_<digest>/ and the digest IS the identity:
-#   same generated source, same machine code. Tracking the DLL, LIB, LL
-#   and PDB puts megabytes of build output in history to say something
-#   the source already says, and a stale one is worse than none because
-#   the cache is keyed to rebuild only when the digest changes.
-/engine_toy/baked/
-
-#   EDITOR BACKUPS.
-/engine_toy/*.bak
-/engine_toy/*.bak2
-
-# viewer artefacts: rendered frames and run logs, not source
-engine_toy/time_trials/frames/
-engine_toy/time_trials/*.log
+# What inside engine_toy is NOT source (renders, logs, baked native
+# artifacts, build caches, editor backups) is decided by engine_toy's own
+# .gitignore, so the directory carries its rules with it and can become its
+# own repository unchanged.  Nothing about engine_toy's contents is decided
+# here.
