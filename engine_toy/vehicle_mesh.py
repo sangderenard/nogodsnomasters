@@ -621,7 +621,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         shape = node.get("shape")
         if shape == "plate-cell":
             vertices, normals = _plate_cell_mesh(node)
-            group = _thermal_group_for(None, node["identity"])
+            group = node.get("thermal_group") or _thermal_group_for(
+                None, node["identity"])
             name = node["identity"].replace("/", "_").replace(".", "_")
             parts.append(SolidPart(
                 vertices=vertices, normals=normals, thermal_group=group,
@@ -645,7 +646,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
                 center, ax, float(node.get("ring_outer_radius_m", 0.5)),
                 float(node.get("ring_inner_radius_m", 0.3)),
                 float(node.get("ring_thickness_m", 0.06)))
-            group = _thermal_group_for(None, node["identity"])
+            group = node.get("thermal_group") or _thermal_group_for(
+                None, node["identity"])
             name = node["identity"].replace("/", "_").replace(".", "_")
             parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
                                    name=f"node_{name}", declared_material=node.get("material")))
@@ -666,7 +668,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
                 float(node.get("inner_radius_m", 0.2)),
                 float(node.get("thickness_m", 0.04)),
                 segments=int(node.get("draw_segments", 48)))
-            group = _thermal_group_for(None, node["identity"])
+            group = node.get("thermal_group") or _thermal_group_for(
+                None, node["identity"])
             name = node["identity"].replace("/", "_").replace(".", "_")
             parts.append(SolidPart(vertices=vertices, normals=normals,
                                    thermal_group=group, name=f"node_{name}",
@@ -679,7 +682,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
             half = float(node.get("drum_length_m", 0.10)) / 2.0
             vertices, normals = capped_tube_mesh(center - ax * half, center + ax * half,
                                                  float(node.get("drum_radius_m", 0.05)), sides=16)
-            group = _thermal_group_for(None, node["identity"])
+            group = node.get("thermal_group") or _thermal_group_for(
+                None, node["identity"])
             name = node["identity"].replace("/", "_").replace(".", "_")
             parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
                                    name=f"node_{name}", declared_material=node.get("material")))
@@ -711,7 +715,8 @@ def build_drivetrain_solid_parts(graph: dict[str, Any], crank_angle_deg: float =
         else:
             half_extent = _body_half_extent(node)
             vertices, normals = cuboid_mesh(center, half_extent)
-        group = _thermal_group_for(None, node["identity"])
+        group = node.get("thermal_group") or _thermal_group_for(
+            None, node["identity"])
         name = node["identity"].replace("/", "_").replace(".", "_")
         parts.append(SolidPart(vertices=vertices, normals=normals, thermal_group=group,
                                name=f"node_{name}", declared_material=node.get("material")))
@@ -779,7 +784,8 @@ def build_drivetrain_wireframe(graph: dict[str, Any]) -> list[WireframePart]:
         else:
             half_extent = _body_half_extent(node)
             segments = cuboid_wireframe(center, half_extent)
-        group = _thermal_group_for(None, node["identity"])
+        group = node.get("thermal_group") or _thermal_group_for(
+            None, node["identity"])
         name = node["identity"].replace("/", "_").replace(".", "_")
         parts.append(WireframePart(segments=segments, thermal_group=group, name=f"node_{name}"))
 

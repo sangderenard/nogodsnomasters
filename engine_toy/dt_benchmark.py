@@ -51,7 +51,9 @@ from src.common.dt_system.dt_controller import STController, Targets
 from src.common.dt_system.dt_graph import GraphBuilder, MetaLoopRunner
 from src.common.dt_system.dt_scaler import Metrics
 from src.common.dt_system.engine_api import DtCompatibleEngine, EngineRegistration
+from src.common.dt_system.error_channels import empty_channels
 from src.common.dt_system.state_table import StateTable
+from src.common.dt_system.time_contracts import SUBCYCLE
 
 
 def use_numpy_backend():
@@ -183,6 +185,11 @@ class CycleEngine(DtCompatibleEngine):
         self.wall_s = 0.0
         self.world_s = 0.0
 
+    def causal_ceiling_dt(self) -> float:
+        """Largest interval the sim's bounded fixed-step accumulator retains."""
+        from engine_cycle_sim import FIXED_PHYSICS_DT_S, MAX_CATCHUP_STEPS
+        return float(FIXED_PHYSICS_DT_S * MAX_CATCHUP_STEPS)
+
     @property
     def tau(self) -> float:
         """World seconds this interior advanced per wall second spent.
@@ -225,6 +232,8 @@ class CycleEngine(DtCompatibleEngine):
         return None
 
     def step(self, dt: float, state=None, state_table=None):
+        from engine_cycle_sim import FIXED_PHYSICS_DT_S
+
         started = _perf_counter()
         self.sim.step(float(dt))
         self.wall_s += _perf_counter() - started
@@ -235,7 +244,21 @@ class CycleEngine(DtCompatibleEngine):
         # the one that keeps a degree of crank from being skipped
         omega = rpm * 2.0 * math.pi / 60.0
         limit = (math.radians(2.0) / omega) if omega > 1e-6 else None
-        return True, _metrics(max_vel=rpm, dt_limit=limit), state
+        metrics = _metrics(max_vel=rpm, dt_limit=limit)
+        channels = empty_channels()
+        # The engine consumes the external interval through its own fixed
+        # 1 ms accumulator.  That is SUBCYCLE: the interior cadence is
+        # published for reasoning, but it does not pin sibling simulations.
+        metrics.pub_tau = AbstractTensor.tensor([float(FIXED_PHYSICS_DT_S)])
+        metrics.pub_tau_present = AbstractTensor.tensor([1.0])
+        metrics.pub_contract = AbstractTensor.tensor([SUBCYCLE])
+        metrics.pub_dt_limit = AbstractTensor.tensor([self.causal_ceiling_dt()])
+        metrics.pub_dt_limit_present = AbstractTensor.tensor([1.0])
+        metrics.pub_values = channels.copy()
+        metrics.pub_present = AbstractTensor.zeros_like(channels)
+        metrics.pub_limits = AbstractTensor.zeros_like(channels)
+        metrics.pub_limits_present = AbstractTensor.zeros_like(channels)
+        return True, metrics, state
 
 
 class DrivetrainEngine(DtCompatibleEngine):

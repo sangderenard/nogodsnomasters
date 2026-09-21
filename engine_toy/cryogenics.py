@@ -415,6 +415,11 @@ GAS_COMPRESSORS: dict[str, CompressorDuty] = {
         "air-plant", "air plant main compressor", 4, 3.2, 0.62, "labyrinth",
         why="four stages with intercooling between each: compressing in one jump would "
             "put the discharge somewhere the machine cannot survive"),
+    "air-diaphragm": CompressorDuty(
+        "air-diaphragm", "oil-free air diaphragm compressor", 3, 3.0, 0.55,
+        "elastomer-diaphragm",
+        why="three intercooled diaphragm stages keep sliding seals and oil out of the "
+            "working gas; the integral radiator must reject the compression work"),
     "hydrogen-diaphragm": CompressorDuty(
         "hydrogen-diaphragm", "hydrogen diaphragm compressor", 3, 4.0, 0.55,
         "hydraulic-diaphragm",
@@ -642,6 +647,7 @@ class CryogenicVessel:
     insulation_media: str = "mli"
     insulation_thickness_m: float = 0.025
     vacuum_intact: bool = True
+    annulus_pressure_pa: float = 1.0       # scalar jacket state; never an ullage voxel field
     vent_area_m2: float = 3.0e-5
     vent_blocked_frac: float = 0.0        # ice
     relief_pressure_pa: float = 250_000.0
@@ -691,9 +697,21 @@ class CryogenicVessel:
         return sum(by.get(k, 205_000.0) * f for k, f in self.liquid.items()) or 205_000.0
 
     def heat_leak_w(self, ambient_k: float = AMBIENT_K) -> float:
-        return wrap_heat_leak_w(self.insulation_media, self.surface_area_m2,
-                                self.insulation_thickness_m, self.boil_k,
-                                ambient_k, self.vacuum_intact)
+        return self.jacket_heat_leak_w(self.boil_k, ambient_k)
+
+    def jacket_heat_leak_w(self, inner_k: float,
+                           outer_k: float = AMBIENT_K) -> float:
+        """Heat through this vessel's declared jacket at any inner state.
+
+        Liquid storage uses ``boil_k`` through :meth:`heat_leak_w`.  A
+        voxel chamber installed in the same manufactured vessel supplies its
+        measured inner temperature here and reuses the exact same material,
+        area, thickness and vacuum state without inventing a second jacket.
+        """
+        return wrap_heat_leak_w(
+            self.insulation_media, self.surface_area_m2,
+            self.insulation_thickness_m, inner_k, outer_k,
+            self.vacuum_intact)
 
     @property
     def exterior_frosts(self) -> bool:
@@ -950,313 +968,3 @@ class FrontEndPurifier:
             why="a saturated bed passes CO2 into a 100 K exchanger where it becomes a "
                 "solid plug at the end you cannot reach; regenerating recovers dry ice "
                 "and distilled water as well as saving the cold box")
-
-
-# ---------------------------------------------------------------------
-# THE PLANT: a dewar receives, it does not produce
-# ---------------------------------------------------------------------
-#
-# A vacuum-jacketed vessel is a bucket. It holds what arrives and it
-# slows down what leaves, and that is the whole of its contribution. The
-# liquid has to be MADE, and making it is a work-input process with no
-# way around the bill.
-#
-# WHERE THE COLD ACTUALLY COMES FROM. Not from the expander. The expander
-# converts; the COMPRESSOR is what pays. Work goes in at the compressor,
-# comes straight back out as heat in the aftercooler, and what is left
-# behind is gas at pressure -- which is gas holding less entropy than it
-# had. The expander then spends that stored entropy deficit as
-# temperature drop. Skip the compressor and the expander has nothing to
-# spend, so it does nothing at all.
-#
-# A LIQUEFIER WITHOUT A COMPRESSOR IS A PERPETUAL MOTION MACHINE, and
-# this refuses to build one, in the same way and for the same reason
-# that the driveline refuses a massless gear. A default value on an
-# `inlet_pressure_pa` field is not a supply; it is an assumption wearing
-# a supply's clothes, and it will silently produce free liquid air.
-#
-# AND THE EXPANDER MUST BE BRAKED. A turbine that is not absorbing shaft
-# work does not cool its gas -- it freewheels, the gas comes out very
-# nearly as warm as it went in, and the wheel overspeeds. The brake is
-# not an accessory, it is where the energy LEAVES, and on a real machine
-# it is a brake compressor (which usefully boosts the feed) or a
-# generator. An unbraked expander is the second way to get nothing.
-#
-# THE RECUPERATOR IS THE THIRD, AND IT IS A CLIFF RATHER THAN A SLOPE.
-# One expansion from ambient does not reach 79 K and nothing like it.
-# The cycle BOOTSTRAPS: returning cold gas precools the incoming feed
-# through a counterflow exchanger, so each pass starts colder than the
-# last and the cold end walks down over hours. That only works if the
-# exchanger is very good. Below about eighty-five per cent effectiveness
-# the losses per pass exceed the gain per pass, the cascade never
-# converges, and the plant simply runs for ever at some warm equilibrium
-# making nothing. It does not make less liquid -- it makes none.
-#
-# Which is also why a real plant has a COOL-DOWN measured in hours to
-# days, and why nobody starts an air separation unit casually.
-
-#: Reversible work to liquefy air from ambient: its exergy, about
-#: 745 kJ/kg. No plant beats this, and one that appears to is a bug in
-#: the plant's arithmetic, not a good plant.
-AIR_LIQUEFACTION_EXERGY_J_KG = 745_000.0
-#: A COARSE PRE-CHECK, NOT THE REAL CLIFF.
-#:
-#: This started life as the asserted threshold below which a cascade
-#: will not converge. It is superseded: Liquefier.step now works the
-#: refrigeration balance directly, and the cliff falls out of that on
-#: its own -- at around 0.92 to 0.95 for a plant of this size, which is
-#: higher than this figure and is why real air liquefiers are built with
-#: recuperator effectiveness of 0.95 to 0.98 and are genuinely that
-#: fragile.
-#:
-#: It is kept only as a cheap guard that catches an exchanger so poor it
-#: is not worth running the balance on. Anything between this and the
-#: real cliff is caught by the balance and reported as a STALL, with the
-#: two competing terms in the result so the reason is visible rather
-#: than asserted.
-RECUPERATOR_CLIFF = 0.85
-
-
-class UnpoweredLiquefier(ValueError):
-    """Raised when something would make cold without paying for it."""
-
-
-@dataclass
-class Recuperator:
-    """The counterflow exchanger the whole cycle stands on."""
-    identity: str = "cryo.recuperator"
-    effectiveness: float = 0.95
-    #: Cold-box thermal mass. This is what makes cool-down take hours:
-    #: several hundred kilos of aluminium exchanger and piping has to be
-    #: taken down two hundred kelvin before any product appears.
-    cold_mass_kg: float = 350.0
-    cold_mass_cp_j_kgk: float = 500.0
-    #: Frozen CO2 or water blocking passages. The front end exists to
-    #: keep this at zero; when it is not zero the exchanger stops being
-    #: good enough and the cliff does the rest.
-    fouled_frac: float = 0.0
-
-    @property
-    def working_effectiveness(self) -> float:
-        return max(0.0, self.effectiveness * (1.0 - self.fouled_frac))
-
-    @property
-    def converges(self) -> bool:
-        """Whether this exchanger can bootstrap a cascade at all."""
-        return self.working_effectiveness >= RECUPERATOR_CLIFF
-
-    @property
-    def heat_capacity_j_k(self) -> float:
-        return max(1.0, self.cold_mass_kg * self.cold_mass_cp_j_kgk)
-
-
-@dataclass
-class Liquefier:
-    """Compressor, recuperator, expander, separator -- then the dewar.
-
-    Refuses to exist without a compressor, because that is the part that
-    pays for the cold and everything downstream merely spends it."""
-    identity: str = "cryo.liquefier"
-    #: NO DEFAULT. The compressor must be declared. This is the law.
-    compressor_duty: str = ""
-    expander: "Turboexpander" = None
-    recuperator: Recuperator = None
-    mass_flow_kg_s: float = 0.05
-    #: Fraction of the compressed feed sent through the expander rather
-    #: than the throttle. The Claude cycle's one real design knob.
-    expander_split: float = 0.6
-    brake: str = "brake-compressor"     # or "generator", or "" for none
-    ambient_k: float = 300.0
-    #: Heat leaking into the cold box through its perlite and its pipe
-    #: penetrations. Small in watts and decisive at the end of cool-down,
-    #: because by then the net refrigeration is small too.
-    ambient_leak_w: float = 120.0
-    #: State: how cold the cold end has actually got. Starts at ambient,
-    #: which is why a cold start makes nothing.
-    cold_end_k: float = 300.0
-    running_hours: float = 0.0
-    produced_kg: float = 0.0
-    energy_kwh: float = 0.0
-    position: tuple = (0.0, 0.0, 0.0)
-
-    def __post_init__(self):
-        if self.expander is None:
-            self.expander = Turboexpander()
-        if self.recuperator is None:
-            self.recuperator = Recuperator()
-        self.cold_end_k = float(self.ambient_k)
-        problems = self.shortfalls()
-        if problems:
-            raise UnpoweredLiquefier(
-                "a liquefier cannot make cold it has not paid for:\n  "
-                + "\n  ".join(problems))
-
-    def shortfalls(self) -> list:
-        """Everything about this plant that would produce free cold."""
-        out = []
-        if not self.compressor_duty:
-            out.append(
-                f"{self.identity}: no compressor declared. The dewar is a receiver "
-                "and the expander only spends what compression stored -- with no "
-                "compressor there is no pressure, no entropy deficit, and no liquid. "
-                "Declare a compressor_duty from CRYO_COMPRESSORS")
-        else:
-            try:
-                compressor_duty(self.compressor_duty)
-            except KeyError as e:
-                out.append(f"{self.identity}: {e}")
-        if not self.brake:
-            out.append(
-                f"{self.identity}: expander has no brake. An unloaded turbine does "
-                "not cool its gas, it freewheels -- the shaft work is where the "
-                "energy leaves, and with nowhere for it to go the gas comes out as "
-                "warm as it went in")
-        if self.expander is not None and self.expander.pressure_ratio <= 1.001:
-            out.append(
-                f"{self.identity}: expander pressure ratio is 1.0 -- nothing to "
-                "expand. The inlet pressure has to be SUPPLIED by the compressor, "
-                "not assumed by a field default")
-        return out
-
-    @property
-    def pressure_ratio(self) -> float:
-        return self.expander.pressure_ratio
-
-    def compressor_power_w(self) -> float:
-        """What the plant actually draws. The bill for all of it."""
-        return compression_power_w(self.compressor_duty, self.mass_flow_kg_s,
-                                   self.ambient_k, self.pressure_ratio)
-
-    def aftercooler_duty_w(self) -> float:
-        """Heat rejected at the aftercooler.
-
-        Worth reporting because it is LARGER than the cooling the plant
-        produces -- every watt of compression comes straight back out
-        here, and it has to go somewhere. On this station that somewhere
-        should be the ice pit rather than a radiator."""
-        return self.compressor_power_w()
-
-    def step(self, dt_s: float, product: str = "liquid-air") -> dict:
-        """Run the cycle for an interval, including the cool-down.
-
-        Produces nothing until the cold end has actually walked down to
-        the boiling point, which is the honest behaviour and takes
-        hours."""
-        dt = max(0.0, float(dt_s))
-        power = self.compressor_power_w()
-        self.energy_kwh += power * dt / 3.6e6
-        self.running_hours += dt / 3600.0
-
-        if not self.recuperator.converges:
-            return {"liquid_kg": 0.0, "cold_end_k": self.cold_end_k,
-                    "cooling_down": True, "converges": False,
-                    "power_w": power,
-                    "why": (f"recuperator at {self.recuperator.working_effectiveness:.2f} "
-                            f"is below the {RECUPERATOR_CLIFF:.2f} cliff: each pass "
-                            "loses more than it gains, so the cascade never converges "
-                            "and the plant runs for ever making nothing")}
-
-        # THE CASCADE, DONE AS A BALANCE RATHER THAN A RATE.
-        #
-        # The expander's cooling does NOT go into the cold box. Nearly
-        # all of it goes into cooling the incoming feed stream, which
-        # arrives at ambient every single pass and has to be taken down
-        # the whole span. What is left over after that -- the NET
-        # refrigeration -- is the only thing that can pull the box down,
-        # and it is a small difference between two large numbers.
-        #
-        # The loss term is what the counterflow exchanger fails to
-        # recover: (1 - effectiveness) of the full warm-to-cold span,
-        # every pass. So as the cold end falls the span opens and the
-        # loss GROWS, while the expander's contribution does not grow as
-        # fast. They meet, and where they meet is the plant's floor.
-        #
-        # This is also where the cliff comes from, without having to be
-        # asserted anywhere: at poor effectiveness the loss term beats
-        # the expander term before the span ever reaches a boiling
-        # point, and the plant simply sits warm.
-        cp = self.expander.cp_j_kgk
-        out_k = self.expander.outlet_temp_k(self.cold_end_k)
-        expander_w = (self.mass_flow_kg_s * self.expander_split * cp
-                      * max(0.0, self.cold_end_k - out_k))
-        span = max(0.0, self.ambient_k - self.cold_end_k)
-        warm_end_loss_w = (self.mass_flow_kg_s * cp
-                           * (1.0 - self.recuperator.working_effectiveness) * span)
-        net_w = expander_w - warm_end_loss_w - self.ambient_leak_w
-        c = cryogen(product)
-        floor = c.boil_k
-        if net_w <= 0.0:
-            # the plant has found its equilibrium and it is warm
-            self.cold_end_k = min(self.ambient_k,
-                                  self.cold_end_k - net_w * dt
-                                  / self.recuperator.heat_capacity_j_k)
-            return {"liquid_kg": 0.0, "liquid_frac": 0.0,
-                    "cold_end_k": self.cold_end_k, "outlet_k": out_k,
-                    "cooling_down": False, "converges": True, "stalled": True,
-                    "power_w": power, "net_refrigeration_w": net_w,
-                    "expander_w": expander_w, "warm_end_loss_w": warm_end_loss_w,
-                    "aftercooler_w": self.aftercooler_duty_w(),
-                    "hours": self.running_hours,
-                    "why": "net refrigeration has gone negative: the warm-end loss now "
-                           "exceeds what the expander delivers, so this is as cold as "
-                           "this plant gets and it will sit here indefinitely"}
-        drop = net_w * dt / self.recuperator.heat_capacity_j_k
-        # never step past the target in one interval -- the same explicit
-        # -integration overshoot that would otherwise ring
-        drop = min(drop, max(0.0, self.cold_end_k - floor))
-        self.cold_end_k = max(floor, self.cold_end_k - drop)
-
-        liquid_kg = 0.0
-        frac = 0.0
-        if self.cold_end_k <= floor + 1.0:
-            frac = self.expander.liquid_fraction(self.cold_end_k, product)
-            liquid_kg = self.mass_flow_kg_s * frac * dt
-            self.produced_kg += liquid_kg
-        return {"liquid_kg": liquid_kg, "liquid_frac": frac,
-                "cold_end_k": self.cold_end_k, "outlet_k": out_k,
-                "cooling_down": self.cold_end_k > floor + 1.0,
-                "converges": True, "stalled": False, "power_w": power,
-                "net_refrigeration_w": net_w, "expander_w": expander_w,
-                "warm_end_loss_w": warm_end_loss_w,
-                "aftercooler_w": self.aftercooler_duty_w(),
-                "hours": self.running_hours}
-
-    def specific_work_kwh_kg(self) -> float:
-        """What this plant actually spends per kilogram of product."""
-        if self.produced_kg <= 0.0:
-            return float("inf")
-        return self.energy_kwh / self.produced_kg
-
-    def efficiency_report(self) -> dict:
-        """Against the thermodynamic floor, which nothing beats."""
-        floor = AIR_LIQUEFACTION_EXERGY_J_KG / 3.6e6
-        actual = self.specific_work_kwh_kg()
-        return {"specific_kwh_kg": actual, "reversible_kwh_kg": floor,
-                "second_law_efficiency": (floor / actual) if actual > 0 else 0.0,
-                "violates_second_law": actual < floor,
-                "why": "the reversible work to liquefy air is its exergy, about "
-                       "0.21 kWh/kg. Real small plants land between 1.0 and 1.5, so a "
-                       "second-law efficiency near 0.15-0.20 is honest and anything "
-                       "above 1.0 is an arithmetic error"}
-
-
-def feed_dewar(plant: Liquefier, vessel, dt_s: float,
-               product: str = "liquid-air") -> dict:
-    """Run the plant and put what it made into the vessel.
-
-    The only sanctioned way liquid enters a dewar: it has to come from a
-    plant that paid for it."""
-    r = plant.step(dt_s, product)
-    kg = r.get("liquid_kg", 0.0)
-    if kg > 0.0:
-        c = cryogen(product)
-        litres = kg / c.liquid_density_kg_m3 * 1000.0
-        room = max(0.0, vessel.capacity_l - vessel.fill_l)
-        took = min(litres, room)
-        vessel.fill_l += took
-        r["into_vessel_l"] = took
-        r["overflow_l"] = litres - took
-    else:
-        r["into_vessel_l"] = 0.0
-        r["overflow_l"] = 0.0
-    return r

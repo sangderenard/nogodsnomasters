@@ -53,6 +53,16 @@ def test_a_snapshot_is_the_whole_declared_span():
     assert snapshot.size > 1000, snapshot.size
 
 
+def test_fresh_engine_can_be_checkpointed_before_its_first_tick():
+    """A dt round checkpoints every participant before advancing any one."""
+    sim = EngineCycleSim(engine=engines.get(IDENTITY))
+    engine = CycleEngine(sim)
+    snapshot = engine.snapshot()
+    assert snapshot.size == sim.state_span_length()
+
+
+
+
 def test_restoring_puts_the_engine_back():
     """Step away, put it back, and the crank is where it was."""
     engine = _running()

@@ -578,6 +578,33 @@ def test_a_valve_seat_is_not_a_leak():
     assert not [e for e in field.emitters if e.kind == "open-port"]
 
 
+def test_installed_direct_injectors_are_not_six_open_fuel_holes():
+    """A rail-fed injector closes its boss until that injector is removed."""
+    from engine_cycle_sim import EngineCycleSim
+
+    sim = EngineCycleSim(engines.get("ldt465-multifuel-deuce"))
+    injectors = [
+        node for node in sim._drivetrain.graph["nodes"]
+        if node.get("port_kind") == "direct-injector-boss"
+    ]
+
+    assert len(injectors) == 6
+    assert all(node["connected"] for node in injectors)
+    assert not [
+        emitter for emitter in sim.hole_emitters.emitters
+        if emitter.kind == "open-port" and emitter.circuit == "fuel"
+    ]
+
+    sim.start()
+    sim.throttle = 0.55
+    sim.step(0.01)
+    fuel = next(
+        circuit for circuit in sim._drivetrain.fluid_circuits
+        if circuit.circuit_identity == "fuel"
+    )
+    assert fuel.fill_level_frac > 0.999999
+
+
 # --- fouling, for every fluid ----------------------------------------
 
 def test_a_blocked_hole_costs_the_square_of_what_it_lost():

@@ -18,10 +18,16 @@ import math
 import numpy as np
 
 from assembly_ports import PartPort
+from electrical_distribution import (
+    BuildingCable, CircuitBreaker, DistributionPanel, OutletBox,
+    standard_services,
+)
+from dc_power import Conductor
 from machines import Machine, MachineLine, MachinePart
 
 
 PMG_RATED_W = 30_000.0
+PMG_RAW_AC_RATED_W = 35_000.0
 PMG_REFERENCE_RPM = 3_000.0
 PMG_EFFICIENCY = 0.91
 PMG_SOURCE = "https://www.meccalte.com/en/products/alternators/zanardi-products/pmg"
@@ -178,6 +184,12 @@ class PowerplantBasic:
             "hydraulic": p + np.array([-side * 0.68, 0.02, 0.48]),
             "air": p + np.array([-side * 0.68, 0.02, -0.48]),
             "generator": p + np.array([side * 0.66, 0.04, 0.46]),
+            "power_converter": p + np.array([side * 0.66, 0.30, 0.18]),
+            "switchboard": p + np.array([side * 0.72, 0.30, -0.16]),
+            "outlet_dc": p + np.array([side * 0.76, 0.33, -0.34]),
+            "outlet_230": p + np.array([side * 0.76, 0.33, -0.46]),
+            "outlet_400_3ph": p + np.array([side * 0.76, 0.33, -0.58]),
+            "outlet_split": p + np.array([side * 0.76, 0.33, -0.70]),
             "battery": p + np.array([side * 0.68, -0.08, -0.46]),
             "refrigerant": p + np.array([0.0, 0.38, -0.60]),
             "coolant_reservoir": p + np.array([side * 0.58, 0.34, -0.08]),
@@ -185,6 +197,44 @@ class PowerplantBasic:
         }
         prefix = self.identity
         def ident(name): return f"{prefix}.{name}"
+        services = standard_services(prefix)
+
+        def outlet(name, service_key, awg, rating_a, connector):
+            service = services[service_key]
+            cable = BuildingCable(
+                ident(f"cable.{name}"), service, awg=awg,
+                length_m=float(np.linalg.norm(
+                    locations[name] - locations["switchboard"])),
+                solid_copper=True, in_conduit=True,
+                allowable_ampacity_a=rating_a,
+            )
+            breaker = CircuitBreaker(
+                ident(f"breaker.{name}"), service, rating_a, cable)
+            return cable, OutletBox(
+                ident(name), service, breaker, connector_standard=connector)
+
+        outlet_specs = {
+            "outlet_dc": outlet(
+                "outlet_dc", "48v-dc", 0, 150.0, "high-current-2p+pe"),
+            "outlet_230": outlet(
+                "outlet_230", "230v-1ph-50hz", 6, 63.0,
+                "iec-60309-2p+e"),
+            "outlet_400_3ph": outlet(
+                "outlet_400_3ph", "230-400v-3ph-50hz", 8, 32.0,
+                "iec-60309-3p+n+e"),
+            "outlet_split": outlet(
+                "outlet_split", "120-240v-split-60hz", 8, 50.0,
+                "split-phase-2p+n+e"),
+        }
+        distribution_sections = tuple(
+            DistributionPanel(
+                ident(f"switchboard.{name}"), spec[1].service,
+                spec[1].breaker.rating_a, (spec[1],),
+                neutral_to_frame_bond=(
+                    spec[1].service.arrangement != "dc-two-wire"),
+            )
+            for name, spec in outlet_specs.items()
+        )
         parts = []
         specifications = (
             ("pto", "power-takeoff-coupler", (0.12, .11, .11), 18.0,
@@ -199,15 +249,60 @@ class PowerplantBasic:
             ("generator", "permanent-magnet-generator", (.22, .22, .24), 78.0,
              "shaft-electrical-generator", {
                  "manufacturer_basis": "Mecc Alte Zanardi PM7G-80 Medio",
-                 "rated_w": PMG_RATED_W, "dc_voltage_range_v": [48.0, 56.0],
+                 "rated_w": PMG_RATED_W,
+                 "raw_ac_rated_w": PMG_RAW_AC_RATED_W,
+                 "raw_winding": "three-phase-variable-frequency",
+                 "installed_output": "external-power-converter",
+                 "electrical_port_model": "pmg-three-phase-source",
+                 "thermal_domain": "volume",
                  "rated_speed_range_rpm": [2500.0, 3600.0],
                  "full_load_efficiency": PMG_EFFICIENCY,
                  "specification_source": PMG_SOURCE,
                  "mass_basis": "modeled installed-package estimate; manufacturer mass not claimed"}),
+            ("power_converter", "generator-power-converter", (.24, .12, .20), 34.0,
+             "electrical-power-converter", {
+                 "input": "three-phase-variable-frequency",
+                 "continuous_output_w": PMG_RATED_W,
+                 "output_services": [
+                     spec[1].service.graph_attributes()
+                     for spec in outlet_specs.values()],
+                 "circuit_realization": "spectral-graph-multiport",
+                 "electrical_port_model": "power-electronic-converter",
+                 "thermal_domain": "volume"}),
+            ("switchboard", "electrical-distribution-switchboard",
+             (.22, .12, .18), 28.0, "electrical-distribution-panel", {
+                 "distribution_sections": [
+                     section.graph_attributes()
+                     for section in distribution_sections],
+                 "aggregate_source_limit_w": PMG_RATED_W,
+                 "electrical_port_model": "breaker-switchboard",
+                 "thermal_domain": "volume"}),
+            ("outlet_dc", "electrical-receptacle-box", (.07, .06, .06), 3.0,
+             "electrical-receptacle", {
+                 **outlet_specs["outlet_dc"][1].graph_attributes(),
+                 "electrical_port_model": "receptacle-contact-bank",
+                 "thermal_domain": "volume"}),
+            ("outlet_230", "electrical-receptacle-box", (.07, .06, .06), 3.0,
+             "electrical-receptacle", {
+                 **outlet_specs["outlet_230"][1].graph_attributes(),
+                 "electrical_port_model": "receptacle-contact-bank",
+                 "thermal_domain": "volume"}),
+            ("outlet_400_3ph", "electrical-receptacle-box", (.07, .06, .06), 4.0,
+             "electrical-receptacle", {
+                 **outlet_specs["outlet_400_3ph"][1].graph_attributes(),
+                 "electrical_port_model": "receptacle-contact-bank",
+                 "thermal_domain": "volume"}),
+            ("outlet_split", "electrical-receptacle-box", (.07, .06, .06), 3.0,
+             "electrical-receptacle", {
+                 **outlet_specs["outlet_split"][1].graph_attributes(),
+                 "electrical_port_model": "receptacle-contact-bank",
+                 "thermal_domain": "volume"}),
             ("battery", "battery-pack-48v", (.30, .16, .24), 94.0,
              "electrical-storage", {"nominal_voltage_v": 48.0,
                                     "capacity_ah": 200.0,
-                                    "stored_energy_kwh": 9.6}),
+                                    "stored_energy_kwh": 9.6,
+                                    "electrical_port_model": "battery-storage",
+                                    "thermal_domain": "volume"}),
             ("refrigerant", "shaft-refrigerant-compressor", (.17, .16, .18), 31.0,
              "refrigerant-compressor", {"rated_shaft_w": 7500.0,
                                         "refrigerant": "r134a"}),
@@ -220,13 +315,18 @@ class PowerplantBasic:
              "platform-engine-coolant-assist-pump", {
                  "rated_flow_l_min": 160.0, "rated_head_pa": 220_000.0,
                  "rated_w": 1800.0, "supply_voltage_v": 48.0,
+                 "electrical_port_model": "electric-motor-drive",
+                 "thermal_domain": "volume",
                  "control": "HCU-coolant-manifold",
                  "role": "primary when engine has no pump; parallel assist otherwise"}),
         )
         for name, kind, ext, mass, role, attributes in specifications:
             q = locations[name]
             ports = []
-            if name not in ("battery", "coolant_reservoir", "coolant_pump"):
+            if name not in (
+                    "battery", "coolant_reservoir", "coolant_pump",
+                    "power_converter", "switchboard", "outlet_dc",
+                    "outlet_230", "outlet_400_3ph", "outlet_split"):
                 ports.append(_port(f"{ident(name)}.shaft_in", ident(name),
                                    "shaft-power-in", q, (-side, 0, 0), .025,
                                    connected_to=ident("pto")))
@@ -242,15 +342,37 @@ class PowerplantBasic:
                                    "compressed-air-out", q, (0, 0, -1), .012,
                                    fluid="air"))
             elif name == "generator":
-                ports.append(_port(f"{ident(name)}.dc_out", ident(name),
-                                   "48v-dc-out", q, (0, 1, 0), .010,
+                ports.append(_port(f"{ident(name)}.raw_ac_out", ident(name),
+                                   "three-phase-winding-out", q, (0, 1, 0), .010,
                                    fluid="electricity",
-                                   connected_to=f"{ident('battery')}.dc_bus"))
+                                   connected_to=f"{ident('power_converter')}.raw_ac_in"))
+            elif name == "power_converter":
+                ports += [
+                    _port(f"{ident(name)}.raw_ac_in", ident(name),
+                          "three-phase-winding-in", q, (0, -1, 0), .010,
+                          fluid="electricity",
+                          connected_to=f"{ident('generator')}.raw_ac_out"),
+                    _port(f"{ident(name)}.distribution_out", ident(name),
+                          "multi-service-electrical-out", q, (0, 1, 0), .012,
+                          fluid="electricity",
+                          connected_to=f"{ident('switchboard')}.supply"),
+                ]
+            elif name == "switchboard":
+                ports.append(_port(
+                    f"{ident(name)}.supply", ident(name),
+                    "multi-service-electrical-in", q, (0, -1, 0), .012,
+                    fluid="electricity",
+                    connected_to=f"{ident('power_converter')}.distribution_out"))
+            elif name.startswith("outlet_"):
+                ports.append(_port(
+                    f"{ident(name)}.receptacle", ident(name),
+                    "electrical-receptacle", q, (side, 0, 0), .012,
+                    fluid="electricity"))
             elif name == "battery":
                 ports.append(_port(f"{ident(name)}.dc_bus", ident(name),
                                    "48v-dc-bidirectional", q, (0, 1, 0), .010,
                                    fluid="electricity",
-                                   connected_to=f"{ident('generator')}.dc_out"))
+                                   connected_to=f"{ident('power_converter')}.distribution_out"))
             elif name == "refrigerant":
                 ports += [_port(f"{ident(name)}.suction", ident(name),
                                 "refrigerant-suction-in", q, (0, 0, -1), .010,
@@ -286,14 +408,87 @@ class PowerplantBasic:
             lines.append(MachineLine(f"{prefix}.shaft.{name}", ident("pto"),
                                      ident(name), "shaft-service-drive", .018,
                                      "shaft", "hardened-steel"))
-        lines.append(MachineLine(f"{prefix}.generator_to_battery",
-                                 ident("generator"), ident("battery"),
-                                 "insulated-copper-wire", .010, "48v-dc",
-                                 "copper"))
-        lines.append(MachineLine(f"{prefix}.battery_to_coolant_pump",
-                                 ident("battery"), ident("coolant_pump"),
-                                 "insulated-copper-wire", .008, "48v-dc",
-                                 "copper"))
+        raw_length = float(np.linalg.norm(
+            locations["generator"] - locations["power_converter"]))
+        raw_conductors = []
+        for role in ("line-1", "line-2", "line-3", "protective-earth"):
+            conductor = Conductor(
+                f"{prefix}.generator_raw.{role}", awg=4,
+                length_m=raw_length, both_directions=False)
+            raw_conductors.append({
+                "role": role, "awg": 4,
+                "area_mm2": conductor.area_mm2,
+                "resistance_ohm": conductor.resistance_ohm,
+                "ampacity_a": conductor.ampacity_a,
+                "material": "stranded-copper",
+            })
+        lines.append(MachineLine(
+            f"{prefix}.generator_raw_to_converter",
+            ident("generator"), ident("power_converter"),
+            "insulated-copper-wire", .010, "generator-raw-ac", "copper",
+            {"transport_domain": "electrical",
+             "phase_arrangement": "three-phase-variable-frequency",
+             "conductor_roles": [row["role"] for row in raw_conductors],
+             "conductors": raw_conductors}))
+
+        def cable_line(name, a, b, cable, circuit, breaker=None):
+            attributes = cable.graph_attributes()
+            if breaker is not None:
+                attributes.update(breaker.graph_attributes())
+            return MachineLine(
+                f"{prefix}.{name}", ident(a), ident(b),
+                "insulated-copper-wire", .010, circuit, "copper",
+                attributes)
+
+        # Each converted service remains a distinct conductor bundle even
+        # though the runs share one structural conduit and enclosure.
+        for name, (branch_cable, _outlet) in outlet_specs.items():
+            panel_cable = BuildingCable(
+                ident(f"cable.converter.{name}"), branch_cable.service,
+                awg=branch_cable.awg,
+                length_m=float(np.linalg.norm(
+                    locations["power_converter"] - locations["switchboard"])),
+                solid_copper=False, in_conduit=True,
+                allowable_ampacity_a=branch_cable.ampacity_a)
+            lines.append(cable_line(
+                f"converter_to_switchboard.{name}", "power_converter",
+                "switchboard", panel_cable, branch_cable.service.identity,
+                _outlet.breaker))
+            lines.append(cable_line(
+                f"switchboard_to_{name}", "switchboard", name,
+                branch_cable, branch_cable.service.identity,
+                _outlet.breaker))
+            lines.append(MachineLine(
+                f"{prefix}.conduit.switchboard_to_{name}",
+                ident("switchboard"), ident(name), "electrical-conduit",
+                .018, "conduit-structure", "steel-pipe",
+                {"load_bearing": True,
+                 "contains_circuits": [branch_cable.service.identity]}))
+
+        lines.append(MachineLine(
+            f"{prefix}.conduit.converter_to_switchboard",
+            ident("power_converter"), ident("switchboard"),
+            "electrical-conduit", .025, "conduit-structure", "steel-pipe",
+            {"load_bearing": True,
+             "contains_circuits": [
+                 cable.service.identity for cable, _ in outlet_specs.values()]}))
+
+        battery_cable = BuildingCable(
+            ident("cable.converter_battery"), services["48v-dc"],
+            awg=0, length_m=float(np.linalg.norm(
+                locations["power_converter"] - locations["battery"])),
+            solid_copper=False, allowable_ampacity_a=150.0)
+        coolant_cable = BuildingCable(
+            ident("cable.battery_coolant_pump"), services["48v-dc"],
+            awg=10, length_m=float(np.linalg.norm(
+                locations["battery"] - locations["coolant_pump"])),
+            solid_copper=False, allowable_ampacity_a=30.0)
+        lines.append(cable_line(
+            "converter_to_battery", "power_converter", "battery",
+            battery_cable, services["48v-dc"].identity))
+        lines.append(cable_line(
+            "battery_to_coolant_pump", "battery", "coolant_pump",
+            coolant_cable, services["48v-dc"].identity))
         lines.append(MachineLine(f"{prefix}.coolant_reservoir_to_pump",
                                  ident("coolant_reservoir"), ident("coolant_pump"),
                                  "coolant-line", .019, "engine-coolant",

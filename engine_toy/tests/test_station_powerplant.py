@@ -27,6 +27,8 @@ def test_powerplant_basic_is_a_ported_thermal_machine_with_replaceable_envelope(
     assert not package.accepts((.70, .45, .40))
     assert roles == {"power-input", "hydraulic-pump", "pneumatic-compressor",
                      "shaft-electrical-generator", "electrical-storage",
+                     "electrical-power-converter",
+                     "electrical-distribution-panel", "electrical-receptacle",
                      "refrigerant-compressor",
                      "platform-engine-coolant-reservoir",
                      "platform-engine-coolant-assist-pump"}
@@ -34,14 +36,29 @@ def test_powerplant_basic_is_a_ported_thermal_machine_with_replaceable_envelope(
     assert all(node["thermal_capacity_j_k"] > 0.0 for node in graph["nodes"])
     assert all(node["ports"] for node in graph["nodes"])
     assert {edge["constraint"] for edge in graph["edges"]} == {
-        "shaft-service-drive", "insulated-copper-wire", "coolant-line"}
+        "shaft-service-drive", "insulated-copper-wire", "electrical-conduit",
+        "coolant-line"}
     generator = next(node for node in graph["nodes"]
                      if node["part_role"] == "shaft-electrical-generator")
     assert generator["rated_w"] == 30_000.0
-    assert generator["dc_voltage_range_v"] == [48.0, 56.0]
+    assert generator["raw_ac_rated_w"] == 35_000.0
+    assert generator["raw_winding"] == "three-phase-variable-frequency"
     assert generator["rated_speed_range_rpm"] == [2500.0, 3600.0]
     assert generator["full_load_efficiency"] == .91
     assert generator["specification_source"].startswith("https://www.meccalte.com/")
+
+    outlets = [node for node in graph["nodes"]
+               if node["part_role"] == "electrical-receptacle"]
+    assert {node["phase_arrangement"] for node in outlets} == {
+        "dc-two-wire", "single-phase", "split-phase", "three-phase-wye"}
+    assert all(node["breaker_rating_a"] > 0.0 for node in outlets)
+    electrical = [edge for edge in graph["edges"]
+                  if edge.get("transport_domain") == "electrical"]
+    assert electrical
+    assert all(edge.get("conductors") for edge in electrical)
+    conduits = [edge for edge in graph["edges"]
+                if edge["constraint"] == "electrical-conduit"]
+    assert conduits and all(edge["load_bearing"] for edge in conduits)
 
 
 def test_powerplant_runtime_makes_no_power_stopped_and_runs_all_shaft_services():

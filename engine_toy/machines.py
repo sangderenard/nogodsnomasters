@@ -41,7 +41,20 @@ inlets, asked once for the whole machine.
 from __future__ import annotations
 
 import math
+import copy
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
+
+_TURING_ROOT = Path(__file__).resolve().parents[1] / "turing"
+if str(_TURING_ROOT) not in sys.path:
+    sys.path.insert(0, str(_TURING_ROOT))
+
+from src.common.dt_system.dt_scaler import Metrics
+from src.common.dt_system.engine_api import DtCompatibleEngine
+from src.common.dt_system.error_channels import empty_channels
+from src.common.dt_system.time_contracts import HOLD
+from src.common.tensors import AbstractTensor
 
 from actuators import LinearActuator, RotaryActuator, FluidMotor
 from bench import HydraulicPowerUnit, AirSupply
@@ -99,6 +112,7 @@ class MachineLine:
     radius: float = 0.006
     circuit_identity: str = "hydraulic"
     material: str = "steel-pipe"
+    attributes: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -191,11 +205,16 @@ class Machine:
                     "joint_axis": port.joint_axis,
                 } for port in p.ports]
             nodes.append(n)
-        edges = [{"identity": l.identity, "a": l.a, "b": l.b,
-                  "constraint": l.constraint, "radius": float(l.radius),
-                  "circuit_identity": l.circuit_identity, "material": l.material,
-                  "in_view": True}
-                 for l in self.lines]
+        edges = []
+        for line in self.lines:
+            edge = {
+                "identity": line.identity, "a": line.a, "b": line.b,
+                "constraint": line.constraint, "radius": float(line.radius),
+                "circuit_identity": line.circuit_identity,
+                "material": line.material, "in_view": True,
+            }
+            edge.update(line.attributes)
+            edges.append(edge)
         if self.production_graph is not None:
             base = self.production_graph
             # the plant sits inside the well with the structure; a
@@ -440,6 +459,10 @@ class MachineSim:
         self.cascade_log: list = []
         self._cascade_depth = 0
         self.ray_mesh_factory = None
+        # A machine may be coupled to the graph-discovered fluid system by
+        # its owning scene.  This is a reference to that system's existing
+        # circuit objects, never another circuit ledger.
+        self._fluid_circuits = ()
         # a machine with no supply of its own gets one, and is told so
         if self.machine.hpu is None and self.machine.medium == "hydraulic":
             self.machine.hpu = HydraulicPowerUnit(identity=f"{self.machine.identity}-hpu")
@@ -449,6 +472,46 @@ class MachineSim:
         self.machine.sync_supply_to_parts()
         if self.machine.air is None and self.machine.medium == "pneumatic":
             self.machine.air = AirSupply(identity=f"{self.machine.identity}-air")
+
+    def snapshot(self):
+        # Circuit state is checkpointed by FluidCircuitSystem when it is a
+        # sibling dt participant.  Copying it here would split the one shared
+        # ledger into two object graphs on restore.
+        values = {key: value for key, value in vars(self).items()
+                  if key != "_fluid_circuits"}
+        return copy.deepcopy(values)
+
+    def restore(self, snapshot) -> None:
+        circuits = self._fluid_circuits
+        vars(self).clear()
+        vars(self).update(copy.deepcopy(snapshot))
+        self._fluid_circuits = circuits
+
+    def bind_fluid_circuits(self, circuits) -> None:
+        """Bind damage and emitters to the owning fluid system's ledger."""
+        from damage_state import bind_part_circuits
+        self._fluid_circuits = tuple(circuits)
+        bind_part_circuits(self.state.part_damage, self._fluid_circuits)
+
+    def apply_penetration(self, penetration):
+        """Apply the common ray-damage ABI to any graph-backed machine."""
+        from damage_state import record_penetration
+        recorded = record_penetration(
+            self.state.part_damage, self.graph, self._fluid_circuits,
+            penetration)
+        made = self.hole_emitters.add_from_punctures(
+            recorded, self.graph, self._fluid_circuits)
+        for emitter in self.hole_emitters.emitters:
+            emitter.spray_resolved = False
+        if recorded:
+            self.damage_events.append({
+                "kind": "penetration",
+                "parts": tuple(identity for identity, _ in recorded),
+                "punctures": len(recorded),
+                "boundary_holes": sum(p.boundary_holes for _, p in recorded),
+                "emitters": tuple(emitter.identity for emitter in made),
+            })
+        return recorded
 
     # ---------------------------------------------------------------
     def command(self, name: str, value: float) -> None:
@@ -541,7 +604,7 @@ class MachineSim:
                                          float(self.loads.get(p.identity, 0.0)))
         self.apply_linkage()
         # holes leak whatever the machine holds
-        self.hole_emitters.step(dt, [], 0.0, 293.15)
+        self.hole_emitters.step(dt, self._fluid_circuits, 0.0, 293.15)
         if self.bursts.bursts:
             self.bursts.step(dt, self.graph)
         return results
@@ -644,6 +707,46 @@ class MachineSim:
 # =====================================================================
 #  THE MACHINES
 # =====================================================================
+class MachineSystem(DtCompatibleEngine):
+    """Managed-dt boundary for the complete mechanical machine simulation."""
+
+    def __init__(self, sim: MachineSim):
+        self.sim = sim
+        self.world_time = 0.0
+        self.observer_time = 0.0
+        self.last_metrics = None
+
+    def step(self, dt: float, state=None, state_table=None):
+        self.sim.step(float(dt))
+        channels = empty_channels()
+        metrics = Metrics(
+            max_vel=0.0, max_flux=float(self.sim.supply_flow_l_min),
+            div_inf=0.0, mass_err=0.0,
+            pub_tau=AbstractTensor.tensor([0.0]),
+            pub_tau_present=AbstractTensor.tensor([0.0]),
+            pub_contract=AbstractTensor.tensor([HOLD]),
+            pub_dt_limit=AbstractTensor.tensor([0.0]),
+            pub_dt_limit_present=AbstractTensor.tensor([0.0]),
+            pub_values=channels.copy(), pub_present=AbstractTensor.zeros_like(channels),
+            pub_limits=AbstractTensor.zeros_like(channels),
+            pub_limits_present=AbstractTensor.zeros_like(channels),
+            advanced_dt=float(dt),
+        )
+        self.last_metrics = metrics
+        return True, metrics, state
+
+    def get_state(self, state=None):
+        return self.sim if state is None else state
+
+    def snapshot(self):
+        return (self.sim.snapshot(), float(self.world_time),
+                float(self.observer_time), self.last_metrics)
+
+    def restore(self, snapshot) -> None:
+        sim, self.world_time, self.observer_time, self.last_metrics = snapshot
+        self.sim.restore(sim)
+
+
 MACHINES: dict[str, object] = {}
 
 

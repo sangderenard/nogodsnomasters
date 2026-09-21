@@ -978,6 +978,11 @@ class EngineCycleSim:
         self._brake_junction = self._build_brake_junction()
         self._recompute_firing_angles()
         self._drivetrain = self._build_drivetrain()
+        # This is owned engine state, including before the first physics
+        # tick.  The dt system checkpoints a registered engine before it
+        # advances it, so the declared state span must be readable from the
+        # freshly constructed state as well as from a warmed engine.
+        self._drivetrain_out: dict = {}
         # WHERE the compressed air is, as distinct from how much there
         # is: the circuit keeps the one authoritative stored mass, this
         # says which of the real vessels is holding it (air_vessels.py).

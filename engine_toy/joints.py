@@ -712,6 +712,7 @@ for _k in ("coolant-line", "oil-line", "exhaust-flow-path", "fuel-line",
            "flexible-hydraulic-hose", "pressure-rated-air-line",
            "flexible-air-line", "insulated-copper-wire", "refrigerant-line",
            "flexible-multi-circuit-conduit", "metaconduit-isolated-channel",
+           "thermal-interface",
            "insulated-flexible-thermal-duct",
            "insulated-flexible-exhaust-duct",
            # A service shaft belongs to the runnable rigid power graph.

@@ -45,6 +45,11 @@ from src.compiler.abstract_ui_vehicles import (  # noqa: E402
     _vehicle_powertrain_graph, FLUID_LINE_MATERIALS, FLUID_MEDIA,
     LINE_INNER_FILM_W_M2K, LINE_OUTER_FILM_W_M2K, BATTERY_MODULES)
 from electrical_network import Battery  # noqa: E402
+from src.common.dt_system.dt_scaler import Metrics  # noqa: E402
+from src.common.dt_system.engine_api import DtCompatibleEngine  # noqa: E402
+from src.common.dt_system.error_channels import empty_channels  # noqa: E402
+from src.common.dt_system.time_contracts import HOLD  # noqa: E402
+from src.common.tensors import AbstractTensor  # noqa: E402
 
 # Real fluid-line constraint kinds (abstract_ui_vehicles.py's own
 # `routed_line` set) grouped by what physics actually governs them --
@@ -59,8 +64,9 @@ from electrical_network import Battery  # noqa: E402
 #   high-pressure-liquid-supply -- a real depletable bottle (nitrous) OR
 #                            tank (fuel): valve/pump-gated flow out of a
 #                            finite reservoir, not just a pressure state
-THERMAL_LIQUID_KINDS = {"coolant-line", "oil-line"}
+THERMAL_LIQUID_KINDS = {"coolant-line", "oil-line", "condensate-line"}
 COMPRESSIBLE_GAS_KINDS = {"low-pressure-air-line", "pressure-rated-air-line",
+                          "air-line", "vacuum-line",
                           "flexible-air-line", "rigid-pneumatic-hard-line",
                           "flexible-pneumatic-hose", "exhaust-flow-path"}
 INCOMPRESSIBLE_HYDRAULIC_KINDS = {"pressure-rated-hydraulic-line", "flexible-hydraulic-hose"}
@@ -122,9 +128,13 @@ def choked_orifice_mass_flow_kg_s(area_m2: float, upstream_pressure_pa: float,
         return 0.0
     gamma = 1.4
     r_specific = 287.0
-    flow_fn_const = 0.6847  # (2/(gamma+1))**((gamma+1)/(2*(gamma-1))) evaluated for air
+    # sqrt(gamma) * (2/(gamma+1))**((gamma+1)/(2*(gamma-1))).
+    # The previous spelling multiplied this already-combined coefficient by
+    # sqrt(gamma/(R*T)), counting sqrt(gamma) twice and overstating every
+    # HoleEmitter gas jet by about 18 percent.
+    flow_fn_const = 0.6847314563772704
     return (discharge_coeff * area_m2 * upstream_pressure_pa
-            * math.sqrt(gamma / (r_specific * max(upstream_temp_k, 1.0))) * flow_fn_const)
+            / math.sqrt(r_specific * max(upstream_temp_k, 1.0)) * flow_fn_const)
 
 
 def step_depletable_reservoir(fill_level_frac: float, bottle_capacity_kg: float, dt: float,
@@ -1428,6 +1438,18 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
         aligned = []
         for port in ports:
             ident = f"powertrain.cylinder_{geom.number}.{port.name}"
+            # An injector boss in this production graph already contains its
+            # injector and is terminated by the rail-feed edge emitted below.
+            # Leaving it without the ordinary port-closure flag makes
+            # HoleEmitterField correctly interpret the bare boss as an open
+            # pumped-liquid hole, so every installed injector pours fuel into
+            # the bay.  Preserve the physical distinction at the graph: an
+            # installed injector is a connected port; removing it can clear
+            # this flag through the same live open-port mechanism as a cap.
+            injector_installed = port.port_kind in (
+                "direct-injector-boss", "port-injector-boss",
+                "gas-injector-boss",
+            )
             # _vehicle_powertrain_graph's own per-cylinder intake/exhaust
             # ports (above) are numbered 0-based straight off the same
             # cylinder_sites() tuple this toy's own geom.number (1-based)
@@ -1456,10 +1478,12 @@ def build_drivetrain_graph(engine, *, external_fuel_supply: dict | None = None) 
                 authored["port_direction"] = list(port.direction)
                 authored["port_radius_m"] = port.radius_m
                 authored["fluid_role"] = port.fluid_role
+                if injector_installed:
+                    authored["connected"] = True
             else:
                 node(ident, port.position, "engine-block-port", port_kind=port.port_kind,
                      port_direction=list(port.direction), port_radius_m=port.radius_m, fluid_role=port.fluid_role,
-                     cylinder=geom.number)
+                     cylinder=geom.number, connected=injector_installed)
             aligned.append(port)
         layout.append((geom, aligned))
     if identity_renames:
@@ -2645,6 +2669,26 @@ class _EdgeState:
 _UNSET = object()
 
 
+@dataclass(frozen=True)
+class FluidVolume:
+    """One residence domain inside a graph-discovered fluid circuit.
+
+    A volume owns inventory and residence effects.  ``state_owner`` names an
+    external spatial solver (for example the chamber atmosphere) when that
+    solver resolves buoyancy, settling, and internal turbulence; the circuit
+    still owns transfer across the volume's ports.  A lumped volume leaves it
+    empty and carries those effects at its declared resolution later.
+    """
+
+    identity: str
+    volume_m3: float
+    fluid: str
+    pressure_pa: float = 101_325.0
+    temperature_k: float = 293.15
+    state_owner: str = ""
+    spatial_model: str = "lumped"
+
+
 @dataclass
 class FluidCircuit:
     """One closed fluid system -- a connected component of fluid-line
@@ -2656,6 +2700,8 @@ class FluidCircuit:
     kind_class: str        # "thermal-liquid" | "compressible-gas" | "incompressible-hydraulic"
     nodes: frozenset[str]
     edges: tuple[dict, ...]
+    volumes: tuple[FluidVolume, ...] = ()
+    pipe_volume_l: float = 0.0
 
     @property
     def circuit_identity(self) -> str:
@@ -2789,6 +2835,16 @@ class FluidCircuit:
     # heat-rejection term -- stored here so a caller can report it too,
     # instead of it being thrown away as a local
     flow_lpm: float = field(default=0.0, init=False)
+    # Spatially distinct component states for graph-declared process loops.
+    # Ordinary vehicle circuits may remain lumped; a compressor/expander/
+    # exchanger loop cannot, because collapsing both pressure sides and both
+    # recuperator streams destroys the physics the graph declares.
+    node_pressure_pa: dict[str, float] = field(default_factory=dict)
+    node_temperature_k: dict[str, float] = field(default_factory=dict)
+    edge_mass_flow_kg_s: dict[str, float] = field(default_factory=dict)
+    component_power_w: dict[str, float] = field(default_factory=dict)
+    thermal_source_w: dict[str, float] = field(default_factory=dict)
+    process_resolved: bool = False
 
 
 def _circuit_thermal_capacity(edges: list[dict], node_ids: frozenset[str], node_by_id: dict[str, dict],
@@ -2885,6 +2941,31 @@ def _line_wall_loss_w_per_k(edges: list[dict], node_by_id: dict[str, dict]) -> f
         r_outer_film = 1.0 / (LINE_OUTER_FILM_W_M2K * 2.0 * math.pi * r_o)
         total += length / (r_inner_film + r_wall + r_outer_film)
     return total
+
+
+def _declared_fluid_volume(node: dict) -> FluidVolume | None:
+    """Read a real residence volume from one production-graph node."""
+
+    litres = float(node.get("fluid_volume_l", 0.0) or 0.0)
+    if litres <= 0.0 and node.get("kind") in {"gas-volume", "vacuum-volume"}:
+        half = node.get("half_extent_m")
+        if half is not None and len(half) == 3:
+            litres = 8.0 * math.prod(float(value) for value in half) * 1000.0
+    if litres <= 0.0:
+        return None
+    owner = str(node.get("fluid_state_owner")
+                or node.get("thermal_state_owner") or "")
+    spatial = str(node.get("fluid_spatial_model")
+                  or ("external" if owner else "lumped"))
+    return FluidVolume(
+        identity=str(node["identity"]),
+        volume_m3=litres / 1000.0,
+        fluid=str(node.get("fluid") or "gas"),
+        pressure_pa=float(node.get("pressure_pa", 101_325.0) or 101_325.0),
+        temperature_k=float(node.get("temperature_k", 293.15) or 293.15),
+        state_owner=owner,
+        spatial_model=spatial,
+    )
 
 
 def _discover_fluid_circuits(graph: dict[str, Any]) -> list[FluidCircuit]:
@@ -3042,9 +3123,22 @@ def _discover_fluid_circuits(graph: dict[str, Any]) -> list[FluidCircuit]:
         # its declared wax characteristics, read off the node itself
         thermostat = next((node_by_id[nid] for nid in node_ids
                            if node_by_id.get(nid, {}).get("kind") == "wax-pellet-thermostat-valve"), None)
+        volumes = tuple(
+            volume for nid in sorted(node_ids)
+            if (volume := _declared_fluid_volume(node_by_id.get(nid, {}))) is not None
+        )
+        declared_volume_l = sum(volume.volume_m3 for volume in volumes) * 1000.0
 
+        process_resolved = (
+            any(node_by_id.get(nid, {}).get("kind") == "diaphragm-compressor-stage"
+                for nid in node_ids)
+            and any(node_by_id.get(nid, {}).get("kind") == "turboexpander"
+                    for nid in node_ids)
+        )
         circuits.append(FluidCircuit(
             kind_class=kind_class, nodes=node_ids, edges=tuple(edges), pump_node=pump_node,
+            volumes=volumes,
+            pipe_volume_l=max(0.0, fluid_volume_l - declared_volume_l),
             fan_nodes=fan_nodes, thermal_mass_kj_per_k=max(3.0, thermal_mass),
             passive_heat_loss_w_per_k=passive_loss, active_heat_exchange_w_per_k=active_exchange,
             heat_share=heat_share, bottle_capacity_kg=bottle_capacity,
@@ -3076,8 +3170,354 @@ def _discover_fluid_circuits(graph: dict[str, Any]) -> list[FluidCircuit]:
             thermostat_opening_start_k=float(thermostat.get("opening_start_k", 0.0)) if thermostat else 0.0,
             thermostat_full_open_k=float(thermostat.get("full_open_k", 0.0)) if thermostat else 0.0,
             thermostat_tau_s=float(thermostat.get("wax_time_constant_s", 15.0)) if thermostat else 15.0,
+            node_pressure_pa={
+                nid: float(node_by_id.get(nid, {}).get("pressure_pa", 101_325.0)
+                           or 101_325.0)
+                for nid in node_ids
+            },
+            node_temperature_k={
+                nid: float(node_by_id.get(nid, {}).get("temperature_k", 293.15)
+                           or 293.15)
+                for nid in node_ids
+            },
+            edge_mass_flow_kg_s={str(edge["identity"]): 0.0 for edge in edges},
+            process_resolved=process_resolved,
         ))
     return circuits
+
+
+@dataclass(frozen=True)
+class FluidCircuitInputs:
+    """Inputs crossing from an owning machine into one fluid-system tick."""
+
+    waste_heat_kw: float = 0.0
+    intake_demand_kg_s: float = 0.0
+    exhaust_demand_kg_s: float = 0.0
+    fuel_demand_kg_s: float = 0.0
+    exhaust_brake_frac: float = 0.0
+    fuel_cooler_target_k: float | None = None
+    exhaust_system_restriction_frac: float = 0.0
+    pneumatic_compressor_delivered_w: float = 0.0
+    starting_air_kg_s: float = 0.0
+    pneumatic_idle_assist_active: bool = False
+    pneumatic_idle_assist_port_area_m2: float = 0.0
+    regulator_map_frac: float = 1.0
+    fuel_production_kg_s: float = 0.0
+    fuel_production_composition_frac: float = 1.0
+    electrical_power_w: dict[str, float] = field(default_factory=dict)
+    thermal_temperature_k: dict[str, float] = field(default_factory=dict)
+
+
+class FluidCircuitSystem(DtCompatibleEngine):
+    """One top-level dt participant over graph-discovered ``FluidCircuit``s.
+
+    The circuit instances are shared with the owning drivetrain.  This class
+    does not copy their state or rediscover their topology; it gives the
+    existing circuit solver a dt-system boundary, rollback, and metrics.
+    Internal vessels remain distributions of the circuit ledger (see
+    :mod:`air_vessels`) and therefore do not become dt participants.
+    """
+
+    def __init__(self, owner, circuits):
+        self.owner = owner
+        self.circuits = circuits
+        self.inputs = FluidCircuitInputs()
+        self.world_time = 0.0
+        self.observer_time = 0.0
+        self.last_metrics = None
+        self.thermal_sources_w: dict[str, float] = {}
+        self.component_power_w: dict[str, float] = {}
+        self.externally_scheduled = False
+        self._volumes = {
+            volume.identity: volume
+            for circuit in circuits for volume in circuit.volumes
+        }
+
+    @property
+    def volumes(self) -> tuple[FluidVolume, ...]:
+        """Every registered residence domain; never dt participants."""
+
+        return tuple(self._volumes.values())
+
+    def register_volume(self, volume: FluidVolume) -> FluidVolume:
+        """Register an externally resolved volume, such as atmosphere voxels."""
+
+        if not isinstance(volume, FluidVolume):
+            raise TypeError("fluid volume registration requires FluidVolume")
+        existing = self._volumes.get(volume.identity)
+        if existing is not None and existing != volume:
+            raise ValueError(f"fluid volume {volume.identity!r} already has another contract")
+        self._volumes[volume.identity] = volume
+        return volume
+
+    def register(self, *args, **kwargs):
+        """Register one fluid participant and stop owner-side double stepping."""
+
+        assembly = super().register(*args, **kwargs)
+        self.externally_scheduled = True
+        return assembly
+
+    def volume(self, identity: str) -> FluidVolume:
+        try:
+            return self._volumes[str(identity)]
+        except KeyError as error:
+            raise KeyError(f"unknown fluid volume {identity!r}") from error
+
+    def stage(self, inputs: FluidCircuitInputs) -> None:
+        self.inputs = inputs
+
+    def thermal_source_w(self) -> dict[str, float]:
+        """Heat transactions produced by graph-resolved fluid components."""
+
+        return dict(self.thermal_sources_w)
+
+    def _advance_graph_processes(self, dt: float, active: FluidCircuitInputs) -> None:
+        """Resolve declared compressor, exchanger and expander parts in pipes.
+
+        This is part dispatch inside the existing fluid engine.  Topology and
+        parameters come from the production graph; there is no packaged plant
+        state or independently stepped cycle.
+        """
+
+        graph = getattr(self.owner, "graph", {})
+        nodes = {str(node["identity"]): node for node in graph.get("nodes", ())}
+        edges = tuple(graph.get("edges", ()))
+        self.thermal_sources_w = {}
+        self.component_power_w = {}
+        for circuit in self.circuits:
+            circuit.thermal_source_w.clear()
+            circuit.component_power_w.clear()
+            if not circuit.process_resolved:
+                continue
+            stages = sorted(
+                (nodes[nid] for nid in circuit.nodes
+                 if nodes.get(nid, {}).get("kind") == "diaphragm-compressor-stage"),
+                key=lambda node: int(node.get("stage", 0)),
+            )
+            expanders = [nodes[nid] for nid in circuit.nodes
+                         if nodes.get(nid, {}).get("kind") == "turboexpander"]
+            hot_passages = [nodes[nid] for nid in circuit.nodes
+                            if (nodes.get(nid, {}).get("kind")
+                                == "counterflow-recuperator-passage")
+                            and nodes[nid].get("flow_direction") == "warm-to-cold"]
+            return_passages = [nodes[nid] for nid in circuit.nodes
+                               if (nodes.get(nid, {}).get("kind")
+                                   == "counterflow-recuperator-passage")
+                               and nodes[nid].get("flow_direction") == "cold-to-warm"]
+            tips = [nodes[nid] for nid in circuit.nodes
+                    if nodes.get(nid, {}).get("kind") == "cold-tip-heat-exchanger"]
+            if not stages or not expanders or not hot_passages or not return_passages or not tips:
+                continue
+
+            stage_ids = {str(node["identity"]) for node in stages}
+            motor_ids = {
+                str(edge["a"]) if str(edge["b"]) in stage_ids else str(edge["b"])
+                for edge in edges
+                if edge.get("constraint") == "shaft-service-drive"
+                and ({str(edge["a"]), str(edge["b"])} & stage_ids)
+            }
+            motor_ids = {identity for identity in motor_ids
+                         if nodes.get(identity, {}).get("kind") == "electric-motor"}
+            electrical_w = sum(max(0.0, float(active.electrical_power_w.get(identity, 0.0)))
+                               for identity in motor_ids)
+            motor_efficiency = min((float(nodes[identity].get("efficiency", 1.0))
+                                    for identity in motor_ids), default=1.0)
+            shaft_w = electrical_w * max(0.0, min(1.0, motor_efficiency))
+
+            expander = expanders[0]
+            hot = hot_passages[0]
+            return_passage = return_passages[0]
+            tip = tips[0]
+            low_pressure = max(1.0, float(expander.get("outlet_pressure_pa", 101_325.0)))
+            high_pressure = max(low_pressure, float(expander.get("inlet_pressure_pa", low_pressure)))
+            suction_temperature = circuit.node_temperature_k.get(
+                str(return_passage["identity"]), 293.15)
+            radiator_ids = {
+                str(node["identity"]) for node in nodes.values()
+                if node.get("kind") == "interstage-radiator"
+                and any(stage["identity"] in tuple(node.get("serves", ())) for stage in stages)
+            }
+            radiator_k = min((float(active.thermal_temperature_k.get(identity, 293.15))
+                              for identity in radiator_ids), default=293.15)
+            gas_r = 287.0
+            polytropic_n = float(stages[0].get("polytropic_index", 1.40))
+            mechanical_efficiency = float(stages[0].get(
+                "mechanical_efficiency", 1.0))
+            stage_ratios = [max(1.0, float(stage.get("pressure_ratio", 1.0)))
+                            for stage in stages]
+            specific_work = 0.0
+            work_inlet_k = max(1.0, suction_temperature)
+            for ratio in stage_ratios:
+                specific_work += (
+                    polytropic_n / (polytropic_n - 1.0) * gas_r * work_inlet_k
+                    * (ratio ** ((polytropic_n - 1.0) / polytropic_n) - 1.0)
+                    / mechanical_efficiency
+                )
+                work_inlet_k = radiator_k
+            rated_flow = max(0.0, float(expander.get("mass_flow_kg_s", 0.0)))
+            mass_flow = (min(rated_flow, shaft_w / max(specific_work, 1.0))
+                         if shaft_w > 0.0 else 0.0)
+            circuit.delivered_flow_kg_s = mass_flow
+            for edge in circuit.edges:
+                circuit.edge_mass_flow_kg_s[str(edge["identity"])] = mass_flow
+
+            compressor_heat_w = 0.0
+            temperature = max(1.0, suction_temperature)
+            pressure = low_pressure
+            for stage, ratio in zip(stages, stage_ratios):
+                pressure = min(high_pressure, pressure * ratio)
+                discharge_k = temperature * ratio ** ((polytropic_n - 1.0) / polytropic_n)
+                circuit.node_pressure_pa[str(stage["identity"])] = pressure
+                circuit.node_temperature_k[str(stage["identity"])] = discharge_k
+                compressor_heat_w += mass_flow * 1005.0 * max(0.0, discharge_k - radiator_k)
+                temperature = radiator_k
+
+            hot_inlet_k = temperature
+            effectiveness = max(0.0, min(1.0, float(hot.get("effectiveness", 0.0))))
+            gamma = float(expander.get("heat_capacity_ratio", 1.40))
+            cp = float(expander.get("specific_heat_j_kg_k", 1005.0))
+            eta = max(0.0, min(1.0, float(expander.get("isentropic_efficiency", 0.82))))
+            expansion_ratio = (low_pressure / high_pressure) ** ((gamma - 1.0) / gamma)
+            expander_factor = 1.0 - eta * (1.0 - expansion_ratio)
+            tip_k = float(active.thermal_temperature_k.get(str(tip["identity"]), 293.15))
+            cold_to_recuperator_k = circuit.node_temperature_k.get(
+                str(tip["identity"]), hot_inlet_k)
+            process_heat_w = 0.0
+            for _ in range(12):
+                hot_out_k = hot_inlet_k - effectiveness * (
+                    hot_inlet_k - cold_to_recuperator_k)
+                expander_out_k = max(1.0, hot_out_k * expander_factor)
+                capacity_rate_w_k = mass_flow * cp
+                ua = max(0.0, float(tip.get("heat_exchange_ua_w_per_k", 0.0)))
+                tip_effectiveness = (1.0 - math.exp(-ua / max(capacity_rate_w_k, 1e-12))
+                                     if capacity_rate_w_k > 0.0 else 0.0)
+                process_heat_w = capacity_rate_w_k * tip_effectiveness * max(
+                    0.0, tip_k - expander_out_k)
+                next_cold = (expander_out_k + process_heat_w / capacity_rate_w_k
+                             if capacity_rate_w_k > 0.0 else tip_k)
+                if abs(next_cold - cold_to_recuperator_k) < 1e-8:
+                    cold_to_recuperator_k = next_cold
+                    break
+                cold_to_recuperator_k = next_cold
+            return_out_k = cold_to_recuperator_k + effectiveness * (
+                hot_inlet_k - cold_to_recuperator_k)
+            expander_shaft_w = mass_flow * cp * max(0.0, hot_out_k - expander_out_k)
+
+            circuit.node_pressure_pa[str(hot["identity"])] = high_pressure
+            circuit.node_temperature_k[str(hot["identity"])] = hot_out_k
+            circuit.node_pressure_pa[str(expander["identity"])] = low_pressure
+            circuit.node_temperature_k[str(expander["identity"])] = expander_out_k
+            circuit.node_pressure_pa[str(tip["identity"])] = low_pressure
+            circuit.node_temperature_k[str(tip["identity"])] = cold_to_recuperator_k
+            circuit.node_pressure_pa[str(return_passage["identity"])] = low_pressure
+            circuit.node_temperature_k[str(return_passage["identity"])] = return_out_k
+            circuit.pressure_pa = high_pressure
+            circuit.temp_k = return_out_k
+
+            fan_ids = {str(node["identity"]) for node in nodes.values()
+                       if node.get("kind") == "variable-speed-electric-axial-fan"
+                       and any(node["identity"] == edge.get("b")
+                               for edge in edges if edge.get("constraint") == "insulated-copper-wire")}
+            fan_powered = any(float(active.electrical_power_w.get(identity, 0.0)) > 0.0
+                              for identity in fan_ids)
+            radiator_ua = max((float(nodes[identity].get("heat_exchange_ua_w_per_k", 0.0))
+                               for identity in radiator_ids), default=0.0)
+            ambient_rejection_w = radiator_ua * (1.0 if fan_powered else 0.15) * max(
+                0.0, radiator_k - 293.15)
+            for identity in radiator_ids:
+                circuit.thermal_source_w[identity] = (
+                    compressor_heat_w - ambient_rejection_w) / max(1, len(radiator_ids))
+            circuit.thermal_source_w[str(tip["identity"])] = -process_heat_w
+            circuit.component_power_w.update({
+                "compressor_shaft_input_w": shaft_w,
+                "compressor_gas_heat_w": compressor_heat_w,
+                "expander_shaft_output_w": expander_shaft_w,
+                "cold_tip_heat_removed_w": process_heat_w,
+                "radiator_ambient_rejection_w": ambient_rejection_w,
+            })
+            for identity, watts in circuit.thermal_source_w.items():
+                self.thermal_sources_w[identity] = self.thermal_sources_w.get(identity, 0.0) + watts
+            self.component_power_w.update(circuit.component_power_w)
+
+    def advance(self, dt: float, inputs: FluidCircuitInputs | None = None):
+        active = self.inputs if inputs is None else inputs
+        self.owner._advance_fluid_circuits(
+            float(dt),
+            active.waste_heat_kw,
+            active.intake_demand_kg_s,
+            active.exhaust_demand_kg_s,
+            active.fuel_demand_kg_s,
+            active.exhaust_brake_frac,
+            active.fuel_cooler_target_k,
+            active.exhaust_system_restriction_frac,
+            active.pneumatic_compressor_delivered_w,
+            active.starting_air_kg_s,
+            active.pneumatic_idle_assist_active,
+            active.pneumatic_idle_assist_port_area_m2,
+            active.regulator_map_frac,
+            active.fuel_production_kg_s,
+            active.fuel_production_composition_frac,
+        )
+        self._advance_graph_processes(float(dt), active)
+        max_flux = max((abs(float(c.delivered_flow_kg_s))
+                        for c in self.circuits), default=0.0)
+        channels = empty_channels()
+        metrics = Metrics(
+            max_vel=0.0, max_flux=max_flux, div_inf=0.0, mass_err=0.0,
+            pub_tau=AbstractTensor.tensor([0.0]),
+            pub_tau_present=AbstractTensor.tensor([0.0]),
+            pub_contract=AbstractTensor.tensor([HOLD]),
+            pub_dt_limit=AbstractTensor.tensor([0.0]),
+            pub_dt_limit_present=AbstractTensor.tensor([0.0]),
+            pub_values=channels.copy(),
+            pub_present=AbstractTensor.zeros_like(channels),
+            pub_limits=AbstractTensor.zeros_like(channels),
+            pub_limits_present=AbstractTensor.zeros_like(channels),
+            advanced_dt=float(dt),
+        )
+        self.last_metrics = metrics
+        return True, metrics, self.circuits
+
+    def step(self, dt: float, state=None, state_table=None):
+        return self.advance(dt)
+
+    def get_state(self, state=None):
+        return self.circuits
+
+    def snapshot(self):
+        import copy
+
+        return (
+            tuple(copy.deepcopy(vars(circuit)) for circuit in self.circuits),
+            self.inputs,
+            float(self.world_time),
+            float(self.observer_time),
+            self.last_metrics,
+            dict(self.thermal_sources_w),
+            dict(self.component_power_w),
+        )
+
+    def restore(self, snapshot) -> None:
+        (states, self.inputs, self.world_time, self.observer_time,
+         self.last_metrics, self.thermal_sources_w,
+         self.component_power_w) = snapshot
+        if len(states) != len(self.circuits):
+            raise ValueError("fluid-system snapshot circuit extent changed")
+        for circuit, saved in zip(self.circuits, states):
+            vars(circuit).clear()
+            vars(circuit).update(saved)
+        circuit_volume_ids = {
+            volume.identity for circuit in self.circuits for volume in circuit.volumes
+        }
+        external = {
+            identity: volume for identity, volume in self._volumes.items()
+            if identity not in circuit_volume_ids
+        }
+        self._volumes = {
+            volume.identity: volume
+            for circuit in self.circuits for volume in circuit.volumes
+        }
+        self._volumes.update(external)
 
 
 @dataclass
@@ -3164,6 +3604,10 @@ class DrivetrainSolver:
         self._rigid_locked_edges: frozenset[str] = self._find_rigid_locked_edges()
         self._max_sub_dt_s = self._compute_stable_sub_dt()
         self.fluid_circuits: list[FluidCircuit] = _discover_fluid_circuits(self.graph)
+        # One owner, one ledger.  The drivetrain and the dt-facing fluid
+        # system hold the same FluidCircuit objects; no state is copied across
+        # this boundary and no second circuit graph is constructed.
+        self.fluid_system = FluidCircuitSystem(self, self.fluid_circuits)
         # topology, resolved once: the node identity set, and the
         # net-torque accumulator whose keys are exactly those nodes.
         # Built in GRAPH ORDER, not set order -- the substep consumes
@@ -3869,6 +4313,40 @@ class DrivetrainSolver:
                               regulator_map_frac: float = 1.0,
                               fuel_production_kg_s: float = 0.0,
                               fuel_production_composition_frac: float = 1.0) -> None:
+        """Compatibility call through the top-level fluid-system owner."""
+
+        inputs = FluidCircuitInputs(
+            waste_heat_kw=waste_heat_kw,
+            intake_demand_kg_s=intake_demand_kg_s,
+            exhaust_demand_kg_s=exhaust_demand_kg_s,
+            fuel_demand_kg_s=fuel_demand_kg_s,
+            exhaust_brake_frac=exhaust_brake_frac,
+            fuel_cooler_target_k=fuel_cooler_target_k,
+            exhaust_system_restriction_frac=exhaust_system_restriction_frac,
+            pneumatic_compressor_delivered_w=pneumatic_compressor_delivered_w,
+            starting_air_kg_s=starting_air_kg_s,
+            pneumatic_idle_assist_active=pneumatic_idle_assist_active,
+            pneumatic_idle_assist_port_area_m2=pneumatic_idle_assist_port_area_m2,
+            regulator_map_frac=regulator_map_frac,
+            fuel_production_kg_s=fuel_production_kg_s,
+            fuel_production_composition_frac=fuel_production_composition_frac,
+        )
+        self.fluid_system.stage(inputs)
+        if not self.fluid_system.externally_scheduled:
+            self.fluid_system.advance(dt, inputs)
+
+    def _advance_fluid_circuits(self, dt: float, waste_heat_kw: float, intake_demand_kg_s: float = 0.0,
+                              exhaust_demand_kg_s: float = 0.0, fuel_demand_kg_s: float = 0.0,
+                              exhaust_brake_frac: float = 0.0,
+                              fuel_cooler_target_k: float | None = None,
+                              exhaust_system_restriction_frac: float = 0.0,
+                              pneumatic_compressor_delivered_w: float = 0.0,
+                              starting_air_kg_s: float = 0.0,
+                              pneumatic_idle_assist_active: bool = False,
+                              pneumatic_idle_assist_port_area_m2: float = 0.0,
+                              regulator_map_frac: float = 1.0,
+                              fuel_production_kg_s: float = 0.0,
+                              fuel_production_composition_frac: float = 1.0) -> None:
         ambient_k = 293.15
         for c in self.fluid_circuits:
             pump_omega = self.omega.get(c.pump_node, 0.0) if c.pump_node else 0.0
@@ -3961,6 +4439,12 @@ class DrivetrainSolver:
                     pressure_tau_s = 0.15
                     c.pressure_pa += (target_pressure_pa - c.pressure_pa) * min(1.0, dt / pressure_tau_s)
             elif c.kind_class == "compressible-gas":
+                # Compressor/expander/exchanger loops retain distinct nodal
+                # pressure and temperature in FluidCircuitSystem.  Applying
+                # the vehicle plenum relaxation here would collapse both
+                # sides of that real pipe graph back into one scalar state.
+                if c.process_resolved:
+                    continue
                 is_exhaust = c.circuit_identity == "exhaust"
                 if is_exhaust:
                     # Real backpressure, mirroring the intake choke below

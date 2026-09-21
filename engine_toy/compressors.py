@@ -544,3 +544,106 @@ class VacuumPump:
                      f"{volume_m3 * 1000:.0f} L chamber")
         return "\n".join(L)
 
+
+@dataclass
+class DiaphragmCompressorSet:
+    """Oil-free, multistage working-gas compressor with its own cooler.
+
+    The radiator and fan belong to the compressor set because every joule
+    put into the compressed gas has to be removed again between stages.
+    A host machine supplies electricity and ambient air; it does not invent
+    a second cooling plant around this component.
+    """
+
+    identity: str = "plant.diaphragm_compressor"
+    suction_pressure_pa: float = 150_000.0
+    discharge_pressure_pa: float = 4_000_000.0
+    mass_flow_kg_s: float = 0.05
+    stages: int = 3
+    motor_efficiency: float = 0.88
+    radiator_ua_w_per_k: float = 900.0
+    fan_rated_w: float = 420.0
+
+    def build_graph(self):
+        """Return the complete compressor set, including cooling hardware."""
+        from turret_production import ProductionGraph
+
+        g = ProductionGraph(identity=f"{self.identity}/production")
+        g.assembly = self.identity
+        compressor_construction = construction("diaphragm")
+        stage_ratio = (
+            self.discharge_pressure_pa / max(self.suction_pressure_pa, 1.0)
+        ) ** (1.0 / max(1, self.stages))
+        previous = f"{self.identity}.suction"
+        g.node(previous, (-0.36, 0.0, 0.0), "gas-service-port",
+               half_extent_m=(0.02, 0.02, 0.02), mass_kg=0.0,
+               thermal_domain="none",
+               wrench_point=True, port_role="low-pressure-working-gas-return",
+               pressure_pa=self.suction_pressure_pa, fluid="working-gas")
+        for index in range(self.stages):
+            stage = f"{self.identity}.stage_{index + 1}"
+            x = -0.22 + index * 0.22
+            g.node(stage, (x, 0.0, 0.0), "diaphragm-compressor-stage",
+                   half_extent_m=(0.085, 0.10, 0.085), shape="drum",
+                   drum_axis=(1.0, 0.0, 0.0), drum_radius_m=0.085,
+                   drum_length_m=0.17, material="aluminium-casting",
+                   thermal_domain="volume",
+                   stage=index + 1, pressure_ratio=stage_ratio,
+                   compressor_construction=compressor_construction.key,
+                   polytropic_index=compressor_construction.polytropic_index,
+                   mechanical_efficiency=compressor_construction.mechanical_efficiency,
+                   oil_free=True, fluid="working-gas",
+                   thermal_group=f"{self.identity}.compressor")
+            g.edge(f"{stage}.inlet", previous, stage,
+                   "pressure-rated-air-line", radius=0.009,
+                   circuit_identity=f"{self.identity}.working-gas",
+                   medium_rate_state="mass-flow-pressure-temperature")
+            previous = stage
+        discharge = f"{self.identity}.discharge"
+        g.node(discharge, (0.50, 0.0, 0.0), "gas-service-port",
+               half_extent_m=(0.02, 0.02, 0.02), mass_kg=0.0,
+               thermal_domain="none",
+               wrench_point=True, port_role="high-pressure-working-gas-supply",
+               pressure_pa=self.discharge_pressure_pa, fluid="working-gas")
+        g.edge(f"{self.identity}.discharge_line", previous, discharge,
+               "pressure-rated-air-line", radius=0.008,
+               circuit_identity=f"{self.identity}.working-gas",
+               medium_rate_state="mass-flow-pressure-temperature")
+        motor = f"{self.identity}.motor"
+        radiator = f"{self.identity}.radiator"
+        fan = f"{self.identity}.fan"
+        g.node(motor, (0.0, 0.18, 0.0), "electric-motor",
+               half_extent_m=(0.14, 0.10, 0.10), material="copper",
+               thermal_domain="volume",
+               efficiency=self.motor_efficiency,
+               thermal_group=f"{self.identity}.compressor")
+        g.node(radiator, (0.0, 0.0, -0.18), "interstage-radiator",
+               half_extent_m=(0.34, 0.12, 0.045), material="aluminium-casting",
+               heat_exchange_ua_w_per_k=self.radiator_ua_w_per_k,
+               thermal_domain="shell",
+               thermal_shell_thickness_m=0.001,
+               serves=tuple(f"{self.identity}.stage_{i + 1}"
+                              for i in range(self.stages)),
+               thermal_group=f"{self.identity}.radiator")
+        g.node(fan, (0.0, 0.0, -0.27), "variable-speed-electric-axial-fan",
+               half_extent_m=(0.15, 0.15, 0.045), shape="drum",
+               drum_axis=(0.0, 0.0, 1.0), drum_radius_m=0.15,
+               drum_length_m=0.09, material="aluminium-casting",
+               rated_w=self.fan_rated_w, variable_speed=True,
+               thermal_domain="volume",
+               thermal_group=f"{self.identity}.radiator")
+        for index in range(self.stages):
+            g.edge(f"{self.identity}.drive_{index + 1}", motor,
+                   f"{self.identity}.stage_{index + 1}",
+                   "shaft-service-drive", radius=0.012)
+            g.edge(f"{self.identity}.cooler_{index + 1}",
+                   f"{self.identity}.stage_{index + 1}", radiator,
+                   "refrigerant-line", radius=0.007,
+                   circuit_identity=f"{self.identity}.interstage-cooling")
+        g.edge(f"{self.identity}.fan_mount", radiator, fan,
+               "rigid-distance", radius=0.010)
+        g.edge(f"{self.identity}.fan_power", motor, fan,
+               "insulated-copper-wire", radius=0.004,
+               circuit_identity=f"{self.identity}.dc-power")
+        return g
+
