@@ -1441,8 +1441,202 @@ def raw_token_report():
 
 
 # =====================================================================
-# CLI: ask this catalogue specific questions
+# LAMBDIFY CACHE: turning equations into runnable, cacheable pieces
 # =====================================================================
+# What "saved" actually means here, checked directly rather than assumed:
+# a lambdify()'d function's compiled object is NOT picklable by reference
+# -- its __module__/__qualname__ do not resolve to anything re-importable,
+# so stdlib pickle raises PicklingError on it. What sympy DOES give you is
+# the generated source text: lambdify registers it with linecache so
+# ``inspect.getsource`` reads it back whole. Caching THAT text and exec'ing
+# it on a hit is what "saved" means below -- it skips sympy's printer/
+# codegen work on a hit, which is the part that scales with equation count,
+# not the act of calling the function itself.
+#
+# This mirrors turing/examples/chamber_dt_join.py's own law-module cache
+# (``load_law_module_cached``: pickle the constructed SymPy trees, keyed on
+# a source digest) -- same idea, applied one level lower, to one law's
+# generated call instead of a whole module's tree construction.
+
+import hashlib as _hashlib
+import inspect as _inspect
+import os as _os
+from pathlib import Path as _Path
+from typing import Dict as _Dict, Optional as _Optional, Sequence as _Sequence
+
+_LAW_CACHE_DIR = _Path(__file__).resolve().parent / "__lawcache__"
+
+# Coordinates and operator placeholders declared once at the top of this
+# module -- scaffolding, never a physical field a piece should read or own.
+_STRUCTURAL_NAMES = frozenset({
+    "t", "x", "y", "z",
+    "nabla", "nabla_op", "transpose", "det", "tr", "cross",
+})
+
+
+def _lambdify_cache_key(law_id: str, argument_names: tuple, expr) -> str:
+    payload = f"{law_id}|{argument_names}|{sp.srepr(expr)}".encode("utf-8")
+    return _hashlib.sha256(payload).hexdigest()[:24]
+
+
+def lambdify_cached(law_id: str, argument_names: tuple, expr, *, modules="numpy",
+                     cache_dir=None):
+    """A lambdified callable for ``argument_names -> expr``, cached to disk
+    by content hash (law id + argument order + ``sympy.srepr`` of the exact
+    expression). A hit execs the saved source; a miss lambdifies, writes the
+    generated source via ``inspect.getsource``, and returns the live
+    function either way."""
+    root = _Path(cache_dir) if cache_dir is not None else _LAW_CACHE_DIR
+    key = _lambdify_cache_key(law_id, argument_names, expr)
+    cache_file = root / f"{law_id}-{key}.py"
+    if cache_file.exists():
+        source = cache_file.read_text(encoding="utf-8")
+        namespace: dict = {}
+        exec(compile(source, str(cache_file), "exec"), namespace)
+        return namespace["_lambdifygenerated"]
+    symbols = tuple(sp.Symbol(name) for name in argument_names)
+    fn = sp.lambdify(symbols, expr, modules=modules)
+    source = _inspect.getsource(fn)
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = cache_file.with_suffix(f".{_os.getpid()}.tmp")
+    tmp.write_text(source, encoding="utf-8")
+    _os.replace(tmp, cache_file)
+    return fn
+
+
+@dataclass(frozen=True)
+class Piece:
+    """One law, lambdified and shaped like an ``LLVMPiece``
+    (``argument_names``/``output_names``/a positional callable) so it can
+    be experimented with against a real dt system deployment without
+    inventing a second interface for the same idea."""
+
+    entry: str
+    argument_names: tuple
+    output_names: tuple
+    fn: object
+
+    def __call__(self, *columns):
+        result = self.fn(*columns)
+        return result if isinstance(result, tuple) else (result,)
+
+
+def _scalarize_applied_functions(expr):
+    """Replace every applied function call (``G(x)``) with a plain Symbol
+    of the same name (``G``), so a lambdified piece's parameter and its use
+    inside the expression body agree -- lambdify treats an unsubstituted
+    ``AppliedUndef`` as something to CALL, not a scalar input, and a plain
+    parameter symbol of the same name is not the same sympy object as the
+    applied call, which is exactly the 'float object is not callable' bug
+    this fixes.
+
+    Returns ``None`` (refuse, do not guess) if the same function name is
+    applied to more than one distinct argument tuple in ``expr`` -- e.g.
+    ``p_s(T_b) - p_s(T_0_b)`` -- because collapsing those to one scalar
+    parameter would silently conflate two different physical values.
+    """
+    seen_args: dict = {}
+    for app in expr.atoms(_AppliedUndef):
+        name = app.func.__name__
+        if name in seen_args and seen_args[name] != app.args:
+            return None
+        seen_args[name] = app.args
+    substitution = {
+        app: sp.Symbol(app.func.__name__)
+        for app in expr.atoms(_AppliedUndef)
+    }
+    return expr.subs(substitution)
+
+
+def law_piece(law_id: str, eq_obj, *, modules="numpy", cache_dir=None) -> _Optional["Piece"]:
+    """One ``eq_XX_n`` as a ``Piece``: its read symbols (sorted, minus the
+    structural placeholders) are ``argument_names``, its owned symbol is
+    its one ``output_name``. Returns ``None`` for a constraint/relational
+    (no single quantity to lambdify against), for a law that applies the
+    same function name to more than one distinct argument set (see
+    ``_scalarize_applied_functions``), or for a law whose RHS contains
+    something sympy's numpy printer cannot turn into numeric code as-is
+    (an unevaluated ``Derivative``/``Integral``, or one of this module's
+    own operator placeholders like ``nabla``/``transpose`` -- those need a
+    discretization choice before they are a numeric piece, which is
+    modeling work this function does not invent on your behalf) rather
+    than guessing one or crashing the whole batch.
+    """
+    if not isinstance(eq_obj, Equality):
+        return None
+    lhs, rhs = eq_obj.lhs, eq_obj.rhs
+    owned_names, lhs_extra_reads = _owned_identities(lhs)
+    owned_names -= _STRUCTURAL_NAMES
+    if len(owned_names) != 1:
+        return None  # compound/ambiguous owner: not a piece-shaped law
+    output_name = next(iter(owned_names))
+    read_names = ((_identities_in(lhs) | _identities_in(rhs)) - owned_names
+                  - _STRUCTURAL_NAMES) | (lhs_extra_reads - _STRUCTURAL_NAMES)
+    argument_names = tuple(sorted(read_names))
+    scalar_rhs = _scalarize_applied_functions(rhs)
+    if scalar_rhs is None:
+        return None
+    try:
+        fn = lambdify_cached(law_id, argument_names, scalar_rhs, modules=modules, cache_dir=cache_dir)
+    except Exception:
+        return None
+    return Piece(law_id, argument_names, (output_name,), fn)
+
+
+def law_pieces(engines: _Optional[_Sequence[str]] = None, *, modules="numpy",
+               cache_dir=None) -> _Dict[str, "Piece"]:
+    """Every piece-shaped law across the requested engines, lambdified and
+    cached. Constraint/relational laws are silently skipped (see
+    ``law_piece``); a caller that needs to know which were skipped should
+    compare its own equation set against this function's keys."""
+    by_engine = _discover_equations()
+    selected = list(engines) if engines is not None else sorted(by_engine)
+    pieces: _Dict[str, Piece] = {}
+    for engine in selected:
+        for name, obj in by_engine.get(engine, {}).items():
+            piece = law_piece(name, obj, modules=modules, cache_dir=cache_dir)
+            if piece is not None:
+                pieces[name] = piece
+    return pieces
+
+
+# The owned/read extraction that ``law_piece`` needs, mechanical over the
+# sympy shape of an Eq's lhs (same heuristic §5-6 of
+# DT_GRAPH_STATE_TENSOR_COMPOSITION_AUDIT.md describes: the lhs names what
+# is owned, everything else in the equation is read).
+from sympy.core.function import AppliedUndef as _AppliedUndef
+from sympy.core.relational import Equality
+
+
+def _identities_in(expr) -> set:
+    names: set = set()
+    if not hasattr(expr, "atoms"):
+        return names
+    for app in expr.atoms(_AppliedUndef):
+        names.add(app.func.__name__)
+    for sym in getattr(expr, "free_symbols", ()):
+        names.add(sym.name)
+    return names
+
+
+def _owned_identities(lhs) -> tuple:
+    if isinstance(lhs, _AppliedUndef):
+        owned = {lhs.func.__name__}
+        return owned, _identities_in(lhs) - owned
+    if isinstance(lhs, sp.Derivative):
+        inner = lhs.expr
+        if isinstance(inner, _AppliedUndef):
+            owned = {inner.func.__name__}
+            return owned, _identities_in(inner) - owned
+        if isinstance(inner, sp.Symbol):
+            return {inner.name}, set()
+        return _identities_in(inner), set()
+    if isinstance(lhs, sp.Symbol):
+        return {lhs.name}, set()
+    return _identities_in(lhs), set()
+
+
+
 
 def _format_identity(identity):
     lines = [f"  [{identity.key}] {identity.description}"]
