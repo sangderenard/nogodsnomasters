@@ -12,6 +12,14 @@ repository tree today, and what canonical equations a complete
 treatment of that field still requires — see
 [ENGINE_EQUATION_ANNEX.md](ENGINE_EQUATION_ANNEX.md).
 
+For how the engines named below actually compose once running side by
+side — domain boundaries as graph edges, promotion/reduction as graph
+rewriting, statistically scaled population nodes, tracked time slip
+between simulators, and the trade-off between fusing every law into
+one locked-timestep kernel versus scheduling separately compiled
+kernels through a dependency graph — see
+[SIMULATOR_GRAPH_AND_KERNEL_FUSION_ADDENDUM.md](SIMULATOR_GRAPH_AND_KERNEL_FUSION_ADDENDUM.md).
+
 ## Purpose
 
 The simulator should converge the existing engine work into a small
