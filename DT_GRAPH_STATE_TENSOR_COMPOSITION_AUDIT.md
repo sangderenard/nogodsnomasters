@@ -12,6 +12,18 @@ Every file/line reference below was read directly, not paraphrased from
 memory. Where dt_graph does **not** yet do something the question asks for,
 that is stated as a gap, not implied to already exist.
 
+**Correction, added after the first pass (see §3).** Sections 1-2 below
+describe `dt_graph.py`'s `GraphBuilder`/`MetaLoopRunner`/`ILPScheduler`
+machinery accurately, but that machinery is **not the production lane** —
+`llvm_dt_system.py`'s own docstring says so directly: "no `GraphBuilder`/
+`MetaLoopRunner` (that layer is optional composition on top and has never
+been lowered...)". The actual, running union-of-state mechanism, used by
+both the atmosphere/raincloud chamber and the newer Faraday/EM law set, is
+`llvm_dt_system.py`'s `column_names_of`/`state_source`/`participant_registry`
+— §3 covers it. §6-7 were also corrected: the general answer to a coupling
+"cycle" is not graph condensation, it is how the boundary-transfer term
+between two laws is written (see §7's rewrite).
+
 ## 1. What dt_graph actually is
 
 [dt_graph.py](/C:/dev/Powershell/turing/src/common/dt_system/dt_graph.py) is a
@@ -82,7 +94,67 @@ so the `order="processing"` (reversed-level) branch is dead code. Any design
 built on top of `compute_levels` should not assume `order` currently does
 anything.
 
-## 3. The part of dt_system that already IS the right shape to imitate
+## 3. The actual production lane: `llvm_dt_system.py`, not `dt_graph.py`
+
+[`llvm_dt_system.py`](/C:/dev/Powershell/turing/examples/llvm_dt_system.py)
+says outright, in its own module docstring, that the layer §1-2 just
+described is not what runs:
+
+> one `state` object..., one `STController` kept alive across frames, and
+> one `advance(state, dt)` function... Nothing else of the dt system is
+> needed -- no `DtCompatibleEngine`, no `StateTable`, no
+> `GraphBuilder`/`MetaLoopRunner` (that layer is optional composition on
+> top and has never been lowered; see llvm_dt_system.py.bak for the
+> discovery).
+
+`chamber_raincloud_demo.py` (the atmosphere/raincloud chamber scenario)
+repeats the same rule even more bluntly: *"The simulation is produced by
+the sanctioned lane... Never the AbstractTensor interpreter. Ever."* This is
+the actual union/composition mechanism, and it is real and mechanical,
+which corrects what §1 says about `EngineRegistration` having no
+owned/read declaration — that is true of `EngineRegistration`, but the
+compiled units this lane actually uses declare exactly that:
+
+- **`column_names_of(pieces)`** ([llvm_dt_system.py:46-53](/C:/dev/Powershell/turing/examples/llvm_dt_system.py))
+  walks a list of already-compiled `LLVMPiece` objects — each carrying its
+  own `argument_names` (what it reads) and `output_names` (what it writes,
+  by a `_next` suffix convention) from compilation — and returns **the union
+  of every column any piece reads, in first-appearance order**, skipping
+  `dt`. This is the union-negotiation the earlier draft of this audit
+  claimed didn't exist; it does, and it works off declarations each piece
+  already carries from compilation, not a new declaration this audit would
+  need to invent.
+- **`state_source(columns)`** ([llvm_dt_system.py:55-83](/C:/dev/Powershell/turing/examples/llvm_dt_system.py))
+  spells out a real `PieceState` class from that union, one span field per
+  column, plus the `StepSpans`/`Metrics` publication fields from §4 below —
+  generated as source text and `exec`'d, so the same text that runs in
+  Python is what is hard-compiled.
+- **`participant_registry(pieces)`** ([llvm_dt_system.py:223-234](/C:/dev/Powershell/turing/examples/llvm_dt_system.py))
+  declares each piece as a `ParticipantRegistry` participant "once, in
+  causal order" — and that order is **the order the caller's `pieces` list
+  was given in**, not anything computed from a dependency analysis.
+- **`dt_system(piece_files, columns, ...)`** ([llvm_dt_system.py:253-283](/C:/dev/Powershell/turing/examples/llvm_dt_system.py))
+  is the real entry point: load pieces → union their columns via the above
+  → build `PieceState` → step via `run_superstep`.
+
+Two law modules are already written in the shape this lane consumes —
+`symbolic_chamber_solvers.py` (the atmosphere/raincloud chamber: air,
+species, droplet, surface and pool laws) and `symbolic_em_solvers.py` (a
+newer Faraday/EM law set, not yet wired to its own demo/join driver the way
+the chamber is). Both declare `LAWS`, `LAW_PUBLICATIONS` and `SCHEDULE`,
+compiled per-law via `tools/compile_symbolic_source.py`, whose `schedule`
+argument feeds `compile_sympy_equations`'s *internal* ASAP/ALAP ordering of
+one law's own sub-expression graph — a different, narrower use of
+`ILPScheduler` than §1-2, and not a cross-law ordering at all.
+
+**What is still true even in the real lane:** the union of columns is
+mechanical, but the *order pieces run in* — hence which piece's write is
+visible to which piece's read within one step — is exactly what the
+caller's `piece_files` list says it is. Nothing here computes that order
+from a dependency graph either. That is addressed directly in §7, because
+it turns out not to need one.
+
+## 4. The part of dt_system that already IS the right shape to imitate
 
 Three sibling files build exactly the kind of composed, presence-masked
 tensor the audit's question is asking for — just scoped to **diagnostics**,
@@ -121,14 +193,14 @@ it is just never been pointed at physical state.** Building a
 than inventing a new one, is the path of least resistance and the one this
 repo's own `AGENTS.md` would insist on ("use the existing system").
 
-## 4. What the equation catalogue already gives us for free
+## 5. What the equation catalogue already gives us for free
 
 [honorary_engine_equation_catalogue.py](/C:/dev/Powershell.worktrees/markdown-equations-to-python-classes/engine_toy/honorary_engine_equation_catalogue.py)
 has 612 `eq_*` sympy `Eq`/relational objects across 22 honorary-engine
 prefixes, discoverable via its own `_discover_equations()`
 ([honorary_engine_equation_catalogue.py](/C:/dev/Powershell.worktrees/markdown-equations-to-python-classes/engine_toy/honorary_engine_equation_catalogue.py)).
 Two things it does **not** yet carry, that a law needs before it can be
-composed the way section 3 above composes participants:
+composed the way section 4 above composes participants:
 
 1. **owned vs. read split.** Every `eq_XX_n` is `sp.Eq(lhs, rhs)` (or an
    inequality). For the overwhelming majority, `lhs` is the quantity the law
@@ -150,10 +222,10 @@ composed the way section 3 above composes participants:
    "not curated yet" list otherwise — exactly the gate a dependency-graph
    builder must pass every symbol through before turning it into an edge.
 
-## 5. Constructing each law's individual state-tensor composition
+## 6. Constructing each law's individual state-tensor composition
 
-For one law `eq_XX_n`, with `owned`/`read` extracted per §4.1 and each symbol
-resolved per §4.2:
+For one law `eq_XX_n`, with `owned`/`read` extracted per §5.1 and each symbol
+resolved per §5.2:
 
 ```
 LawComposition(
@@ -164,7 +236,7 @@ LawComposition(
 )
 ```
 
-This is structurally identical to a `Publication` (§3): `owns` is what this
+This is structurally identical to a `Publication` (§4): `owns` is what this
 law claims to produce this step (like `Publication.channels`), `reads` is
 what it consumes. The only addition beyond `Publication`'s fields is that
 canonical-identity resolution step, because law names collide across
@@ -173,76 +245,91 @@ engines in a way participant names in the existing system never do (a
 this; a sympy display string was chosen for LaTeX fidelity and was never
 meant to be collision-free).
 
-## 6. Constructing the total, dependency-resolved composition
+## 7. Cross-system coupling does not need a dependency graph
 
-1. **Build a bipartite law → field graph**: for every `LawComposition`, add
-   edge `field → law` for each `owns` entry and `law → field` for each
-   `reads` entry.
-2. **Project to a law → law graph**: `law_B` depends on `law_A` if `law_A`
-   owns a field `law_B` reads. Multiple laws owning the same field is itself
-   a finding to surface, not silently allow — it means two engines both
-   claim to be the owner Noether's NO3 says must be singular
-   ("energy must be summed over disjoint physical stores... not counted
-   again under another engine name").
-3. **Detect cycles the way `ILPScheduler.compute_asap_levels` already does**
-   (§2) — reuse its gray/black DFS almost verbatim — but where it raises,
-   **condense** instead: `networkx.strongly_connected_components` /
-   `networkx.condensation` (networkx is already a dependency of this exact
-   subsystem, imported directly in `dt_process_adapter.py`) collapses each
-   SCC into one node. The condensation of any directed graph is guaranteed
-   acyclic, so `compute_asap_levels`'s DFS can then run unmodified on the
-   condensed graph to get real ASAP levels.
-4. **Decide what a condensed SCC means physically**, using a per-field
-   contract in the same spirit as `time_contracts.py`'s `HOLD/BIND/DILATE/
-   SUBCYCLE` (§3): a cycle is either
-   - a genuine **algebraic loop** (e.g. an equation of state and a momentum
-     balance that mutually determine pressure and density at the same
-     instant) — solved as one coupled system inside a single `RoundNode`
-     with `schedule="parallel"` and a fixed-point/Newton `ControllerNode`
-     wrapping the whole SCC, or
-   - a **laggable coupling** — one edge is marked to read the *previous*
-     published value instead of the current one (this is exactly what
-     `StepSpans`'s causal order already lets a later participant do to an
-     earlier one's publication within one step; laggable-across-cycle is the
-     same idea applied across a step boundary) — which breaks the cycle
-     explicitly, at a stated order-of-accuracy cost that should be recorded,
-     not silently assumed.
-5. **Map the condensed, leveled graph onto dt_graph's existing node types**:
-   canonical field → `StateNode`; law → `AdvanceNode`; an SCC needing
-   simultaneous solve → a `RoundNode` (`schedule="parallel"`); the levels
-   from step 3 → the sequential ordering between `RoundNode`s at the parent
-   level. This is not a new execution engine — it is a `PhysicsToProcessAdapter`
-   sibling to `DtToProcessAdapter`, built from data dependencies instead of
-   an authored schedule string, feeding the same `MetaLoopRunner`.
-6. **Compose the total state tensor with `StepSpans`'s exact discipline**
-   (§3): a `PhysicsStateRegistry` declares every canonical field once, in
-   the topological order step 3-4 produced; a `PhysicsStateSpans` (built the
-   same way `StepSpans.of` is) holds `values`/`present` for every field, so
-   "this law did not publish this field this step" and "this law published
-   zero" remain distinguishable the same way dt_system already insists on
-   for diagnostics.
+**This section was rewritten.** The first pass proposed detecting cycles in
+a law → law graph and condensing strongly connected components into
+simultaneous-solve groups (`networkx.condensation` + a fixed-point/Newton
+`RoundNode`). That is unnecessary machinery for the general case, for a
+reason already visible in code this audit had read but not connected:
 
-## 7. Concrete next steps, in build order
+**Order-sensitivity between two coupled laws is a property of how their
+boundary-transfer term is written, not an inherent property of a
+dependency graph.** `participants.py` already says as much: the participant
+axis is in *causal order*, and "participant `i` may consume what `i-1`
+published this same step" — which is a **choice**, not a discovered fact.
+A law's coupling term either:
+
+- reads "whatever the other side has published so far this step" — same-step
+  coupling, order matters, and the author chose that on purpose, or
+- reads "the other side's *previous* step" — a one-step lag, completely
+  ordinary in split/multiphysics schemes — and order stops mattering,
+  because nothing this step depends on anything else this step.
+
+Neither case needs a graph algorithm to discover; the modeler decides it
+where the boundary term is written. This is also, concretely, why
+`dt_negotiation_helpers.py.bak` was rejected (`turing/examples`, header:
+*"DEPRECATED -- DO NOT USE, DO NOT IMPORT, DO NOT REVIVE"*): it tried to
+solve ordering/claims generically **inside the dt system**, and its own
+postmortem says the right place for that decision is *"at a molecular
+causal boundary of the sim... not in the dt system."* A genuine algebraic
+loop (two quantities mutually and instantaneously determined, e.g. a stiff
+equation-of-state/momentum pair that truly cannot be lagged) is a narrower,
+real case — but it is the exception a modeler flags explicitly, not the
+default a scheduler must discover and condense for every coupling.
+
+**The two-tier channel split already answers "how do coupled systems'
+limits reconcile."** dt_system already separates two different kinds of
+limit, and this split is the actual mechanism, not a graph:
+
+- **Personal boundaries**: `Publication.channels`/`Publication.limits`
+  (§4) let each system publish what *it* measured against limits declared
+  for *it*, landing in `StepSpans.pub_values`/`pub_present`/`pub_limits` —
+  one system's own business, judged against its own bar.
+- **Outer, cross-system deltas**: `Metrics.error_channels`/
+  `Targets.error_limits` (the aggregate channels in `error_channels.py`,
+  e.g. `mass_err`, `div_inf`) are where a *boundary-transfer* consistency
+  measure belongs — "how much did what system A said left differ from what
+  system B said arrived" is exactly the shape of an aggregate error channel
+  with its own limit, checked by the same `STController` that already
+  grows/shrinks/rejects `dt` on every other channel.
+
+So constructing the total composition for an arbitrary set of laws needs
+§4's union (declare every field once, causal order) and §5's owned/read
+split (to know what each law is a candidate personal-channel publisher
+for) — but *not* a cycle-resolution pass. A cross-system delta that needs
+watching is declared as its own outer error channel, exactly the way
+`mass_err`/`div_inf` already are, and the boundary term that produces it is
+written to read a lagged or same-step value on purpose.
+
+## 8. Concrete next steps, in build order
 
 1. Write the owned/read extractor over `_discover_equations()`'s output
-   (§4.1) — pure sympy, no dt_system dependency yet.
+   (§5.1) — pure sympy, no dt_system dependency yet.
 2. Route every extracted symbol through `describe_symbol`/`raw_token_report`
-   (§4.2) and produce a report of every *uncurated* collision the current
+   (§5.2) and produce a report of every *uncurated* collision the current
    `KNOWN_COLLISIONS` table doesn't cover — this will be large (§ "Symbol
    Identity Registry" in the catalogue file already says as much), and is
-   the actual bottleneck: the dependency graph is only as trustworthy as the
+   the actual bottleneck: the union in §3/§6 is only as trustworthy as the
    identity resolution feeding it.
-3. Build the law → law graph and run condensation + `compute_asap_levels` on
-   a small, deliberately chosen subset first (e.g. `ENGINE_SETS['chamber_witness']`,
-   already defined in the catalogue) rather than all 612 equations at once,
-   since real algebraic loops (Gibbs ↔ Navier-Stokes EOS, Fourier ↔ Gibbs
-   energy-temperature closure) are concentrated in a handful of engines and
-   are easiest to validate there.
-4. Only then attempt the `PhysicsToProcessAdapter`/`PhysicsStateRegistry`
-   wiring into `MetaLoopRunner` — reusing `dt_process_adapter.py`'s adapter
-   shape and `participants.py`'s span-building code rather than parallel
-   implementations of either, per this repo's own standing instruction to
-   use what already exists.
+3. Follow `llvm_dt_system.py`'s own shape (§3), not a new adapter: for a
+   chosen, deliberately small subset of laws first (e.g.
+   `ENGINE_SETS['chamber_witness']`, already defined in the catalogue), get
+   each law to the same `argument_names`/`output_names` shape a compiled
+   `LLVMPiece` already has, so `column_names_of` can union them the same
+   way it unions the chamber/EM law pieces today. This is a much smaller
+   lift than a new scheduler: it reuses `column_names_of`,
+   `participant_registry` and `StepSpans` outright rather than building
+   parallel machinery.
+4. Where a law's coupling term needs a specific choice (same-step vs.
+   lagged, per §7), make that choice explicitly in the term itself, and
+   where a boundary needs watching, publish it as its own aggregate error
+   channel (`error_channels.py`) with its own limit — not as a new
+   scheduling primitive.
+5. Only reach for `dt_graph.py`/`GraphBuilder`/`MetaLoopRunner` if a
+   genuine, narrow algebraic loop (§7) is found that truly cannot be
+   lagged — and even then, treat it as the rare, explicitly-flagged case
+   it is, not the default assumption for every coupling.
 
 No code changes were made for this audit; it is analysis only, per the
 request to "start analyzing and auditing."
