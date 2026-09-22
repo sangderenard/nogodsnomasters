@@ -6,6 +6,12 @@ Nothing described here changes existing behavior in `engine_toy/` or
 work should converge toward, so the convention exists before the code
 is asked to follow it.
 
+For the equation-level roster behind each engine named below — what is
+already authored as a SymPy or plain-Python law somewhere in the
+repository tree today, and what canonical equations a complete
+treatment of that field still requires — see
+[ENGINE_EQUATION_ANNEX.md](ENGINE_EQUATION_ANNEX.md).
+
 ## Purpose
 
 The simulator should converge the existing engine work into a small
