@@ -15,7 +15,11 @@ JANSSEN, AND WHY A TALL SILO DOES NOT CRUSH ITSELF
     that friction carries a growing share of the weight until the
     vertical stress SATURATES:
 
-        sigma_v(h)  =  (rho.g.R / (mu.K)) . (1 - exp(-mu.K.h / R))
+        sigma_v(h)  =  (rho.g.R_h / (mu.K)) . (1 - exp(-mu.K.h / R_h))
+
+    with R_h = A/P the HYDRAULIC radius -- D/4 for a round silo, not the
+    geometric radius D/2 (using D/2 doubles both the saturation stress
+    and the depth it takes to reach it).
 
     Past about four diameters of depth the bottom of a silo stops
     caring how much more you add. This is Janssen's 1895 result, it is
@@ -183,8 +187,11 @@ class Hopper:
         denom = mu * JANSSEN_K
         if denom <= 1e-9:
             return rho * GRAVITY_M_S2 * max(0.0, h)
-        saturation = rho * GRAVITY_M_S2 * self.radius_m / denom
-        return saturation * (1.0 - math.exp(-denom * max(0.0, h) / self.radius_m))
+        # Janssen's slice balance is written on area over wetted perimeter:
+        # R_h = A/P = (pi r^2)/(2 pi r) = r/2 for a round bin.
+        hydraulic_radius_m = 0.5 * self.radius_m
+        saturation = rho * GRAVITY_M_S2 * hydraulic_radius_m / denom
+        return saturation * (1.0 - math.exp(-denom * max(0.0, h) / hydraulic_radius_m))
 
     def hydrostatic_stress_pa(self, depth_m: float | None = None) -> float:
         """What it would be if this were a liquid -- for contrast only."""

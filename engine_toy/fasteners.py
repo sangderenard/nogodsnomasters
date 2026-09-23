@@ -123,11 +123,22 @@ class TappedHole:
     def thread_shear_area_m2(self) -> float:
         """The cylindrical area the female threads shear across.
 
-        Half the circumference times the engaged length is the standard
-        simplification, scaled by how much thread was actually cut."""
+        Machinery's Handbook / FED-STD-H28 internal-thread shear area,
+
+            A_n = pi n L_e D_s [ 1/(2n) + 0.57735 (D_s - E_n) ],
+
+        n threads per unit length, D_s the external thread's major
+        diameter, E_n the internal thread's pitch diameter.  For the ISO
+        basic profile (E_n = D - 0.6495 p) the bracket is 0.875 p, so the
+        area is 0.875 pi D L_e -- the 0.5 pi D L_e shortcut understates
+        pull-out by 43%.  Scaled by how much thread was actually cut
+        (engineering approximation: the basic formula assumes full form)."""
         t = self.spec
-        area = 0.5 * math.pi * (t.major_mm / 1000.0) * (self.engagement_mm / 1000.0)
-        return area * (self.percent_thread / 100.0)
+        n = 1.0 / t.pitch_mm                            # threads per mm
+        D_s, E_n = t.major_mm, t.pitch_diameter_mm
+        area_mm2 = (math.pi * n * self.engagement_mm * D_s
+                    * (1.0 / (2.0 * n) + 0.57735 * (D_s - E_n)))
+        return area_mm2 * 1e-6 * (self.percent_thread / 100.0)
 
     def pull_out_n(self) -> float:
         """Force to strip the threads out of the PART."""

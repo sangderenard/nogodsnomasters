@@ -1847,6 +1847,13 @@ class Engine:
     # catalogue as if it hit the same RELATIVE friction at its own
     # redline regardless of how fast its pistons actually move there (a
     # 22rpm giant marine diesel's pistons move nothing like a superbike's).
+    #
+    # CAVEAT (textbook comparison, 2026-09-22): the full Chen-Flynn form
+    # (Heywood 13.x) is FMEP = A + B*p_max + C*Sp + D*Sp^2 -- it also
+    # carries a PEAK-CYLINDER-PRESSURE term (ring/bearing load rising with
+    # firing pressure). This correlation omits it, so friction does not
+    # rise with boost or compression ratio at fixed piston speed. Kept as a
+    # modelling choice; the catalogue's eq_O7_5 states the full form.
     FRICTION_FMEP_A_PA = 70_000.0
     FRICTION_FMEP_B_PA_S_PER_M = 4_333.0
     FRICTION_FMEP_C_PA_S2_PER_M2 = 200.0
