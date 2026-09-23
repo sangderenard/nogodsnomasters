@@ -3464,8 +3464,8 @@ class FluidCircuitSystem(DtCompatibleEngine):
         channels = empty_channels()
         metrics = Metrics(
             max_vel=0.0, max_flux=max_flux, div_inf=0.0, mass_err=0.0,
-            pub_tau=AbstractTensor.tensor([0.0]),
-            pub_tau_present=AbstractTensor.tensor([0.0]),
+            pub_exchange_time=AbstractTensor.tensor([0.0]),
+            pub_exchange_time_present=AbstractTensor.tensor([0.0]),
             pub_contract=AbstractTensor.tensor([HOLD]),
             pub_dt_limit=AbstractTensor.tensor([0.0]),
             pub_dt_limit_present=AbstractTensor.tensor([0.0]),

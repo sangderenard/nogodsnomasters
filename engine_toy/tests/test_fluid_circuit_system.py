@@ -69,7 +69,7 @@ def test_top_level_system_owns_the_existing_circuit_objects_and_rolls_back():
     assert owner.calls[0][2] == pytest.approx(0.02)
     assert metrics.max_flux == pytest.approx(0.125)
     assert metrics.pub_contract.tolist() == [HOLD]
-    assert metrics.pub_tau_present.tolist() == [0.0]
+    assert metrics.pub_exchange_time_present.tolist() == [0.0]
     assert circuit.pressure_pa == pytest.approx(103_825.0)
 
     system.restore(checkpoint)

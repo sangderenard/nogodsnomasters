@@ -56,43 +56,10 @@ from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
 
 
-@dataclass
-class StoreLedger:
-    """What the time force store is holding, per zone.
-
-    Charged by ramping the field, discharged when the field is steady.
-    A store that never discharges is a zone under sustained time
-    pressure -- which is the condition worth selling.
-    """
-
-    stored_j: float = 0.0
-    #: frames in a row the store has failed to return to rest
-    persistence: int = 0
-    #: exponential mean of (asked - got) / asked, 0..1
-    shortfall_ema: float = 0.0
-    rest_j: float = 1e-9
-
-    def observe(self, *, reaction_nm: float, slip_rad_s: float, dt_s: float,
-                asked_s: float, got_s: float, alpha: float = 0.25) -> None:
-        """Fold one frame in. `reaction_nm * slip_rad_s` is the power the
-        store had to supply; `asked` vs `got` is the leading edge."""
-        power_w = abs(float(reaction_nm)) * abs(float(slip_rad_s))
-        self.stored_j = max(0.0, self.stored_j + power_w * float(dt_s))
-        shortfall = 0.0 if asked_s <= 0.0 else max(0.0, (asked_s - got_s) / asked_s)
-        self.shortfall_ema = (1.0 - alpha) * self.shortfall_ema + alpha * shortfall
-        if self.stored_j > self.rest_j or shortfall > 0.0:
-            self.persistence += 1
-        else:
-            self.persistence = 0
-
-    def relax(self, dt_s: float, tau_s: float = 0.5) -> None:
-        """A steady field costs nothing, so the store bleeds back to
-        rest. This is what stops a single transient looking like chronic
-        trouble."""
-        if tau_s <= 0.0:
-            self.stored_j = 0.0
-            return
-        self.stored_j *= max(0.0, 1.0 - float(dt_s) / tau_s)
+# ``StoreLedger`` -- what the time force store is holding -- moved with the
+# time field into ``turing/src/common/dt_system/time_field.py`` (2026-09-22).
+# One definition; imported here so this module's callers are unchanged.
+from time_field import StoreLedger  # noqa: E402,F401
 
 
 @dataclass(frozen=True)

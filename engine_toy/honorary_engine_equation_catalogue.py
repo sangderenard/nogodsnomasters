@@ -211,7 +211,7 @@ eq_F7_3 = sp.Eq(f_mnp, c_med/2 * sp.sqrt((m_i_idx/a_g)**2 + (n_i_idx/b_g)**2 + (
 rho_n, u_n, S_m, p_n, tau_n, g_n_vec, f_other, S_p, E_n, q_n, S_E, e_n, Y_s, j_s, omega_s, S_s = sp.symbols('rho u S_m p tau g f_other S_p E q S_E e Y_s j_s omega_s S_s', cls=sp.Function)
 # NS1
 eq_NS1_1 = sp.Eq(sp.Derivative(rho_n(t), t) + nabla(rho_n(t)*u_n(t)), S_m(t))
-eq_NS1_2 = sp.Eq(sp.Derivative(rho_n(t)*u_n(t), t) + nabla(rho_n(t)*u_n(t)*u_n(t) + p_n(t)), nabla(tau_n(t)) + rho_n(t)*g_n_vec(t) + f_other(t) + S_p(t))
+eq_NS1_2 = sp.Eq(sp.Derivative(rho_n(t)*u_n(t), t) + nabla(rho_n(t)*sp.Function('outer')(u_n(t), u_n(t)) + p_n(t)*sp.Symbol('I_3')), nabla(tau_n(t)) + rho_n(t)*g_n_vec(t) + f_other(t) + S_p(t))  # momentum: div(rho u(x)u + p I) = div(tau) + body forces (outer = dyadic product, I_3 = identity)
 eq_NS1_3 = sp.Eq(sp.Derivative(rho_n(t)*E_n(t), t) + nabla((rho_n(t)*E_n(t) + p_n(t))*u_n(t)), nabla(tau_n(t)*u_n(t) - q_n(t)) + rho_n(t)*g_n_vec(t)*u_n(t) + f_other(t)*u_n(t) + S_E(t))
 eq_NS1_4 = sp.Eq(E_n(t), e_n(t) + 0.5*sp.Abs(u_n(t))**2)
 eq_NS1_5 = sp.Eq(sp.Derivative(rho_n(t)*Y_s(t), t) + nabla(rho_n(t)*Y_s(t)*u_n(t) + j_s(t)), omega_s(t) + S_s(t))
@@ -514,7 +514,7 @@ eq_BR7_9 = sp.Eq(sp.Derivative(a_frac, sp.Symbol('N_fatigue')), sp.Symbol('C') *
 # BR8
 psi_nk, u_nk, v_nk, hbar, E_n_band, m_star_inv, Phi_force, u_ia, D_dyn, e_knu, w_knu, n_B, k_B_br, C_knu, x_ph, k_ij_br, tau_knu = sp.symbols('psi_{nk} u_{nk} v_{nk} hbar E_n (m^*)^{-1} Phi u_{i;alpha} D e_{k;nu} omega_{k;nu} n_B k_B C_{k;nu} x k_{ij} tau_{k;nu}')
 eq_BR8_1 = sp.Eq(psi_nk, sp.exp(sp.I * sp.Symbol('k') * r_alpha) * u_nk)
-eq_BR8_2 = sp.Eq(v_nk, hbar**-1 * nabla(E_n_band))
+eq_BR8_2 = sp.Eq(v_nk, hbar**-1 * sp.Function('nabla_k')(E_n_band))  # band group velocity: gradient in k-space, not position space
 eq_BR8_3 = sp.Eq(m_star_inv, hbar**-2 * sp.Derivative(E_n_band, sp.Symbol('k_i'), sp.Symbol('k_j')))
 eq_BR8_4 = sp.Eq(Phi_force, sp.Derivative(U_eam, u_ia, sp.Symbol('u_{j,beta}')))
 eq_BR8_5 = sp.Eq(D_dyn * e_knu, w_knu**2 * e_knu)
@@ -600,9 +600,9 @@ eq_H4_3 = sp.Eq(E_BO, E_e + V_NN)
 
 # H5
 F_I, M_I, H_mw = sp.symbols('F_I M_I H^{mw}')
-eq_H5_1 = sp.Eq(F_I, -nabla(E_BO)) # grad w.r.t R_I
+eq_H5_1 = sp.Eq(F_I, -sp.Function('nabla_R')(E_BO)) # force on nucleus I: gradient w.r.t. nuclear coordinate R_I
 eq_H5_2 = sp.Eq(M_I*sp.Derivative(R_I, t, 2), F_I)
-eq_H5_3 = sp.Eq(nabla(E_BO), 0) # at R_*
+eq_H5_3 = sp.Eq(sp.Function('nabla_R')(E_BO), 0) # equilibrium geometry R_*: nuclear-coordinate gradient vanishes
 eq_H5_4 = sp.Eq(H_mw, sp.Derivative(E_BO, R_I, R_J)/sp.sqrt(M_I*sp.Symbol('M_J')))
 eq_H5_5 = sp.Eq(H_mw*sp.Symbol('e_k'), sp.Symbol('omega_k')**2 * sp.Symbol('e_k'))
 
@@ -618,7 +618,7 @@ eq_H7_1 = sp.Eq((-0.5*nabla_op**2 + v_ext + v_H + v_xc)*phi_i, eps_i*phi_i)
 eq_H7_2 = sp.Eq(n_r, sp.Sum(f_i_occ*sp.Abs(phi_i)**2, ('i', 1, sp.Symbol('N'))))
 eq_H7_3 = sp.Eq(v_H, sp.Integral(n_r/sp.Abs(r_i - r_j), r_j))
 eq_H7_4 = sp.Eq(v_xc, sp.Derivative(E_xc_func, n_r))
-eq_H7_5 = sp.Eq(E_n_func, T_s_func + sp.Integral(v_ext*n_r, r_i) + 0.5*sp.Integral(n_r*sp.Symbol('n(r\')')/sp.Abs(r_i - sp.Symbol('r\'')), (r_i, sp.Symbol('r\''))) + E_xc_func + V_NN)
+eq_H7_5 = sp.Eq(E_n_func, T_s_func + sp.Integral(v_ext*n_r, r_i) + 0.5*sp.Integral(n_r*sp.Symbol('n(r\')')/sp.Abs(r_i - sp.Symbol('r\'')), r_i, sp.Symbol('r\'')) + E_xc_func + V_NN)  # Kohn-Sham energy; the Hartree term is a DOUBLE volume integral over r and r' (was written as r_i with upper bound r')
 
 # H8
 t_ij, w_fi, E_f_h, E_i_h, H_prime, d_dipole, E_field, Gamma_if, rho_f_h, T_prob = sp.symbols('t_{ij} omega_{fi} E_f E_i H\' d E Gamma_{i->f} rho_f mathcal{T}')
@@ -733,7 +733,7 @@ eq_E5_10 = sp.Eq(nabla(sp.Symbol('T^{mu,nu}')), 0)
 Phi_e, rho_e, xi_nu = sp.symbols('Phi rho xi_nu')
 eq_E6_1 = sp.Eq(sp.Symbol('g_{00}'), -(1 + 2*Phi_e/c_e**2))
 eq_E6_2 = sp.Eq(nabla(nabla(Phi_e)), 4*sp.pi*G*rho_e)
-eq_E6_3 = sp.Eq(nabla(xi_nu), 0) # sym abstract
+eq_E6_3 = sp.Eq(sp.Function('nabla_mu')(xi_nu) + sp.Function('nabla_nu')(sp.Symbol('xi_mu')), 0) # Killing equation nabla_(mu xi_nu) = 0: symmetrized covariant derivative
 eq_E6_4 = sp.Eq(sp.Derivative(sp.Symbol('p_mu xi^mu'), sp.Symbol('tau')), 0) # Killing-vector conserved quantity along a geodesic: d(p_mu xi^mu)/d tau = 0
 
 
@@ -865,7 +865,7 @@ eq_FO8_3 = sp.Eq(alpha_fo, k_fo/(rho_fo*c_p_fo))
 # =====================================================================
 f_s, v_bo, F_s, m_s_bo, C_s_bo, S_s_bo, B_bo, Omega_bo = sp.symbols('f_s v F_s m_s C_s S_s B Omega', cls=sp.Function)
 # BO1
-eq_BO1_1 = sp.Eq(sp.Derivative(f_s(t), t) + v_bo(t)*nabla(f_s(t)) + (F_s(t)/m_s_bo(t))*nabla(f_s(t)), C_s_bo(f_s(t)) + S_s_bo(t))
+eq_BO1_1 = sp.Eq(sp.Derivative(f_s(t), t) + v_bo(t)*nabla(f_s(t)) + (F_s(t)/m_s_bo(t))*sp.Function('nabla_v')(f_s(t)), C_s_bo(f_s(t)) + S_s_bo(t))  # Boltzmann: spatial gradient for streaming, VELOCITY-space gradient for the force term
 eq_BO1_2 = sp.Eq(C_s_bo(f_s(t)), sp.Integral(B_bo(t)*(sp.Symbol('f\'f_*\'') - f_s(t)*sp.Symbol('f_*')), (sp.Symbol('v_*'), sp.Symbol('Omega'))))
 
 # BO2
@@ -914,7 +914,7 @@ eq_BO7_3 = sp.Eq(D_bo, k_B_bo*T_bo/zeta_bo)
 
 # BO8
 psi_bo, v_E, Sig_t, Sig_s, S_bo_rad = sp.symbols('psi v Sigma_t Sigma_s S', cls=sp.Function)
-eq_BO8_1 = sp.Eq((1/v_E(t))*sp.Derivative(psi_bo(t), t) + Omega_bo(t)*nabla(psi_bo(t)) + Sig_t(t)*psi_bo(t), sp.Integral(Sig_s(t)*psi_bo(t), (sp.Symbol('E\''), sp.Symbol('Omega\''))) + S_bo_rad(t))
+eq_BO8_1 = sp.Eq((1/v_E(t))*sp.Derivative(psi_bo(t), t) + Omega_bo(t)*nabla(psi_bo(t)) + Sig_t(t)*psi_bo(t), sp.Integral(Sig_s(t)*psi_bo(t), sp.Symbol('E\''), sp.Symbol('Omega\'')) + S_bo_rad(t))
 
 
 # =====================================================================
@@ -2716,7 +2716,7 @@ def _expand_faraday_f18_eddy_induction():
     eqs['eq_F18_3'] = sp.Eq(EMF, sp.Integral(dot(E_vec + cross(v_vec, B_vec), dl), dl))  # EMF of a moving circuit: force per charge in the conductor frame (Griffiths 7.9; Zangwill 14.2)
     eqs['eq_F18_4'] = sp.Eq(EMF, B*l_b*v)  # motional EMF of a bar of length l_b sliding at v across B (Griffiths 7.1.3)
     eqs['eq_F18_5'] = sp.Eq(J_vec, sigma*(E_vec + cross(v_vec, B_vec)))  # Ohm's law in a moving conductor (Jackson 5.18; Haus-Melcher 6.2)
-    eqs['eq_F18_6'] = sp.Eq(sp.Derivative(Bf, t), nabla(cross(v_vec, Bf)) + nabla_op**2*Bf/(mu*sigma))  # magnetic induction equation: advection (curl) + diffusion, uniform mu, sigma (Jackson 5.18; Davidson MHD 2.7)
+    eqs['eq_F18_6'] = sp.Eq(sp.Derivative(Bf, t), nabla(cross(v_vec, Bf)) - nabla(nabla(Bf))/(mu*sigma))  # magnetic induction equation: advection curl(v x B) + diffusion, uniform mu, sigma; laplacian B = -curl curl B since div B = 0 (Jackson 5.18; Davidson MHD 2.7)
     eqs['eq_F18_7'] = sp.Eq(tau_m, mu*sigma*L_ch**2)  # magnetic diffusion time over length L_ch (Jackson 5.18; Haus-Melcher 6.4)
     eqs['eq_F18_8'] = sp.Eq(R_m, mu*sigma*v*L_ch)  # magnetic Reynolds number (Davidson MHD 2.7)
     eqs['eq_F18_9'] = sp.Eq(P_ed, sp.Integral(J2/sigma, dV))  # eddy dissipation = drag power F v of a steadily moving conductor (Joule, F5_3)
@@ -3559,6 +3559,387 @@ ENGINE_SETS = {
     'ballistics_stack': ('Newton', 'Timoshenko', 'Tartaglia', 'Piobert',
                          'Zeldovich', 'Otto', 'De Laval', 'Tsiolkovsky'),
 }
+
+
+# =====================================================================
+# SCALE BOOKKEEPING: where a law holds, and where a simulator sits
+# =====================================================================
+# Optional, information-only bookkeeping (2026-09-22).  Nothing here
+# changes a law or chooses a solver; it records what is already true of
+# the physics so a simulator can be told, per law, whether its own domain
+# and resolution put that law in range.
+#
+#   LawScale        where a law is known to hold: validity predicates on
+#                   dimensionless groups (never a docstring), the law's own
+#                   intrinsic length if it has one, and the catalogue
+#                   criterion equations that already state the limit.
+#   SimulatorScale  a simulator's domain size L, resolution dx and window;
+#                   classifies each declared law as resolved / subgrid /
+#                   larger than the domain, or valid / below its averaging
+#                   length, depending on which way the law's length runs.
+#
+# ``resolution`` says which way:
+#   "resolve"  the phenomenon lives AT the length (skin depth, sheath,
+#              boundary layer): a grid must have dx <= length / k to see it.
+#   "average"  the law is an AVERAGE over the length (continuum over the
+#              mean free path, quasineutrality over lambda_D): cells must be
+#              >= k * length for the law to be the right description.
+# Laws may be named individually (``eq_NS1_1``) or by section (``LA4``,
+# meaning every eq_LA4_*).
+
+from dataclasses import dataclass as _scale_dataclass, field as _scale_field
+
+
+@_scale_dataclass(frozen=True)
+class LawScale:
+    regime: str
+    laws: tuple
+    valid_if: tuple = ()
+    groups: dict = _scale_field(default_factory=dict)
+    length: object = None            # the law's intrinsic length, a sympy expression
+    resolution: str = "resolve"      # "resolve" | "average" (see above)
+    criteria: tuple = ()             # catalogue eq ids stating the limit
+    source: str = ""
+
+    def covered(self):
+        """Every eq_* id this regime applies to, sections expanded."""
+        names = set()
+        for item in self.laws:
+            if item.startswith("eq_"):
+                names.add(item)
+            else:
+                names.update(n for n in globals() if _EQ_NAME_RE.match(n)
+                             and n.startswith(f"eq_{item}_"))
+        return tuple(sorted(names))
+
+    def validity(self, values):
+        """Each predicate as True / False / None (a symbol it needs is
+        missing from ``values``).  ``values`` maps symbol names to numbers;
+        group names may be given directly or derived from ``groups``."""
+        subs = {sp.Symbol(k): v for k, v in values.items()}
+        for name, expr in self.groups.items():
+            if sp.Symbol(name) not in subs:
+                derived = expr.subs(subs)
+                if not derived.free_symbols:
+                    subs[sp.Symbol(name)] = derived
+        out = []
+        for predicate in self.valid_if:
+            judged = predicate.subs(subs)
+            out.append(bool(judged) if judged in (sp.true, sp.false) else None)
+        return tuple(out)
+
+
+@_scale_dataclass(frozen=True)
+class SimulatorScale:
+    """A simulator's own scale: domain size, resolution, time window."""
+    domain_m: float
+    resolution_m: float
+    window_s: float = 0.0
+    resolve_factor: float = 2.0      # cells per length needed to resolve it
+
+    @property
+    def cells_across(self):
+        return self.domain_m / self.resolution_m
+
+    def classify(self, law_scale, values):
+        """Where this simulator sits against one law's intrinsic length."""
+        if law_scale.length is None:
+            return "no intrinsic length"
+        ell = sp.sympify(law_scale.length).subs({sp.Symbol(k): v for k, v in values.items()})
+        if ell.free_symbols:
+            return "length unknown (missing: %s)" % sorted(map(str, ell.free_symbols))
+        ell = float(ell)
+        k = self.resolve_factor
+        if law_scale.resolution == "average":
+            if ell * k > self.domain_m:
+                return "domain smaller than the averaging length"
+            return "valid (averaged)" if self.resolution_m >= k * ell else "below its averaging length"
+        if ell > self.domain_m:
+            return "larger than the domain"
+        return "resolved" if self.resolution_m <= ell / k else "subgrid"
+
+
+def _law_scales():
+    Kn, lam, L = sp.symbols('Kn lambda_mfp L')
+    Re_p, rho_f, v_p, d_p, mu_f = sp.symbols('Re_p rho_f v_p d_p mu_f')
+    lam_D, N_D = sp.symbols('lambda_D N_D')
+    d_s, delta, omega, mu, sigma, v, w, a = sp.symbols('d delta omega mu sigma v w a')
+    Rm = sp.Symbol('Rm')
+    h, eps, a_c, R_c, Phi, c, v_b = sp.symbols('h epsilon a_contact R_contact Phi c v_body')
+    skin = sp.sqrt(2 / (omega * mu * sigma))
+    return {
+        "continuum": LawScale(
+            "continuum", ("NS1", "NS2"), (Kn < sp.Rational(1, 100),),
+            {"Kn": lam / L}, length=lam, resolution="average",
+            source="Kn < 0.01 continuum; 0.01-0.1 slip; >10 free molecular (Bird 1994; Karniadakis 2005)"),
+        "stokes_drag": LawScale(
+            "Stokes (creeping) drag", ("eq_B7_2", "eq_B13_4", "eq_NS12_1"), (Re_p < 1,),
+            {"Re_p": rho_f * v_p * d_p / mu_f},
+            source="particle Reynolds number < 1 (Clift, Grace & Weber 1978)"),
+        "newton_drag": LawScale(
+            "Newton-regime drag", ("eq_B13_5",), (Re_p > 1000, Re_p < 2 * 10**5),
+            {"Re_p": rho_f * v_p * d_p / mu_f},
+            source="C_D ~ 0.44 plateau, 1e3 < Re_p < 2e5 (Clift, Grace & Weber 1978)"),
+        "quasineutral_plasma": LawScale(
+            "quasineutral fluid plasma", ("LA4",), (lam_D / L < 1, N_D > 1),
+            length=lam_D, resolution="average", criteria=("eq_LA1_10", "eq_LA1_11"),
+            source="lambda_D << L and N_D >> 1 (Chen 1.6); sheaths need the resolved description"),
+        "debye_sheath": LawScale(
+            "sheath / non-neutral region",
+            tuple(f"eq_LA6_{n}" for n in (10, 11, 12, 13, 14, 15, 17, 18, 24, 25, 26)), (),
+            length=lam_D, resolution="resolve", criteria=("eq_LA1_10",),
+            source="sheaths are a few lambda_D thick (Lieberman-Lichtenberg 6)"),
+        "thin_lamination_eddy": LawScale(
+            "thin-conductor eddy currents", ("eq_F18_10", "eq_F18_11", "eq_F18_12"), (d_s / delta < 1,),
+            {"delta": skin}, length=skin, resolution="resolve", criteria=("eq_F5_5",),
+            source="thickness << skin depth, field uniform through the sheet (Fitzgerald-Kingsley)"),
+        "low_Rm_eddy_drag": LawScale(
+            "low magnetic Reynolds number eddy drag", ("eq_F18_12",), (Rm < 1,),
+            {"Rm": mu * sigma * v * d_s},
+            source="eddy field does not distort the applied field (Wiederick 1987; Reitz 1970)"),
+        "thin_wall_pipe": LawScale(
+            "thin-walled pipe (magnet in a pipe)", ("eq_F18_16", "eq_F18_17"), (w / a < sp.Rational(1, 10),),
+            source="wall w << radius a (Levin et al. 2006)"),
+        "shallow_water": LawScale(
+            "shallow water (Saint-Venant)", ("NS9",), (h / L < sp.Rational(1, 20),),
+            source="depth << horizontal wavelength, hydrostatic pressure (Vreugdenhil 1994)"),
+        "small_strain": LawScale(
+            "small (infinitesimal) strain", ("eq_BR2_1",), (sp.Abs(eps) < sp.Rational(1, 100),),
+            source="|eps| << 1; beyond it use Green-Lagrange (BR13) (Timoshenko & Goodier)"),
+        "hertz_contact": LawScale(
+            "Hertz contact", ("eq_N5_8",), (a_c / R_c < sp.Rational(1, 10),),
+            source="contact radius << curvature radius, frictionless elastic (Johnson, Contact Mechanics)"),
+        "weak_field_gravity": LawScale(
+            "weak-field (Newtonian) gravity", ("eq_E6_1", "eq_E6_2"), (sp.Abs(Phi) / c**2 < sp.Rational(1, 100),),
+            source="|Phi|/c^2 << 1 (Misner-Thorne-Wheeler 18)"),
+        "non_relativistic": LawScale(
+            "non-relativistic mechanics", ("N1",), (v_b / c < sp.Rational(1, 10),),
+            source="v << c; gamma - 1 < 0.5% at v/c = 0.1"),
+    }
+
+
+LAW_SCALES = _law_scales()
+
+for _regime, _scale in LAW_SCALES.items():   # a declaration must name real laws
+    for _name in (*_scale.covered(), *_scale.criteria):
+        assert _name in globals(), f"LAW_SCALES[{_regime!r}] names unknown law {_name}"
+    assert _scale.covered(), f"LAW_SCALES[{_regime!r}] covers no law"
+
+
+def scales_of(eq_name):
+    """Every declared regime that covers ``eq_name``."""
+    return tuple(s for s in LAW_SCALES.values() if eq_name in s.covered())
+
+
+def scale_report(simulator, values, regimes=None):
+    """Per declared regime: validity predicates and where ``simulator`` sits.
+
+    ``values`` supplies the physical symbols (and/or group values) by name;
+    ``L`` defaults to the simulator's domain.  Information only."""
+    values = {"L": simulator.domain_m, **values}
+    rows = []
+    for name, scale in LAW_SCALES.items():
+        if regimes is not None and name not in regimes:
+            continue
+        rows.append({"regime": name, "laws": len(scale.covered()),
+                     "valid": scale.validity(values),
+                     "grid": simulator.classify(scale, values)})
+    return rows
+
+
+# =====================================================================
+# LAW DECLARATIONS: what SymPy's spelling cannot say
+# =====================================================================
+# The catalogue writes one placeholder, nabla, for grad, div and curl,
+# and Integral(f, A) for an integral over a surface/volume domain A.
+# These declarations say, per occurrence, which operator and which
+# domain kind is meant -- the input turing/src/compiler/bitops.declare
+# needs to complete a Manifold or Integral declaration.  Keys are the
+# str() of the occurrence (nabla node) or of the bare integration symbol.
+# nabla_k / nabla_R / nabla_v / nabla_mu,nu are gradients in wavevector,
+# nuclear-coordinate, velocity and spacetime (covariant) space.
+
+# 'nabla': str(occurrence) -> kind in {grad, div, curl, laplacian_0, laplacian_1, advective}.
+#          A tuple value gives the kinds of repeated identical occurrences in sp.preorder_traversal order.
+#          Nested scalar nabla(nabla(x)) is declared outer 'div', inner 'grad' unless noted.
+# 'domain': str(bare integration symbol) -> {'kind': surface|volume|line|time|population, 'closed': bool (only when implied)}.
+LAW_DECLARATIONS = {
+    'eq_N4_3': {'nabla': {'nabla(Phi)': 'grad'}},   # gravitational force = -m grad(potential)
+    'eq_T4_2': {'domain': {'x': {'kind': 'line'}}},   # element stiffness integrated along the element axis
+    'eq_T7_3': {'nabla': {'nabla(nabla(w(x, y, t)))': 'laplacian_0', 'nabla(w(x, y, t))': 'laplacian_0'}},   # Kirchhoff plate D nabla^4 w: each placeholder is a scalar Laplacian (source comment: nabla^4)
+    'eq_T8_1': {'domain': {'A': {'kind': 'surface', 'closed': False}}},   # second moment of area over the open cross-section
+    'eq_T8_6': {'domain': {'s': {'kind': 'line', 'closed': True}}},   # Bredt: contour integral ds/t around the closed thin-wall cell
+    'eq_F1_1': {'nabla': {'nabla(E(t))': 'curl'}},   # Faraday: dB/dt = -curl E
+    'eq_F1_2': {'nabla': {'nabla(H(t))': 'curl'}},   # Ampere-Maxwell: dD/dt = curl H - J
+    'eq_F1_3': {'nabla': {'nabla(D(t))': 'div'}},   # Gauss: div D = rho_f
+    'eq_F1_4': {'nabla': {'nabla(B(t))': 'div'}},   # no monopoles: div B = 0
+    'eq_F1_5': {'nabla': {'nabla(J_f(t))': 'div'}},   # charge continuity
+    'eq_F3_3': {'nabla': {'nabla(S)': 'div'}},   # Poynting theorem: div S
+    'eq_F3_7': {'domain': {'V': {'kind': 'volume'}, 'A': {'kind': 'surface', 'closed': True}}},   # field momentum in V; Maxwell stress over the closed boundary of V
+    'eq_F4_1': {'nabla': {'nabla(epsilon*nabla(phi))': 'div', 'nabla(phi)': 'grad'}},   # Poisson: div(eps grad phi)
+    'eq_F4_2': {'nabla': {'nabla(phi)': 'grad'}},   # electrostatic E = -grad phi
+    'eq_F4_3': {'nabla': {'nabla(A)': 'curl'}},   # B = curl A
+    'eq_F4_4': {'nabla': {'nabla(phi)': 'grad'}},   # E = -grad phi - dA/dt
+    'eq_F7_1': {'nabla': {'nabla(nabla(E_m)/mu)': 'curl', 'nabla(E_m)': 'curl'}},   # cavity eigenproblem curl(curl E / mu)
+    'eq_F12_1': {'nabla': {'nabla(nabla(E(x, y, z))/mu)': 'curl', 'nabla(E(x, y, z))': 'curl'}},   # driven vector wave equation curl(curl E / mu)
+    'eq_F13_6': {'nabla': {'nabla(n_q(t))': 'grad'}},   # drift-diffusion flux: -D grad n
+    'eq_F13_7': {'nabla': {'nabla(Gamma_q)': 'div'}},   # species balance: -div Gamma
+    'eq_F14_4': {'domain': {'dV': {'kind': 'volume'}}},   # potential of a volume charge distribution
+    'eq_F14_5': {'domain': {'dA': {'kind': 'surface', 'closed': True}}},   # Gauss's law integral form: closed Gaussian surface
+    'eq_F14_17': {'domain': {'dV': {'kind': 'volume'}}},   # field energy over all space
+    'eq_F14_18': {'domain': {'dV': {'kind': 'volume'}}},   # energy from charge x potential over the charge volume
+    'eq_F14_42': {'nabla': {'nabla(dot(p_vec, E_vec))': 'grad'}},   # force on dipole = grad(p . E)
+    'eq_F14_45': {'nabla': {'nabla(E**2)': 'grad'}},   # induced-dipole (dielectrophoretic) force ~ grad E^2
+    'eq_F16_1': {'domain': {'dl': {'kind': 'line'}}},   # Biot-Savart along the current path
+    'eq_F16_2': {'domain': {'dl': {'kind': 'line', 'closed': True}}},   # Ampere's law: closed Amperian loop
+    'eq_F16_13': {'nabla': {'nabla(dot(m_vec, B_vec))': 'grad'}},   # force on magnetic dipole = grad(m . B)
+    'eq_F16_37': {'nabla': {'nabla(B**2)': 'grad'}},   # diamagnetic force ~ grad B^2
+    'eq_F17_22': {'domain': {'B': {'kind': 'line', 'closed': True}}},   # hysteresis loss: loop integral of H dB in the B-H state plane (not spatial)
+    'eq_F18_1': {'domain': {'dA': {'kind': 'surface', 'closed': False}}},   # Faraday integral form: open surface bounded by the loop
+    'eq_F18_6': {'nabla': {'nabla(cross(v_vec, B_vec(t)))': 'curl', 'nabla(nabla(B_vec(t)))': 'curl', 'nabla(B_vec(t))': 'curl'}},   # induction: curl(v x B) and diffusion -curl curl B / (mu sigma) (= laplacian B for div B = 0)
+    'eq_F18_9': {'domain': {'dV': {'kind': 'volume'}}},   # eddy loss J^2/sigma over the conductor volume
+    'eq_F19_3': {'domain': {'dV': {'kind': 'volume'}}},   # field angular momentum over all space
+    'eq_F19_30': {'nabla': {'nabla(J_s)': 'curl'}},   # London equation: curl J_s = -n e^2 B / m
+    'eq_NS1_1': {'nabla': {'nabla(rho(t)*u(t))': 'div'}},   # mass continuity: div(rho u)
+    'eq_NS1_2': {'nabla': {'nabla(I_3*p(t) + outer(u(t), u(t))*rho(t))': 'div', 'nabla(tau(t))': 'div'}},   # momentum: div(rho u(x)u + p I) and div of viscous stress
+    'eq_NS1_3': {'nabla': {'nabla((E(t)*rho(t) + p(t))*u(t))': 'div', 'nabla(-q(t) + tau(t)*u(t))': 'div'}},   # energy: div of enthalpy flux and of (tau.u - q)
+    'eq_NS1_5': {'nabla': {'nabla(Y_s(t)*rho(t)*u(t) + j_s(t))': 'div'}},   # species: div of convective + diffusive flux
+    'eq_NS2_1': {'nabla': {'nabla(u(t))': 'grad'}},   # strain rate: sym(grad u), both occurrences
+    'eq_NS2_2': {'nabla': {'nabla(u(t))': 'div'}},   # Newtonian stress: (div u) I in deviatoric and bulk terms, both occurrences
+    'eq_NS2_3': {'nabla': {'nabla(T)': 'grad'}},   # Fourier conduction -k grad T
+    'eq_NS2_6': {'nabla': {'nabla(Y_s(t))': 'grad'}},   # Fickian diffusion flux -rho D grad Y
+    'eq_NS2_8': {'nabla': {'nabla(x_s)': 'grad'}},   # Maxwell-Stefan: mole-fraction gradient
+    'eq_NS4_1': {'nabla': {'nabla(u(t))': 'div'}},   # incompressibility: div u = 0
+    'eq_NS4_2': {'nabla': {'nabla(u(t))': ('advective', 'grad'), 'nabla(p(t))': 'grad', 'nabla(nabla(u(t)))': 'div'}},   # incompressible NS: (u.grad)u advective; mu div(grad u) componentwise vector Laplacian; grad p
+    'eq_NS7_1': {'nabla': {'nabla(u(t))': 'div'}},   # Boussinesq eddy viscosity: (div u) I term
+    'eq_NS14_5': {'nabla': {'nabla(nabla(p(t, x, y, z)))': 'div', 'nabla(p(t, x, y, z))': 'grad', 'nabla(u^*)': 'div'}},   # pressure Poisson: div grad p = rho/dt div u*
+    'eq_NS14_6': {'nabla': {'nabla(p(t, x, y, z))': 'grad'}},   # projection correction u = u* - dt/rho grad p
+    'eq_NS14_7': {'nabla': {'nabla(c_color(t, x, y, z))': 'grad'}},   # CSF surface tension sigma kappa grad c
+    'eq_NS14_8': {'nabla': {'nabla(c_color(t, x, y, z))': 'grad'}},   # interface normal grad c / |grad c|
+    'eq_NS14_9': {'nabla': {'nabla(hat{n})': 'div'}},   # curvature = -div n_hat
+    'eq_B1_4': {'nabla': {'nabla(p)': 'grad'}},   # geostrophic balance: pressure gradient
+    'eq_B1_5': {'domain': {'p': {'kind': 'line', 'closed': True}}},   # Bjerknes: circuit integral of dp/rho around a closed material loop
+    'eq_B1_6': {'domain': {'l': {'kind': 'line', 'closed': True}}},   # circulation around a closed loop
+    'eq_B1_7': {'nabla': {'nabla(K*nabla(chi))': 'div', 'nabla(chi)': 'grad'}},   # eddy diffusion div(K grad chi)
+    'eq_B8_1': {'nabla': {'nabla(v_p*n(m, x, t))': 'div'}},   # population balance: spatial flux divergence
+    'eq_B10_2': {'domain': {'s': {'kind': 'line', 'closed': False}}},   # Beer-Lambert transmittance along the optical path
+    'eq_BR2_1': {'nabla': {'nabla(u)': 'grad'}},   # small strain sym(grad u), both occurrences
+    'eq_BR5_3': {'nabla': {'nabla(D*nabla(c))': 'div', 'nabla(c)': 'grad'}},   # Fickian diffusion div(D grad c)
+    'eq_BR5_4': {'nabla': {'nabla(mu_c)': 'grad'}},   # chemical-potential-driven flux -M grad mu
+    'eq_BR6_1': {'nabla': {'nabla(c)': 'grad', 'nabla(eta)': 'grad'}, 'domain': {'V': {'kind': 'volume'}}},   # Ginzburg-Landau free energy with |grad|^2 terms over the body
+    'eq_BR6_2': {'nabla': {'nabla(M_c*nabla(Derivative(mathcal{F}, c)))': 'div', 'nabla(Derivative(mathcal{F}, c))': 'grad'}},   # Cahn-Hilliard div(M grad dF/dc)
+    'eq_BR7_6': {'nabla': {'nabla(d)': 'grad'}, 'domain': {'V': {'kind': 'volume'}}},   # phase-field fracture energy with |grad d|^2 over the body
+    'eq_BR8_2': {'nabla': {'nabla_k(E_n)': 'grad'}},   # band group velocity = grad_k E / hbar (wavevector space)
+    'eq_BR9_1': {'nabla': {'nabla(epsilon*nabla(phi))': 'div', 'nabla(phi)': 'grad'}},   # semiconductor Poisson div(eps grad phi)
+    'eq_BR9_2': {'nabla': {'nabla(phi)': 'grad'}},   # E = -grad phi
+    'eq_BR9_3': {'nabla': {'nabla(n)': 'grad'}},   # electron drift-diffusion current: diffusion term
+    'eq_BR9_4': {'nabla': {'nabla(p)': 'grad'}},   # hole drift-diffusion current: diffusion term
+    'eq_BR9_5': {'nabla': {'nabla(J_n)': 'div'}},   # electron continuity div J_n
+    'eq_BR9_6': {'nabla': {'nabla(J_p)': 'div'}},   # hole continuity div J_p
+    'eq_H2_3': {'nabla': {'nabla(psi)': 'grad'}},   # probability current Im(psi* grad psi)
+    'eq_H2_4': {'nabla': {'nabla(j_P)': 'div'}},   # probability continuity
+    'eq_H5_1': {'nabla': {'nabla_R(E_{BO})': 'grad'}},   # Born-Oppenheimer force on nuclei = -grad_R E (nuclear coordinates)
+    'eq_H5_3': {'nabla': {'nabla_R(E_{BO})': 'grad'}},   # equilibrium geometry: grad_R E = 0
+    'eq_H7_5': {'domain': {'r_i': {'kind': 'volume'}, "r'": {'kind': 'volume'}}},   # Kohn-Sham: external-potential term over all space; Hartree term a double volume integral over r and r'
+    'eq_H8_6': {'domain': {'x': {'kind': 'line', 'closed': False}}},   # WKB tunnelling exponent between turning points
+    'eq_C3_2': {'domain': {'tau': {'kind': 'time'}}},   # survival probability: hazard integrated over time
+    'eq_C5_1': {'domain': {'x': {'kind': 'line', 'closed': False}}},   # attenuation along the beam path
+    'eq_C6_1': {'domain': {'E': {'kind': 'population'}}},   # reaction rate: cross-section x flux over the particle energy spectrum
+    'eq_E5_10': {'nabla': {'nabla(T^{mu,nu})': 'div'}},   # stress-energy conservation: covariant divergence
+    'eq_E6_2': {'nabla': {'nabla(nabla(Phi))': 'div', 'nabla(Phi)': 'grad'}},   # Newtonian gravity Poisson div grad Phi
+    'eq_E6_3': {'nabla': {'nabla_mu(xi_nu)': 'covariant', 'nabla_nu(xi_mu)': 'covariant'}},   # Killing equation: symmetrized spacetime covariant derivative
+    'eq_L5_1': {'nabla': {'nabla(c_s)': 'grad', 'nabla(phi)': 'grad'}},   # Nernst-Planck: diffusion + migration gradients
+    'eq_FO1_1': {'nabla': {'nabla(T(t))': 'grad'}},   # Fourier's law
+    'eq_FO1_2': {'nabla': {'nabla(k(t)*nabla(T(t)))': 'div', 'nabla(T(t))': 'grad'}},   # heat equation div(k grad T)
+    'eq_FO1_3': {'nabla': {'nabla(T(t))': 'grad'}},   # entropy production k |grad T|^2 / T^2
+    'eq_FO2_1': {'domain': {'T(t)': {'kind': 'line', 'closed': False}}},   # sensible enthalpy: c_p along the temperature state coordinate T0 -> T (not spatial)
+    'eq_FO6_1': {'nabla': {'nabla(I_nu(t))': 'grad'}, 'domain': {"Omega'": {'kind': 'surface', 'closed': True}}},   # RTE: Omega . grad I streaming; in-scattering over the closed unit sphere of directions
+    'eq_FO7_7': {'nabla': {'nabla(T(t))': 'grad'}},   # thermoelectric current: Seebeck term
+    'eq_FO7_8': {'nabla': {'nabla(T(t))': 'grad'}},   # thermoelectric heat flux: Peltier + conduction
+    'eq_BO1_1': {'nabla': {'nabla(f_s(t))': 'grad', 'nabla_v(f_s(t))': 'grad'}},   # Boltzmann: v . grad_x f streaming and (F/m) . grad_v f in velocity space
+    'eq_BO2_1': {'domain': {'v(t)': {'kind': 'population'}}},   # number density = zeroth velocity moment
+    'eq_BO2_3': {'domain': {'v(t)': {'kind': 'population'}}},   # momentum density = first velocity moment
+    'eq_BO2_4': {'domain': {'v(t)': {'kind': 'population'}}},   # pressure = second central moment
+    'eq_BO2_5': {'domain': {'v(t)': {'kind': 'population'}}},   # translational energy moment
+    'eq_BO2_6': {'domain': {'v(t)': {'kind': 'population'}}},   # heat flux = third central moment
+    'eq_BO4_1': {'domain': {'v(t)': {'kind': 'population'}}},   # collision invariants over velocity space
+    'eq_BO8_1': {'nabla': {'nabla(psi(t))': 'grad'}, 'domain': {"E'": {'kind': 'population'}, "Omega'": {'kind': 'surface', 'closed': True}}},   # neutron transport: Omega . grad psi; scattering source over incoming energy E' and the unit sphere of directions Omega'
+    'eq_NO1_4': {'nabla': {'nabla(j^mu)': 'div'}},   # conserved current: 4-divergence
+    'eq_NO4_4': {'nabla': {'nabla(D)': 'div'}},   # Gauss-law residual div D - rho
+    'eq_NO4_5': {'nabla': {'nabla(J_f)': 'div'}},   # charge continuity
+    'eq_X2_1': {'domain': {'A': {'kind': 'surface'}}},   # mass flow through a (moving) control surface
+    'eq_X2_2': {'domain': {'A': {'kind': 'surface'}}},   # species mass flow through a control surface
+    'eq_Z2_1': {'nabla': {'nabla(G)': 'grad'}},   # G-equation: u . grad G and S_T |grad G|
+    'eq_AR1_1': {'domain': {'partial V': {'kind': 'surface', 'closed': True}}},   # buoyancy: pressure over the closed wetted surface
+    'eq_AR1_3': {'domain': {'V_{sub}': {'kind': 'volume'}}},   # buoyancy: weight of displaced fluid over submerged volume
+    'eq_HO4_2': {'domain': {'dA_m': {'kind': 'surface'}}},   # Helfrich energy over the membrane surface
+    'eq_LA3_1': {'nabla': {'nabla_v(f_s(t, x, v))': 'grad', 'nabla(f_s(t, x, v))': 'grad'}},   # Vlasov: v . grad_x f  [velocity-space term: grad_v f]
+    'eq_LA3_2': {'nabla': {'nabla_v(f_s(t, x, v))': 'grad', 'nabla(f_s(t, x, v))': 'grad'}},   # Fokker-Planck/Boltzmann: v . grad_x f  [velocity-space term: grad_v f]
+    'eq_LA3_21': {'nabla': {'nabla(nabla(phi))': 'div', 'nabla(phi)': 'grad'}},   # Debye screening div grad phi = phi / lambda_D^2
+    'eq_LA4_1': {'nabla': {'nabla(\\mathbf{u}_s*n_s)': 'div'}},   # fluid species continuity
+    'eq_LA4_2': {'nabla': {'nabla(\\mathbf{u}_s)': 'advective', 'nabla(p_s)': 'grad'}},   # species momentum: (u.grad)u and pressure gradient
+    'eq_LA4_3': {'nabla': {'nabla(\\mathbf{Q}_e)': 'div'}},   # electron energy: div of energy flux
+    'eq_LA4_6': {'nabla': {'nabla(\\mathbf{\\Gamma}_e)': 'div'}},   # electron continuity
+    'eq_LA4_7': {'nabla': {'nabla(\\mathbf{\\Gamma}_+)': 'div'}},   # positive-ion continuity
+    'eq_LA4_8': {'nabla': {'nabla(\\mathbf{\\Gamma}_-)': 'div'}},   # negative-ion continuity
+    'eq_LA4_9': {'nabla': {'nabla(nabla(phi))': 'div', 'nabla(phi)': 'grad'}},   # plasma Poisson div grad phi
+    'eq_LA4_13': {'nabla': {'nabla(n)': 'grad'}},   # ambipolar field ~ grad n / n
+    'eq_LA4_14': {'nabla': {'nabla(p_e)': 'grad'}},   # generalized Ohm: electron pressure gradient
+    'eq_LA4_15': {'nabla': {'nabla(\\mathbf{u}*rho)': 'div'}},   # MHD continuity
+    'eq_LA4_16': {'nabla': {'nabla(p)': 'grad', 'nabla(\\mathbf{u})': 'advective'}},   # MHD momentum: grad p and (u.grad)u
+    'eq_LA4_17': {'nabla': {'nabla(\\mathbf{B})': 'curl'}},   # Ampere (MHD): J = curl B / mu0
+    'eq_LA4_18': {'nabla': {'nabla(nabla(\\mathbf{B}))': 'div', 'nabla(\\mathbf{B})': 'grad', 'nabla(cross(\\mathbf{u}, \\mathbf{B}))': 'curl'}},   # induction: eta/mu0 componentwise div grad B + curl(u x B)
+    'eq_LA4_20': {'nabla': {'nabla(p)': 'grad', 'nabla(\\mathbf{u})': 'div'}},   # adiabatic pressure: -u.grad p - gamma p div u
+    'eq_LA5_15': {'domain': {"V'": {'kind': 'volume'}}},   # photoionization source: kernel over emitting volume
+    'eq_LA8_1': {'nabla': {'nabla(nabla(phi))': 'div', 'nabla(phi)': 'grad'}},   # Laplace equation div grad phi = 0
+    'eq_LA8_19': {'domain': {'s': {'kind': 'line', 'closed': False}}},   # optical depth along the ray
+    'eq_LA8_24': {'domain': {'t': {'kind': 'time'}}},   # deposited energy density: power integrated over time
+    'eq_LA11_20': {'domain': {'z': {'kind': 'line', 'closed': False}}},   # line-of-sight emission integral
+    'eq_LA3_3': {'nabla': {'nabla_v(H_s)': 'grad', 'nabla_v(G_s)': 'grad', 'nabla_v(nabla_v(G_s))': 'grad', 'nabla_v(f_s(t, x, v)*nabla_v(H_s))': 'div', 'nabla_v(f_s(t, x, v)*nabla_v(nabla_v(G_s)))': 'div', 'nabla_v(nabla_v(f_s(t, x, v)*nabla_v(nabla_v(G_s))))': 'div'}},   # Fokker-Planck (Rosenbluth form), all velocity space: grad H, grad G, Hessian of G (grad of grad), div of the friction flux, and the double divergence of the diffusion tensor (tensor -> vector -> scalar)
+}
+
+#: Operator kinds a LAW_DECLARATIONS 'nabla' entry may name, and domain kinds
+#: a 'domain' entry may name (bitops.MANIFOLD_OPERATORS / Domain meanings).
+DECLARED_OPERATOR_KINDS = frozenset({"grad", "div", "curl", "laplacian_0", "laplacian_1",
+                                     "advective", "covariant"})
+DECLARED_DOMAIN_KINDS = frozenset({"surface", "volume", "line", "time", "population"})
+
+
+def check_law_declarations():
+    """Every nabla-family occurrence and every domain-measure integral in the
+    catalogue has a declaration, and no declaration is stale.  Returns the
+    list of problems (empty when consistent)."""
+    from sympy.core.function import AppliedUndef
+
+    problems = []
+    for engine in _discover_equations().values():
+        for name, law in engine.items():
+            decl = LAW_DECLARATIONS.get(name, {})
+            declared_nabla = decl.get("nabla", {})
+            declared_domain = decl.get("domain", {})
+            seen_nabla, seen_domain = set(), set()
+            for node in sp.preorder_traversal(law):
+                if isinstance(node, AppliedUndef) and str(node.func).split("_")[0] == "nabla":
+                    key = str(node)
+                    seen_nabla.add(key)
+                    kinds = declared_nabla.get(key)
+                    kinds = kinds if isinstance(kinds, tuple) else (kinds,)
+                    if kinds == (None,):
+                        problems.append(f"{name}: undeclared {key}")
+                    elif not set(kinds) <= DECLARED_OPERATOR_KINDS:
+                        problems.append(f"{name}: unknown operator kind {kinds} for {key}")
+                if isinstance(node, sp.Integral):
+                    for limit in node.limits:
+                        if len(limit) == 1 and (limit[0] not in node.function.free_symbols
+                                                or str(limit[0]) in declared_domain):
+                            key = str(limit[0])
+                            seen_domain.add(key)
+                            kind = declared_domain.get(key, {}).get("kind")
+                            if kind not in DECLARED_DOMAIN_KINDS:
+                                problems.append(f"{name}: domain {key} kind {kind!r}")
+            problems += [f"{name}: stale nabla key {k}" for k in set(declared_nabla) - seen_nabla]
+            problems += [f"{name}: stale domain key {k}" for k in set(declared_domain) - seen_domain]
+    return problems
 
 
 # =====================================================================

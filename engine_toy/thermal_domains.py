@@ -402,7 +402,7 @@ class ThermalSystem(DtCompatibleEngine):
         channels[power_slot] = exchange_power_w
         present[energy_slot] = 1.0
         present[power_slot] = 1.0
-        tau_present = energy_after > 0.0 and exchange_power_w > 0.0
+        exchange_time_present = energy_after > 0.0 and exchange_power_w > 0.0
         limit = self.preferred_dt()
         metrics = Metrics(
             max_vel=0.0, max_flux=0.0, div_inf=0.0,
@@ -410,10 +410,10 @@ class ThermalSystem(DtCompatibleEngine):
             dt_limit=limit,
             error_channels=channels,
             error_present=present,
-            pub_tau=AbstractTensor.tensor([
-                energy_after / exchange_power_w if tau_present else 0.0]),
-            pub_tau_present=AbstractTensor.tensor([float(tau_present)]),
-            pub_contract=AbstractTensor.tensor([BIND if tau_present else HOLD]),
+            pub_exchange_time=AbstractTensor.tensor([
+                energy_after / exchange_power_w if exchange_time_present else 0.0]),
+            pub_exchange_time_present=AbstractTensor.tensor([float(exchange_time_present)]),
+            pub_contract=AbstractTensor.tensor([BIND if exchange_time_present else HOLD]),
             pub_dt_limit=AbstractTensor.tensor([
                 0.0 if limit is None else float(limit)]),
             pub_dt_limit_present=AbstractTensor.tensor([float(limit is not None)]),

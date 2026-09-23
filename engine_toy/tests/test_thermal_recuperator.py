@@ -110,10 +110,10 @@ def test_thermal_engine_is_one_dt_participant_for_the_whole_batch():
 
     assert ok
     assert state is None
-    assert metrics.pub_tau.shape == (1,)
+    assert metrics.pub_exchange_time.shape == (1,)
     assert metrics.pub_dt_limit.shape == (1,)
     assert metrics.pub_values.shape == metrics.error_channels.shape
-    assert metrics.pub_tau_present.tolist() == [1.0]
+    assert metrics.pub_exchange_time_present.tolist() == [1.0]
     assert metrics.advanced_dt == pytest.approx(dt)
     assert engine.last_conservation_error_j == pytest.approx(0.0, abs=1e-6)
 
@@ -123,7 +123,7 @@ def test_empty_thermal_system_has_zero_participant_extent_until_registered():
     ok, metrics, _state = system.step(0.01)
     assert ok
     assert system.active_count == 0
-    assert metrics.pub_tau.shape == (0,)
+    assert metrics.pub_exchange_time.shape == (0,)
 
     system.register_assembly(build_thermal_assembly(_graph()))
     assert system.active_count == 1

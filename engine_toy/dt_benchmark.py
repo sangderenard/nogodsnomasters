@@ -249,8 +249,8 @@ class CycleEngine(DtCompatibleEngine):
         # The engine consumes the external interval through its own fixed
         # 1 ms accumulator.  That is SUBCYCLE: the interior cadence is
         # published for reasoning, but it does not pin sibling simulations.
-        metrics.pub_tau = AbstractTensor.tensor([float(FIXED_PHYSICS_DT_S)])
-        metrics.pub_tau_present = AbstractTensor.tensor([1.0])
+        metrics.pub_exchange_time = AbstractTensor.tensor([float(FIXED_PHYSICS_DT_S)])
+        metrics.pub_exchange_time_present = AbstractTensor.tensor([1.0])
         metrics.pub_contract = AbstractTensor.tensor([SUBCYCLE])
         metrics.pub_dt_limit = AbstractTensor.tensor([self.causal_ceiling_dt()])
         metrics.pub_dt_limit_present = AbstractTensor.tensor([1.0])

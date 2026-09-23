@@ -43,8 +43,8 @@ def test_cycle_engine_declares_its_internal_fixed_step_as_subcycle():
     assert ok
     assert sim.advanced == pytest.approx(0.01)
     assert metrics.pub_contract.tolist() == [SUBCYCLE]
-    assert metrics.pub_tau_present.tolist() == [1.0]
-    assert metrics.pub_tau.tolist() == pytest.approx([0.001])
+    assert metrics.pub_exchange_time_present.tolist() == [1.0]
+    assert metrics.pub_exchange_time.tolist() == pytest.approx([0.001])
     assert engine.causal_ceiling_dt() == pytest.approx(0.05)
 
 
@@ -61,7 +61,7 @@ def test_machine_system_is_transactional_and_honestly_holds_without_a_tau():
     assert ok
     assert sim.elapsed_s == pytest.approx(0.02)
     assert metrics.pub_contract.tolist() == [HOLD]
-    assert metrics.pub_tau_present.tolist() == [0.0]
+    assert metrics.pub_exchange_time_present.tolist() == [0.0]
     engine.restore(checkpoint)
     assert sim.elapsed_s == 0.0
     assert engine.world_time == 0.0
