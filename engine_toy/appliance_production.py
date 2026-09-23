@@ -32,6 +32,19 @@ TUMBLE_RPM = 50.0
 #: A wet towel on one side: half a kilogramme at the drum wall.
 TOWEL_UNBALANCE_KG_M = 0.5 * 0.24
 
+# One fixed fictional service model.  Faults annotate the actual component
+# nodes/edges below; they are not a parallel appliance state machine.
+DRYER_FAULT_PART = {
+    "broken-belt": "drum.belt",
+    "high-drag-idler": "bottom.idler",
+    "high-drag-drum-roller": "drum.roller_l",
+    "failed-open-door-switch": "door_switch",
+    "misaligned-latch-striker": "door_latch",
+    "disconnected-control-connector": "top.control_connector",
+    "open-thermal-fuse": "bottom.thermal_fuse",
+    "open-heater-element": "bottom.heater",
+}
+
 
 def washer_spec(identity: str = "plant.washer", *, counterweight_kg: float = 20.0,
                 drive: str = "belt") -> cb.CabinetSpec:
@@ -84,8 +97,12 @@ def dryer_spec(identity: str = "plant.dryer") -> cb.CabinetSpec:
                                  "rotor_shape": "centrifugal-impeller", "rotor_mass_kg": 0.6,
                                  "rotor_radius_m": 0.07, "balance_grade_mm_s": 6.3,
                                  "runs_in": ("tumble", "cool")}),
-             cb.PlantItem("heater", "heater-bank", (0.10, 0.03, 0.06), 1.8, at=(-0.5, -0.3),
-                          material="stainless-plate"))
+             cb.PlantItem("heater", "heater-cassette", (0.10, 0.03, 0.06), 1.8, at=(-0.5, -0.3),
+                          material="stainless-plate"),
+             cb.PlantItem("idler", "belt-idler-assembly", (0.035, 0.035, 0.025), 0.45,
+                          at=(0.0, 0.45), material="steel-plate"),
+             cb.PlantItem("thermal_fuse", "one-shot-thermal-fuse", (0.018, 0.008, 0.008),
+                          0.02, at=(-0.5, 0.35), material="unresolved-composite"))
     return cb.CabinetSpec(
         identity=identity, inside_m=DRYER_INSIDE_M, construction="screwed-sheet",
         sheet_thickness_m=0.0008,
@@ -96,6 +113,15 @@ def dryer_spec(identity: str = "plant.dryer") -> cb.CabinetSpec:
                      drive=cb.DrumDrive(kind="belt", motor_kw=0.25, rated_rpm=2800.0,
                                         mass_kg=5.0)),
         bottom=cb.Compartment(0.14, plant=plant, label="plant"),
+        top=cb.Compartment(0.10, plant=(
+            cb.PlantItem("timer", "dryer-timer", (0.035, 0.035, 0.025), 0.35,
+                         at=(-0.55, 0.0), material="unresolved-composite"),
+            cb.PlantItem("controls", "dryer-controls", (0.055, 0.025, 0.04), 0.30,
+                         at=(0.15, 0.0), material="unresolved-composite"),
+            cb.PlantItem("control_connector", "keyed-control-connector",
+                         (0.018, 0.012, 0.012), 0.03, at=(0.65, 0.0),
+                         material="unresolved-polymer"),
+        ), label="controls"),
         feet_per_side=2, label="dryer")
 
 
@@ -112,5 +138,88 @@ def build_washer(identity: str = "plant.washer", **kw):
     return cb.build(washer_spec(identity, **kw))
 
 
-def build_dryer(identity: str = "plant.dryer"):
-    return cb.build(dryer_spec(identity))
+def _dryer_extras(built: cb.Built) -> None:
+    """Put service and airflow components in the cabinet's real graph."""
+    g, ident = built.graph, built.spec.identity
+
+    def fixed_part(suffix, position, kind, half_extent, material, support, **attrs):
+        name = f"{ident}.{suffix}"
+        g.node(name, position, kind, half_extent_m=half_extent, material=material,
+               mass_kg=float(attrs.pop("mass_kg", 0.05)), in_view="plant",
+               solver_condensed_into=support, **attrs)
+        g.edge(f"{name}.mount", name, support, "bolted-flange-mount", radius=0.003,
+               part_role=f"{kind}-mount")
+        return name
+
+    door_switch = fixed_part(
+        "door_switch", (0.25, 0.55, 0.265), "door-interlock-switch",
+        (0.018, 0.025, 0.012), "unresolved-composite", built.wn("right", "dog_0"),
+        contact_states=("open", "closed"), safety_interlock=True)
+    latch = fixed_part(
+        "door_latch", (0.26, 0.55, 0.285), "door-striker-latch",
+        (0.012, 0.020, 0.010), "steel-plate", built.door_nodes["dog_0"],
+        actuates=door_switch)
+    lint = fixed_part(
+        "lint_screen", (0.0, 0.28, 0.22), "removable-lint-screen",
+        (0.18, 0.015, 0.015), "steel-mesh", built.door_nodes["seal"],
+        separate_from_building_duct=True, fouling_mode="filter-cake", blocked_frac=0.0)
+    collar = fixed_part(
+        "outlet_collar", (0.24, 0.10, -0.24), "dryer-outlet-collar",
+        (0.055, 0.055, 0.035), "galvanized-sheet", built.wn("back", "drum_bearing"),
+        port_kind="dryer-exhaust", bore_m=0.1016, circuit_identity=f"{ident}.process-air")
+    # The one actual process-air circuit.  Heater, drum/screen, blower and
+    # collar are ordinary graph endpoints, so the fluid circuit discovers it.
+    flow = {"circuit_identity": f"{ident}.process-air",
+            "medium_rate_state": "air_flow_kg_s", "fluid": "air",
+            "fluid_route_class": "rigid-orthogonal"}
+    heater = built.plant_nodes["heater"]["base"]
+    blower = built.plant_nodes["blower"]["base"]
+    g.edge(f"{ident}.air.heater_to_screen", heater, lint, "air-line",
+           radius=0.045, part_role="internal-air-passage", **flow)
+    g.edge(f"{ident}.air.screen_to_blower", lint, blower, "air-line",
+           radius=0.045, part_role="internal-air-passage", **flow)
+    g.edge(f"{ident}.air.blower_to_outlet", blower, collar, "air-line",
+           radius=0.045, part_role="internal-air-passage", **flow)
+    # Fixed-model interlocks are components, not inferred booleans.
+    fixed_part("belt_tension_interlock", (0.0, 0.12, 0.02), "belt-tension-interlock",
+               (0.014, 0.010, 0.010), "unresolved-composite",
+               built.plant_nodes["idler"]["base"], safety_interlock=True)
+    fixed_part("motor_speed_heater_interlock", (0.12, 0.12, 0.0),
+               "motor-speed-heater-interlock", (0.014, 0.010, 0.010),
+               "unresolved-composite", built.drum_nodes["motor"]["base"],
+               safety_interlock=True)
+    # These parts are deliberately inside the two declared service bays.
+    # A routed component can belong to more than one nested claim (the air
+    # path leaves the bottom plant bay and enters the drum bay), so it names
+    # both rather than being mistaken for an intruder in either.
+    bottom_bay = f"{ident}.bottom_bay"
+    drum_bay = f"{ident}.drum_bay"
+    for edge in g.edges:
+        if edge["identity"].startswith(f"{ident}.air."):
+            edge["clears"] = [bottom_bay, drum_bay]
+        elif edge["identity"] == f"{ident}.belt_tension_interlock.mount":
+            edge["clears"] = [bottom_bay, drum_bay]
+        elif edge["identity"] in {f"{ident}.lint_screen.mount",
+                                  f"{ident}.motor_speed_heater_interlock.mount"}:
+            edge["clears"] = [drum_bay]
+
+
+def _apply_dryer_faults(built: cb.Built, faults) -> None:
+    nodes = {n["identity"]: n for n in built.graph.nodes}
+    edges = {e["identity"]: e for e in built.graph.edges}
+    for fault in tuple(faults):
+        suffix = DRYER_FAULT_PART.get(fault)
+        if suffix is None:
+            raise ValueError(f"unknown fixed-model dryer fault {fault!r}")
+        identity = f"{built.spec.identity}.{suffix}"
+        part = nodes.get(identity) or edges.get(identity)
+        if part is None:
+            raise RuntimeError(f"dryer fault target {identity!r} was not built")
+        part["starting_condition"] = fault
+        part["generated_fault"] = True
+
+
+def build_dryer(identity: str = "plant.dryer", *, faults=()):
+    built = cb.build(dryer_spec(identity), extras=_dryer_extras)
+    _apply_dryer_faults(built, faults)
+    return built

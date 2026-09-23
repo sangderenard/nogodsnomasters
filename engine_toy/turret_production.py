@@ -370,7 +370,10 @@ class ProductionGraph:
             drawing = {n["identity"] for n in self.nodes
                        if n.get("is_drawing_body")}
             for e in self.edges:
-                if e.get("clears") == vol["identity"]:
+                declared_clearance = e.get("clears")
+                if (declared_clearance == vol["identity"]
+                        or (isinstance(declared_clearance, (list, tuple, set))
+                            and vol["identity"] in declared_clearance)):
                     continue
                 # A TIE TO A DRAWING BODY IS NOT A PART. The disc that
                 # gives an annulus its round shape sits at the ring's

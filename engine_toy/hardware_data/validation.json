@@ -1,0 +1,18 @@
+{
+  "date": "2026-09-23",
+  "upstream_repository": "sangderenard/nogodsnomasters",
+  "reviewed_branch": "nogodsnomasters",
+  "reviewed_commit": "d2a66def49fc8f75ff2dcbdea56db0d7b6e5cddf",
+  "python": "3.11.7",
+  "authoring_and_integration_tests_passed": 81,
+  "real_workspace_integration_tests_skipped": 0,
+  "failed": 0,
+  "integration_boundary": "Actual Machine, PartPort, Conductor, electrical graph audit and ElectricalDeviceRegistry; no replacement modules",
+  "syntax_check": "passed for all source modules and the exporter",
+  "construction_export": "passed: 7 cables and 6 connectors",
+  "graph_export": "passed: 19 real Machine graph documents plus construction catalogue",
+  "electrical_registration": "passed for the composed Class L service cord; every exported graph passes the electrical coverage audit",
+  "gameplay_and_renderer_validation": "graph construction verified; no interactive renderer session executed",
+  "github_write_performed": false,
+  "test_command": "python -m pytest engine_toy/tests/test_hardware_construction.py engine_toy/tests/test_electrical_hardware_integration.py -q"
+}

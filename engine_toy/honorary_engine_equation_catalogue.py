@@ -1245,6 +1245,7 @@ def _expand_newton():
     eqs['eq_N12_1'] = sp.Eq(F_s, F_0g + k_g * sp.Max(0, r_g - r_min))  # preloaded governor spring; governor.py
     eqs['eq_N12_2'] = sp.Eq(m_g * sp.Derivative(r_gt, t, 2), m_g * w_g**2 * r_gt - F_s + F_f)  # flyball radial dynamics (centrifugal vs spring, friction opposing motion); governor.py
     eqs['eq_N12_3'] = sp.Eq(w_eq, sp.sqrt((F_0g + k_g * (r_g - r_min)) / (m_g * r_g)))  # governor equilibrium (set) speed at radius r; governor.py
+
     return eqs
 
 
@@ -2633,6 +2634,14 @@ def _expand_faraday_f16_magnetostatics():
     eqs['eq_F16_38'] = chi/mu0*B_mag*sp.Derivative(sp.Function('B')(z), z) >= rho_b*g_acc  # diamagnetic levitation condition, z up: F16_37's vertical component must carry the weight; chi < 0 and B decreasing upward (dB/dz < 0) make the left side positive (Berry-Geim, Eur. J. Phys. 18, 307 (1997))
     eqs['eq_F16_39'] = sp.Eq(nabla_op**2*U_pot, 0)  # Earnshaw: potential of fixed charges/magnets in free space is harmonic -> no stable static minimum (Earnshaw 1842; Jackson 1.13)
     eqs['eq_F16_40'] = nabla_op**2*B_mag**2 >= 0  # Braunbek/Earnshaw loophole: |B|^2 has no interior maximum in free space, so chi<0 bodies can sit at a field minimum (Berry-Geim 1997)
+    # Cartesian specialization of F16_9/F16_10 for a dipole m along +y.
+    # Publishing it avoids manufacturing an angle merely to recover its sine
+    # and cosine, and is algebraically the same Griffiths 5.86 field.
+    dx_m, dy_m = sp.symbols('dx_m dy_m')
+    B_x_dip, B_y_dip = sp.symbols('B_x_dip B_y_dip')
+    r2_m = dx_m**2 + dy_m**2
+    eqs['eq_F16_41'] = sp.Eq(B_x_dip, 3*mu0*m*dx_m*dy_m/(4*sp.pi*r2_m**sp.Rational(5, 2)))  # dipole field x component, m parallel +y (Griffiths 5.86)
+    eqs['eq_F16_42'] = sp.Eq(B_y_dip, mu0*m*(3*dy_m**2-r2_m)/(4*sp.pi*r2_m**sp.Rational(5, 2)))  # dipole field y component, m parallel +y (Griffiths 5.86)
     return eqs
 
 
