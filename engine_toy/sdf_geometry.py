@@ -103,14 +103,46 @@ class MeshSdfKernel:
             distances = np.maximum(distances, -cutout.signed_distance(flat))
         return distances.reshape(original_shape)
 
-    def subtract_capsules(self, capsules: Iterable[CapsuleSdf]) -> None:
+    def subtract_capsules(self, capsules: Iterable[CapsuleSdf]) -> float:
+        """Subtract finite tool/projectile sweeps and return removed volume.
+
+        Only voxel centres inside each capsule's AABB are evaluated.  A full
+        world-sized centre tensor per tooth stroke made narrow tool paths far
+        more expensive than the material they can possibly touch.
+        """
         additions = list(capsules)
         if not additions:
-            return
-        centers = _voxel_centers(self.bounds_min, self.bounds_max, self.occupied.shape)
+            return 0.0
+        removed_cells = 0
+        spacing = self.voxel_size_m
+        shape = np.asarray(self.occupied.shape, dtype=np.int64)
         for capsule in additions:
-            self.occupied &= capsule.signed_distance(centers) > 0.0
+            a = np.asarray(capsule.start, dtype=np.float64)
+            b = np.asarray(capsule.end, dtype=np.float64)
+            radius = max(float(capsule.radius_m), 0.0)
+            lower = np.minimum(a, b) - radius
+            upper = np.maximum(a, b) + radius
+            i0 = np.maximum(0, np.floor(
+                (lower - self.bounds_min) / spacing - 0.5
+            ).astype(np.int64))
+            i1 = np.minimum(shape, np.ceil(
+                (upper - self.bounds_min) / spacing + 0.5
+            ).astype(np.int64))
+            if np.any(i1 <= i0):
+                continue
+            axes = [
+                self.bounds_min[d] + (np.arange(i0[d], i1[d]) + 0.5) * spacing[d]
+                for d in range(3)
+            ]
+            centers = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1)
+            local = self.occupied[
+                i0[0]:i1[0], i0[1]:i1[1], i0[2]:i1[2]
+            ]
+            remove = local & (capsule.signed_distance(centers) <= 0.0)
+            removed_cells += int(np.count_nonzero(remove))
+            local[remove] = False
         self.cutouts.extend(additions)
+        return float(removed_cells * np.prod(spacing))
 
 
 def _voxelize_inside_x(

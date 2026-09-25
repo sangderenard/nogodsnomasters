@@ -10,6 +10,8 @@ __pycache__/
 .pytest_cache/
 build/
 repo-cache/
+__llvm_lawcache__/
+artifacts/llvm_pieces/
 _tmp_test_mesh.obj
 time_trials/generated_ssa_helpers.py
 time_trials/ssa_helper_metadata.json

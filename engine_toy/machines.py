@@ -115,6 +115,80 @@ class MachineLine:
     attributes: dict = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class MachineWorkEdge:
+    """A shaped working edge carried by one real machine part.
+
+    ``a_local`` and ``b_local`` are measured in the owning part's local
+    coordinates.  The edge is not another body and it is not a visual-only
+    line: it is the finite contact locus through which a cutter, scraper or
+    abrasive transfers work into another object.  Tooth form and wave/set are
+    declared here so a cutting engine can use the same edge a renderer draws.
+    """
+    identity: str
+    owner: str
+    a_local: tuple[float, float, float]
+    b_local: tuple[float, float, float]
+    thickness_m: float
+    wave_amplitude_m: float = 0.0
+    wave_length_m: float = 0.0
+    tooth_pattern: str = "plain"
+    attributes: dict = field(default_factory=dict)
+
+    def to_data(self) -> dict:
+        return {
+            "identity": self.identity,
+            "owner": self.owner,
+            "a_local": [float(v) for v in self.a_local],
+            "b_local": [float(v) for v in self.b_local],
+            "thickness_m": float(self.thickness_m),
+            "wave_amplitude_m": float(self.wave_amplitude_m),
+            "wave_length_m": float(self.wave_length_m),
+            "tooth_pattern": self.tooth_pattern,
+            **self.attributes,
+        }
+
+
+@dataclass(frozen=True)
+class MachineAction:
+    """An input gesture a machine exposes to its owning interaction layer."""
+    identity: str
+    gesture: str
+    operation: str
+    destination: str
+    attributes: dict = field(default_factory=dict)
+
+    def to_data(self) -> dict:
+        return {
+            "identity": self.identity,
+            "gesture": self.gesture,
+            "operation": self.operation,
+            "destination": self.destination,
+            **self.attributes,
+        }
+
+
+@dataclass(frozen=True)
+class MachinePose:
+    """A Machine-declared pose relative to an owning hand.
+
+    ``offset_hand_m`` is (screen-right, up, forward). ``rotation_deg_xyz``
+    rotates the machine after its local X axis has been aligned with the
+    hand's forward direction. Pose names are interaction states, not new
+    objects; the same Machine and parts remain authoritative throughout.
+    """
+    name: str
+    offset_hand_m: tuple[float, float, float]
+    rotation_deg_xyz: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def to_data(self) -> dict:
+        return {
+            "name": self.name,
+            "offset_hand_m": [float(v) for v in self.offset_hand_m],
+            "rotation_deg_xyz": [float(v) for v in self.rotation_deg_xyz],
+        }
+
+
 @dataclass
 class Machine:
     """A loadable machine that is not an engine."""
@@ -137,6 +211,12 @@ class Machine:
     weapon: "Weapon | None" = None
     recoiling_mass_kg: float = 0.0
     linkages: list = field(default_factory=list)
+    # Working edges and input actions are ordinary machine declarations.
+    # They carry no private runtime and introduce no second object system;
+    # engines which understand them read these records from the same graph.
+    work_edges: list[MachineWorkEdge] = field(default_factory=list)
+    actions: list[MachineAction] = field(default_factory=list)
+    interaction_poses: list[MachinePose] = field(default_factory=list)
     # A MACHINE MAY BE AUTHORED IN THE PRODUCTION VOCABULARY INSTEAD.
     # When it is, that document IS the structure -- every body, every
     # member, every declared motion group -- and the `parts` list below
@@ -203,6 +283,18 @@ class Machine:
                     "fluid": port.fluid,
                     "joint": port.joint,
                     "joint_axis": port.joint_axis,
+                    **({"compression_sleeve":
+                        port.compression_sleeve.to_data()}
+                       if getattr(port, "compression_sleeve", None) is not None
+                       else {}),
+                    **({"fastener_areas": [area.to_data() for area in
+                                           port.fastener_areas]}
+                       if getattr(port, "fastener_areas", ()) else {}),
+                    **({"glue_surfaces": [surface.to_data() for surface in
+                                          port.glue_surfaces]}
+                       if getattr(port, "glue_surfaces", ()) else {}),
+                    **({"port_role": port.role}
+                       if getattr(port, "role", "") else {}),
                 } for port in p.ports]
             nodes.append(n)
         edges = []
@@ -230,11 +322,31 @@ class Machine:
             return {**base, "identity": f"{self.identity}/machine",
                     "machine": True, "label": self.label,
                     "nodes": list(base["nodes"]) + nodes,
-                    "edges": list(base["edges"]) + edges}
+                    "edges": list(base["edges"]) + edges,
+                    "work_edges": [edge.to_data() for edge in self.work_edges],
+                    "actions": [action.to_data() for action in self.actions],
+                    "interaction_poses": [pose.to_data()
+                                          for pose in self.interaction_poses]}
         return {"schema": "engine-toy-drivetrain-graph-v1",
                 "identity": f"{self.identity}/machine",
                 "machine": True, "label": self.label,
-                "nodes": nodes, "edges": edges}
+                "nodes": nodes, "edges": edges,
+                "work_edges": [edge.to_data() for edge in self.work_edges],
+                "actions": [action.to_data() for action in self.actions],
+                "interaction_poses": [pose.to_data()
+                                      for pose in self.interaction_poses]}
+
+    def interaction_pose(self, name: str) -> MachinePose:
+        """Resolve a declared hand pose, with a usable generic fallback."""
+        pose = next((item for item in self.interaction_poses
+                     if item.name == name), None)
+        if pose is not None:
+            return pose
+        selected = next((item for item in self.interaction_poses
+                         if item.name == "selected"), None)
+        if selected is not None:
+            return selected
+        return MachinePose("selected", (0.0, -0.34, 0.58))
 
     @property
     def moving_parts(self) -> list:

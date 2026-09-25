@@ -16,6 +16,7 @@ A complete *selected model* consists of its equations, constitutive data, domain
 5. Bjerknes — atmosphere, droplets, aerosols, surface phases
 6. Gibbs — thermodynamic potentials, mixtures, phase equilibrium
 7. Bragg — lattices, microstructure, constitutive solids, semiconductors
+7A. Woodshop — orthotropic wood, moisture, joints and material removal
 8. Hamilton — quantum states, electronic structure, molecular geometry
 9. Curie — nuclides, decay, radiation emission and deposition
 10. Einstein — relativistic kinematics and optional spacetime geometry
@@ -235,7 +236,215 @@ $$\rho h w_{tt}+D_b\nabla^4w=q,\qquad D_b=\frac{Eh^3}{12(1-\nu^2)},$$
 
 with its own thin-plate assumptions; this is not the same model as the Timoshenko beam.
 
-**Witnesses:** rigid-body nullspace, patch test, cantilever deflection, shear-flexible limit, known free modes, reciprocity, energy/work balance, reduced/full interface response over the declared band.
+### T8. Section properties and shear correction
+
+Section properties are integrals over the actual cross-section, not interchangeable rigid-body inertias:
+
+$$I_z=\int_A y^2\,dA,\qquad I_z=I_c+Ad_{pa}^2,\qquad r_{gyr}=\sqrt{I_z/A}.$$
+
+The Saint-Venant torsion constant depends on section topology. Representative closures include the rectangular-section approximation, the thin-open-section sum, and the Bredt–Batho closed-cell expression
+
+$$J_{open}=\sum_k\frac{b_kt_k^3}{3},\qquad J_{closed}=\frac{4A_m^2}{\oint ds/t},\qquad q_{shear}=\frac{T}{2A_m}.$$
+
+For transverse shear, $Q_i=\kappa_iGA\gamma_i$. Cowper endpoint values include
+
+$$\kappa_{circle}=\frac{6(1+\nu)}{7+6\nu},\qquad
+\kappa_{thin\ tube}=\frac{2(1+\nu)}{4+3\nu}.$$
+
+An intermediate thick-walled section requires a declared section solution or approximation; the two endpoint formulas do not silently define one.
+
+### T9. Stress, thermal bow and slender-reference deflection
+
+$$\sigma_x=\frac NA+\frac{My}{I},\qquad \kappa_{thermal}=\frac{\alpha\Delta T}{d}.$$
+
+The Euler–Bernoulli uniform-load cantilever result
+
+$$\delta_{EB}=\frac{wL^4}{8EI}$$
+
+is retained only as a slender-limit reference. The shear-flexible result is stated in T19 and must be used when transverse shear is resolved.
+
+### T10. Vibration, gyroscopic splitting and component modes
+
+For a damped scalar mode, $r=\omega/\omega_n$ and
+
+$$X=\frac{F_0/k}{\sqrt{(1-r^2)^2+(2\zeta r)^2}},\qquad
+\tan\phi=\frac{2\zeta r}{1-r^2}.$$
+
+Rotating imbalance gives $F_{unb}=U_{unb}\omega^2$. A rigid disk on angular stiffness $k_\theta$ has forward/backward gyroscopic roots obtained from
+
+$$I_d\omega_f^2-I_p\Omega\omega_f-k_\theta=0,$$
+
+with corresponding backward-sign root. Craig–Bampton reduction retains constraint modes $\Phi_c=-K_{ii}^{-1}K_{ib}$ and selected fixed-interface modes, with both $K$ and $M$ transformed by the same basis.
+
+### T11. Support contact and rocking
+
+For a rigid circular punch on an elastic half-space and a set of supporting feet,
+
+$$k_{punch}=\frac{2aE}{1-\nu^2},\qquad
+k_{rock}=\sum_f k_f d_f^2,\qquad
+\omega_{rock}=\sqrt{k_{rock}/I_{axis}}.$$
+
+These are support closures under their own assumptions, not beam constitutive laws.
+
+### T12. Helical springs and motion ratio
+
+$$k_s=\frac{Gd^4}{8D^3n_a},\qquad k_{wheel}=k_sMR^2.$$
+
+### T13. Complete small-strain three-dimensional kinematics
+
+Let the local generalized coordinate be
+
+$$q=(u,v,w,\varphi,\theta_y,\theta_z)^T.$$
+
+With the reference line through the shear centre and local principal section axes,
+
+$$\epsilon_0=u_x,$$
+
+$$\gamma_y=v_x-\theta_z,\qquad \gamma_z=w_x+\theta_y,$$
+
+$$\kappa_x=\varphi_x,\qquad \kappa_y=(\theta_y)_x,\qquad
+\kappa_z=(\theta_z)_x.$$
+
+These six fields—not a repeated prose instruction—are the complete linear space-beam strain state.
+
+### T14. Complete section-resultant closure
+
+For isotropic material in centroidal principal axes with no extension–bending, shear–torsion or material coupling,
+
+$$N=EA\epsilon_0,$$
+
+$$Q_y=\kappa_{sy}GA\gamma_y,\qquad Q_z=\kappa_{sz}GA\gamma_z,$$
+
+$$M_x=GJ\kappa_x,\qquad M_y=EI_y\kappa_y,\qquad M_z=EI_z\kappa_z,$$
+
+$$G=\frac{E}{2(1+\nu)}.$$
+
+In the general linear case, $r=C_{sec}e$ for
+$r=(N,Q_y,Q_z,M_x,M_y,M_z)^T$ and
+$e=(\epsilon_0,\gamma_y,\gamma_z,\kappa_x,\kappa_y,\kappa_z)^T$, with one declared symmetric passive section matrix. Off-diagonal coupling must not be discarded for an unsymmetric, anisotropic or offset section.
+
+For the uncoupled principal-axis case, normal-stress recovery is
+
+$$\sigma_x(y,z)=\frac NA-\frac{M_yz}{I_y}+\frac{M_zy}{I_z}.$$
+
+Pointwise transverse/torsional shear stress requires the selected section’s shear/warping solution; resultants and correction factors alone do not define that distribution.
+
+### T15. Complete three-dimensional balance laws
+
+With the T13 sign convention,
+
+$$\rho A u_{tt}=N_x+f_x,$$
+
+$$\rho A v_{tt}=(Q_y)_x+f_y,\qquad
+\rho A w_{tt}=(Q_z)_x+f_z,$$
+
+$$\rho I_p\varphi_{tt}=(M_x)_x+m_x,$$
+
+$$\rho I_y(\theta_y)_{tt}=(M_y)_x-Q_z+m_y,$$
+
+$$\rho I_z(\theta_z)_{tt}=(M_z)_x+Q_y+m_z.$$
+
+The transverse rotary-inertia terms are part of Timoshenko dynamics, not optional modal decoration.
+
+### T16. Complete energy functionals
+
+$$\begin{aligned}
+K=\frac12\int\rho\{&A(\dot u^2+\dot v^2+\dot w^2)+I_p\dot\varphi^2\\
+&+I_y\dot\theta_y^2+I_z\dot\theta_z^2\}\,dx,
+\end{aligned}$$
+
+$$\begin{aligned}
+U=\frac12\int[&EA\epsilon_0^2+\kappa_{sy}GA\gamma_y^2
++\kappa_{sz}GA\gamma_z^2+GJ\kappa_x^2\\
+&+EI_y\kappa_y^2+EI_z\kappa_z^2]\,dx.
+\end{aligned}$$
+
+For a general section, replace the diagonal expression by
+$U=\tfrac12\int e^TC_{sec}e\,dx$.
+
+### T17. Weak form, boundary data and initial data
+
+For every admissible virtual field $\delta q$,
+
+$$\int\delta e^Tr\,dx+\int\delta q^TM_{sec}\ddot q\,dx
+=\int\delta q^Tf\,dx+[\delta q^Tt]_{\partial L}.$$
+
+The end traction vector is
+
+$$t=n(N,Q_y,Q_z,M_x,M_y,M_z)^T.$$
+
+At each end, each conjugate pair supplies either its generalized displacement or its resultant; it does not prescribe both independently. A transient problem also requires
+
+$$q(x,0)=q_0(x),\qquad \dot q(x,0)=\dot q_0(x).$$
+
+Perfect welded interfaces enforce compatible generalized displacement and balanced resultants. Pins, sliders, springs, dampers and breakable joints replace selected compatibility/resultant conditions with their declared joint laws.
+
+### T18. Finite-element realization
+
+Using one declared interpolation $q=N_eq_e$ and strain operator $e=B_eq_e$,
+
+$$K_e=\int B_e^TD_eB_e\,dx,$$
+
+$$M_e=\int N_e^TR_eN_e\,dx,$$
+
+$$f_e=\int N_e^Tf\,dx+f_{boundary}.$$
+
+$D_e$ and $R_e$ must carry the same six-component section and inertia order as T14–T16. Equal-order low-order interpolation can shear-lock in the slender limit; reduced/selective integration or a stable mixed/interpolated strain formulation is therefore part of the element definition, not a post-processing option.
+
+### T19. Shear-flexible static and buckling references
+
+Let $K_s=\kappa_sGA$. For a cantilever with an end point load $P$,
+
+$$\delta_{tip}=\frac{PL^3}{3EI}+\frac{PL}{K_s}.$$
+
+For a cantilever under uniform load $w$,
+
+$$\delta_{tip}=\frac{wL^4}{8EI}+\frac{wL^2}{2K_s}.$$
+
+For the corresponding ideal shear-flexible column reference,
+
+$$P_E=\frac{\pi^2EI}{(K_LL)^2},\qquad
+P_T=\frac{P_E}{1+P_E/K_s}.$$
+
+The second relation is the Timoshenko shear correction to the ideal Euler load; neither is a nonlinear postbuckling law.
+
+### T20. Free-wave dispersion witness
+
+For one uniform bending plane with trial fields proportional to
+$e^{i(kx-\omega t)}$, nontrivial amplitude requires
+
+$$\left(K_sk^2-\rho A\omega^2\right)
+\left(EIk^2+K_s-\rho I\omega^2\right)-(K_sk)^2=0.$$
+
+This determinant retains transverse inertia, rotary inertia and shear flexibility and produces both Timoshenko branches. The Euler–Bernoulli limit is a limiting model, not a replacement equation inside the resolved shear-flexible regime.
+
+### T21. Geometrically exact shear-deformable extension
+
+T13–T20 are the complete linear straight space-beam theory. They are not objective under arbitrarily large world-frame rotations. For a member that can undergo large rigid motion while its material strain remains small, let its centreline be $r(s,t)$ and its section orientation be $R(s,t)\in SO(3)$:
+
+$$R^TR=I,\qquad \det R=1.$$
+
+The objective body-frame shear/extension, curvature and angular velocity are
+
+$$\Gamma=R^Tr_s-e_1,\qquad
+K=\operatorname{axial}(R^TR_s),\qquad
+\Omega=\operatorname{axial}(R^TR_t).$$
+
+With reference strains $\Gamma_0,K_0$ and section laws
+
+$$n=C_\Gamma(\Gamma-\Gamma_0),\qquad
+m=D_K(K-K_0),$$
+
+the spatial balances are
+
+$$\rho A r_{tt}=(Rn)_s+f,$$
+
+$$\frac{\partial}{\partial t}(RJ\Omega)
+=(Rm)_s+r_s\times(Rn)+\ell.$$
+
+This is the geometrically exact shear-deformable (Simo–Reissner/Cosserat) statement. Linearizing it about a straight, unrotated reference recovers T13–T15. A corotational implementation is admissible only when it preserves that objectivity and the same force/moment work pairs.
+
+**Witnesses:** rigid-body nullspace; exact invariance under superposed rigid translation and rotation; axial, shear, bending and torsion patch tests; both bending planes; cantilever point-load and uniform-load deflection including the shear term; slender Euler–Bernoulli limit; free-wave dispersion branches; known free modes with rotary inertia; reciprocity; energy/work balance; end-traction signs; initial-condition reproduction; locking-free mesh convergence; and reduced/full interface response over the declared band.
 
 ---
 
@@ -1424,6 +1633,104 @@ Use separately named absolute/relative tolerances with physical units, and retai
 A proposed optimization must distinguish exact real-arithmetic identities, floating-point behavior, numerical convergence and physical validation. Passing finite test vectors does not prove equivalence for every state. A changed closure may preserve conservation while predicting the wrong physics; independent measurements/solutions remain necessary.
 
 **Witnesses:** intentionally mis-signed heat transfer is detected; double-counted latent energy is detected; weighted populations close; failed speculative steps leave no ledger entries; replacement kernels preserve the declared observables and error bounds.
+
+---
+
+## 7A. Woodshop — orthotropic wood, joints and material removal
+
+This application family selects Newton contact/work, Timoshenko member and
+blade deformation, Bragg fracture, and the following wood-specific
+constitutive closures. It is not a substitute object system: stock, tools,
+fasteners and clamps remain ordinary Machines and graph members.
+
+### WO1. Local longitudinal/radial/tangential elasticity
+
+Solid wood carries material axes $L,R,T$. Its engineering compliance is
+defined by $E_L,E_R,E_T$, $G_{LR},G_{LT},G_{RT}$ and reciprocal Poisson
+ratios
+
+$$\frac{\nu_{ij}}{E_i}=\frac{\nu_{ji}}{E_j}.$$
+
+For example,
+
+$$\epsilon_L=\frac{\sigma_L}{E_L}-\frac{\nu_{RL}\sigma_R}{E_R}
+-\frac{\nu_{TL}\sigma_T}{E_T},\qquad
+\gamma_{LR}=\frac{\tau_{LR}}{G_{LR}},$$
+
+with the corresponding $R$ and $T$ equations. The material frame rotates with
+the part's grain declaration. A generic `pine` label is insufficient data.
+
+### WO2. Moisture and hygroscopic strain
+
+$$MC=\frac{m_{wet}-m_{ovendry}}{m_{ovendry}},$$
+
+$$\epsilon_i^h=\beta_i[\min(MC,MC_{fsp})-\min(MC_{ref},MC_{fsp})],
+\qquad i\in\{L,R,T\}.$$
+
+Water mass remains part of the world inventory. The linear strain expression
+does not extrapolate dimensional change above the selected fibre-saturation
+closure.
+
+### WO3. Wood fasteners and bondlines
+
+A selected empirical withdrawal dataset supplies $C_w$ in
+
+$$P_{withdraw}=C_wG^2dL_{embed}.$$
+
+Installed lateral response retains connection slip,
+
+$$P_{lateral}=k_{slip}s,$$
+
+and glue uses damaged normal and shear traction laws,
+
+$$t_n=(1-d)K_n\delta_n,\qquad t_s=(1-d)K_s\delta_s.$$
+
+Clamping is an external contact/load state. It is never folded into a stronger
+material constant.
+
+### WO4. Saw edge, work and kerf advance
+
+For active cutting width $b$, uncut chip thickness $h$, chip coefficient
+$K_{tc}$ and edge coefficient $K_{te}$,
+
+$$F_c=(K_{tc}h+K_{te})b.$$
+
+For hand-saw stroke length $L_s$ and frequency $f_s$, the mean absolute edge
+speed is $v_e=2L_sf_s$. Cutting power, removed volume rate and kerf advance
+are
+
+$$P_c=F_cv_e,\qquad
+\dot V_c=\frac{\eta_cP_c}{u_c},\qquad
+v_{kerf}=\frac{\dot V_c}{w_{kerf}b_{work}}.$$
+
+$\eta_c$ accounts for measured work delivery, including support motion and
+rebound; it does not alter the wood's strength. Removed volume becomes chips
+or dust, and the generated kerf is retained geometry/state.
+
+**Initial Python witness:** `engine_toy/woodshop.py` evaluates the WO4 SymPy
+pieces inside a `DtCompatibleEngine`. A nominal dressed 2x4x8 and a two-body
+hand saw are ordinary `Machine` graphs. The cutter declares endpoints,
+thickness, wave/set and tooth pattern; held click owns only the duration of
+applied work.
+
+### WO5. Temporary screw-clamp load path
+
+A clamp is a machine, not an ideal fixed constraint. For handle torque $T$,
+thread/nut factor $K$ and spindle diameter $d$, its available jaw force is
+
+$$F_{clamp}=\frac{T}{Kd}.$$
+
+The pad pressure, in-plane friction capacity, and elastic frame opening are
+
+$$p_{pad}=\frac{F_{clamp}}{A_{pad}},\qquad
+F_{slip}=\mu_{pad}F_{clamp},\qquad
+\delta_{frame}=\frac{F_{clamp}}{k_{frame}}.$$
+
+The deployed force is additionally limited by the clamp's rating and the
+wood's allowed perpendicular-to-grain pad pressure. A deployment creates two
+temporary jaw-contact edges, member A to clamp and clamp to member B. It does
+not create a direct edge between the members, fuse their material, or change
+either object's identity.
 
 ---
 
