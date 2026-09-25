@@ -50,6 +50,95 @@ def _unit(v):
     return a / n if n > 1e-12 else np.array([0.0, 1.0, 0.0])
 
 
+@dataclass(frozen=True)
+class FastenerArea:
+    """A geometric region that a later fastener operation may target.
+
+    This does not prescribe a screw, nail, pin or staple.  The selected
+    fastener still has to satisfy its own edge-distance, embedment and
+    material laws against this finite target region.
+    """
+
+    identity: str
+    center_offset_m: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    half_extent_m: tuple[float, float, float]
+    substrate_thickness_m: float
+    min_edge_distance_m: float
+
+    def to_data(self) -> dict:
+        return {
+            "identity": self.identity,
+            "center_offset_m": list(map(float, self.center_offset_m)),
+            "normal": list(map(float, _unit(self.normal))),
+            "half_extent_m": list(map(float, self.half_extent_m)),
+            "substrate_thickness_m": float(self.substrate_thickness_m),
+            "min_edge_distance_m": float(self.min_edge_distance_m),
+        }
+
+
+@dataclass(frozen=True)
+class GlueSurface:
+    """One finite, material-declared surface on which a bondline may form."""
+
+    identity: str
+    center_offset_m: tuple[float, float, float]
+    normal: tuple[float, float, float]
+    half_extent_m: tuple[float, float, float]
+    substrate_material: str
+    surface_condition: str = "as-moulded"
+
+    @property
+    def area_m2(self) -> float:
+        spans = sorted(2.0 * abs(float(value)) for value in self.half_extent_m)
+        return spans[-1] * spans[-2]
+
+    def to_data(self) -> dict:
+        return {
+            "identity": self.identity,
+            "center_offset_m": list(map(float, self.center_offset_m)),
+            "normal": list(map(float, _unit(self.normal))),
+            "half_extent_m": list(map(float, self.half_extent_m)),
+            "substrate_material": self.substrate_material,
+            "surface_condition": self.surface_condition,
+            "area_m2": self.area_m2,
+        }
+
+
+@dataclass(frozen=True)
+class CompressionSleeveSpec:
+    """Profile acceptance and retention supplied by one sleeve-shaped port."""
+
+    accepted_profile_m: tuple[float, float]
+    profile_tolerance_m: float
+    capture_distance_m: float
+    max_penetration_m: float
+    compression_force_n: float
+    friction_coefficient: float
+    up_reference: tuple[float, float, float]
+    lateral_capacity_n: float
+    moment_capacity_nm: float
+
+    def accepts(self, profile_m) -> bool:
+        offered = sorted(map(float, profile_m))
+        accepted = sorted(map(float, self.accepted_profile_m))
+        return all(abs(a - b) <= self.profile_tolerance_m
+                   for a, b in zip(offered, accepted))
+
+    def to_data(self) -> dict:
+        return {
+            "accepted_profile_m": list(map(float, self.accepted_profile_m)),
+            "profile_tolerance_m": float(self.profile_tolerance_m),
+            "capture_distance_m": float(self.capture_distance_m),
+            "max_penetration_m": float(self.max_penetration_m),
+            "compression_force_n": float(self.compression_force_n),
+            "friction_coefficient": float(self.friction_coefficient),
+            "up_reference": list(map(float, _unit(self.up_reference))),
+            "lateral_capacity_n": float(self.lateral_capacity_n),
+            "moment_capacity_nm": float(self.moment_capacity_nm),
+        }
+
+
 @dataclass
 class PartPort:
     identity: str
@@ -84,6 +173,10 @@ class PartPort:
     # the hardware is.
     joint: str = "bolted-flange"          # a key in joints.JOINT_TYPES
     joint_axis: tuple | None = None       # world axis of the freed rotation, if any
+    compression_sleeve: CompressionSleeveSpec | None = None
+    fastener_areas: tuple[FastenerArea, ...] = ()
+    glue_surfaces: tuple[GlueSurface, ...] = ()
+    role: str = ""
 
 
 # kinds that mate with each other across a joint face
@@ -283,6 +376,7 @@ JOINT_CONSTRAINT = {
     "spherical-seat": "spherical-thrust-seat",
     "universal": "universal-joint",
     "bushed": "bushing-mount",
+    "compression-sleeve-fit": "compression-sleeve-fit",
 }
 
 
@@ -308,6 +402,15 @@ def emit_ports_graph(ports: list[PartPort], result: MateResult, node, edge,
              mating=p.mating, connected=p.connected_to is not None, part=p.part,
              joint_type=p.joint, closure=p.closure, plugged=bool(p.closure),
              bung=bool(p.closure),
+             **({"compression_sleeve": p.compression_sleeve.to_data()}
+                if p.compression_sleeve is not None else {}),
+             **({"fastener_areas": [area.to_data()
+                                     for area in p.fastener_areas]}
+                if p.fastener_areas else {}),
+             **({"glue_surfaces": [surface.to_data()
+                                    for surface in p.glue_surfaces]}
+                if p.glue_surfaces else {}),
+             **({"port_role": p.role} if p.role else {}),
              **({"joint_axis": [float(v) for v in _unit(p.joint_axis)]}
                 if p.joint_axis is not None else {}))
     for a, b in result.seals:

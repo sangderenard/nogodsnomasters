@@ -54,7 +54,8 @@ eq_N4_5 = sp.Eq(sp.Symbol('F_d'), -0.5*rho*C_D*A_p*sp.Abs(v_i(t) - u)*(v_i(t) - 
 
 # N5
 g_n, lambda_n, lambda_t, mu_f, v_t = sp.symbols('g_n lambda_n lambda_t mu_f v_t')
-e_r, vn_m, vn_p, J_n, ma, mb, Ia, Ib, ra, rb = sp.symbols('e_r v_n^- v_n^+ J_n m_a m_b I_a I_b r_a r_b')
+e_r, vn_m, vn_p, J_n, ma, mb, Ia, Ib, ra, rb = sp.symbols(
+    'e_r v_n_minus v_n_plus J_n m_a m_b I_a I_b r_a r_b')
 E_s, R_s, delta, nu_a, nu_b, Ea, Eb, Ra, Rb = sp.symbols('E^* R^* delta nu_a nu_b E_a E_b R_a R_b')
 eq_N5_1 = g_n >= 0
 eq_N5_2 = lambda_n >= 0
@@ -102,22 +103,23 @@ eq_T3_2 = sp.Eq(rho_t(x)*Ip_t(x)*sp.Derivative(varphi_t(x,t), t, 2), sp.Derivati
 # T4
 U_b, N_t, B_s, C_s, K_e, M_e, q_vec, C_mat, f_int, f_ext = sp.symbols('U_b N B_s C_s K_e M_e q_vec C f_int f_ext')
 eq_T4_1 = sp.Eq(U_b, 0.5 * sp.Integral(E_t(x)*A_t(x)*sp.Derivative(u_t(x,t),x)**2 + E_t(x)*I_t(x)*sp.Derivative(theta_t(x,t),x)**2 + kappa_s(x)*G_t(x)*A_t(x)*(sp.Derivative(w(x,t),x)-theta_t(x,t))**2 + G_t(x)*J_t(x)*sp.Derivative(varphi_t(x,t),x)**2, x))
-eq_T4_2 = sp.Eq(K_e, sp.Integral(B_s * C_s * B_s, x)) # Transpose implied
-eq_T4_3 = sp.Eq(M_e, sp.Integral(N_t * rho_t(x) * N_t, x))
+eq_T4_2 = sp.Eq(K_e, sp.Integral(transpose(B_s) * C_s * B_s, x))
+eq_T4_3 = sp.Eq(M_e, sp.Integral(transpose(N_t) * rho_t(x) * N_t, x))
 eq_T4_4 = sp.Eq(sp.Symbol('M') * sp.Derivative(q_vec, t, 2) + C_mat * sp.Derivative(q_vec, t) + f_int, f_ext)
 
 # T5
 K_mat, phi_k, omega_k, a_k, zeta_k, alpha_M, beta_K = sp.symbols('K phi_k omega_k a_k zeta_k alpha_M beta_K')
 eq_T5_1 = sp.Eq(K_mat * phi_k, omega_k**2 * sp.Symbol('M') * phi_k)
 eq_T5_2 = sp.Eq(transpose(sp.Symbol('phi_i')) * sp.Symbol('M') * sp.Symbol('phi_j'), sp.KroneckerDelta(sp.Symbol('i'), sp.Symbol('j'))) # mass-orthonormal modes phi_i^T M phi_j = delta_ij (symbolic indices so delta does not evaluate to 1)
-eq_T5_3 = sp.Eq(sp.Derivative(a_k, t, 2) + 2*zeta_k*omega_k*sp.Derivative(a_k, t) + omega_k**2 * a_k, phi_k * f_ext)
+eq_T5_3 = sp.Eq(sp.Derivative(a_k, t, 2) + 2*zeta_k*omega_k*sp.Derivative(a_k, t) + omega_k**2 * a_k, transpose(phi_k) * f_ext)
 eq_T5_4 = sp.Eq(C_mat, alpha_M * sp.Symbol('M') + beta_K * K_mat)
 
 # T6
 K_tan, K_mat_part, K_geo, P_cr, K_L, L_len, eps_th, alpha_T, T_temp, T_0, sig_t, eps_t, eps_p = sp.symbols('K_tangent K_material K_geometric P_cr K_L L epsilon^th alpha_T T T_0 sigma epsilon epsilon^p')
 eq_T6_1 = sp.Eq(K_tan, K_mat_part + K_geo)
 eq_T6_2 = sp.Eq(P_cr, sp.pi**2 * E_t(x) * I_t(x) / (K_L * L_len)**2)
-eq_T6_3 = sp.Eq(eps_th, sp.Integral(alpha_T, (T_temp, T_0, T_temp)))
+T_prime = sp.Symbol("T_prime", real=True)
+eq_T6_3 = sp.Eq(eps_th, sp.Integral(sp.Function("alpha_T")(T_prime), (T_prime, T_0, T_temp)))
 eq_T6_4 = sp.Eq(sig_t, E_t(x) * (eps_t - eps_th - eps_p))
 
 # T7
@@ -1318,6 +1320,180 @@ def _expand_timoshenko():
     k_s, G, d_wire, D_coil, n_a, k_wh, MR = sp.symbols('k_{spring} G d_{wire} D_{coil} n_a k_{wheel} MR')
     eqs['eq_T12_1'] = sp.Eq(k_s, G * d_wire**4 / (8 * D_coil**3 * n_a))  # helical compression spring rate; turing suspension
     eqs['eq_T12_2'] = sp.Eq(k_wh, k_s * MR**2)  # wheel rate through motion ratio; turing suspension
+
+    # T13 complete small-strain 3-D Timoshenko kinematics.  T1 is the
+    # one-plane teaching form; a space-frame law cannot leave the second
+    # bending plane as prose because that omits two strains from the state
+    # axis the rule graph must carry.
+    u_3, v_3, w_3, ph_3, thy_3, thz_3 = sp.symbols(
+        'u_3 v_3 w_3 phi_3 theta_y theta_z', cls=sp.Function)
+    eps0_3, gy_3, gz_3, kx_3, ky_3, kz_3 = sp.symbols(
+        'epsilon_0 gamma_y gamma_z kappa_x kappa_y kappa_z', cls=sp.Function)
+    eqs['eq_T13_1'] = sp.Eq(eps0_3(x, t), sp.Derivative(u_3(x, t), x))
+    eqs['eq_T13_2'] = sp.Eq(gy_3(x, t), sp.Derivative(v_3(x, t), x) - thz_3(x, t))
+    eqs['eq_T13_3'] = sp.Eq(gz_3(x, t), sp.Derivative(w_3(x, t), x) + thy_3(x, t))
+    eqs['eq_T13_4'] = sp.Eq(kx_3(x, t), sp.Derivative(ph_3(x, t), x))
+    eqs['eq_T13_5'] = sp.Eq(ky_3(x, t), sp.Derivative(thy_3(x, t), x))
+    eqs['eq_T13_6'] = sp.Eq(kz_3(x, t), sp.Derivative(thz_3(x, t), x))
+
+    # T14 section resultants in centroidal principal axes with the reference
+    # line through the shear centre.  A general section replaces this
+    # diagonal closure by one symmetric positive section matrix; it does not
+    # change the six kinematic or balance equations.
+    N_3, Qy_3, Qz_3, Mt_3, My_3, Mz_3 = sp.symbols(
+        'N_3 Q_y Q_z M_x M_y M_z', cls=sp.Function)
+    E_3, G_3, A_3, J_3, Iy_3, Iz_3 = sp.symbols(
+        'E_3 G_3 A_3 J_3 I_y I_z', cls=sp.Function)
+    ksy_3, ksz_3, nu_3 = sp.symbols('kappa_{sy} kappa_{sz} nu_3', cls=sp.Function)
+    eqs['eq_T14_1'] = sp.Eq(N_3(x, t), E_3(x) * A_3(x) * eps0_3(x, t))
+    eqs['eq_T14_2'] = sp.Eq(Qy_3(x, t), ksy_3(x) * G_3(x) * A_3(x) * gy_3(x, t))
+    eqs['eq_T14_3'] = sp.Eq(Qz_3(x, t), ksz_3(x) * G_3(x) * A_3(x) * gz_3(x, t))
+    eqs['eq_T14_4'] = sp.Eq(Mt_3(x, t), G_3(x) * J_3(x) * kx_3(x, t))
+    eqs['eq_T14_5'] = sp.Eq(My_3(x, t), E_3(x) * Iy_3(x) * ky_3(x, t))
+    eqs['eq_T14_6'] = sp.Eq(Mz_3(x, t), E_3(x) * Iz_3(x) * kz_3(x, t))
+    eqs['eq_T14_7'] = sp.Eq(G_3(x), E_3(x) / (2 * (1 + nu_3(x))))
+    sigx_3 = sp.Function('sigma_x3')
+    eqs['eq_T14_8'] = sp.Eq(
+        sigx_3(x, y, z, t),
+        N_3(x, t) / A_3(x)
+        - My_3(x, t) * z / Iy_3(x)
+        + Mz_3(x, t) * y / Iz_3(x))
+
+    # T15 all six local balance laws.  The signs follow T13's
+    # gamma_y=v_x-theta_z and gamma_z=w_x+theta_y conventions and therefore
+    # reduce exactly to T2 in either bending plane after relabelling.
+    rho_3, Ip_3 = sp.symbols('rho_3 I_p3', cls=sp.Function)
+    fx_3, fy_3, fz_3, mx_3, my_3, mz_3 = sp.symbols(
+        'f_x3 f_y3 f_z3 m_x3 m_y3 m_z3', cls=sp.Function)
+    eqs['eq_T15_1'] = sp.Eq(rho_3(x) * A_3(x) * sp.Derivative(u_3(x, t), t, 2),
+                             sp.Derivative(N_3(x, t), x) + fx_3(x, t))
+    eqs['eq_T15_2'] = sp.Eq(rho_3(x) * A_3(x) * sp.Derivative(v_3(x, t), t, 2),
+                             sp.Derivative(Qy_3(x, t), x) + fy_3(x, t))
+    eqs['eq_T15_3'] = sp.Eq(rho_3(x) * A_3(x) * sp.Derivative(w_3(x, t), t, 2),
+                             sp.Derivative(Qz_3(x, t), x) + fz_3(x, t))
+    eqs['eq_T15_4'] = sp.Eq(rho_3(x) * Ip_3(x) * sp.Derivative(ph_3(x, t), t, 2),
+                             sp.Derivative(Mt_3(x, t), x) + mx_3(x, t))
+    eqs['eq_T15_5'] = sp.Eq(rho_3(x) * Iy_3(x) * sp.Derivative(thy_3(x, t), t, 2),
+                             sp.Derivative(My_3(x, t), x) - Qz_3(x, t) + my_3(x, t))
+    eqs['eq_T15_6'] = sp.Eq(rho_3(x) * Iz_3(x) * sp.Derivative(thz_3(x, t), t, 2),
+                             sp.Derivative(Mz_3(x, t), x) + Qy_3(x, t) + mz_3(x, t))
+
+    # T16 complete stored and kinetic energy.  T4_1 contains one bending
+    # plane and no inertia; these are the six-DOF functionals from which the
+    # field equations, weak form, consistent mass and energy witness follow.
+    K_3, U_3 = sp.symbols('K_{beam3} U_{beam3}')
+    eqs['eq_T16_1'] = sp.Eq(K_3, sp.Rational(1, 2) * sp.Integral(
+        rho_3(x) * (A_3(x) * (
+            sp.Derivative(u_3(x, t), t)**2
+            + sp.Derivative(v_3(x, t), t)**2
+            + sp.Derivative(w_3(x, t), t)**2)
+        + Ip_3(x) * sp.Derivative(ph_3(x, t), t)**2
+        + Iy_3(x) * sp.Derivative(thy_3(x, t), t)**2
+        + Iz_3(x) * sp.Derivative(thz_3(x, t), t)**2), x))
+    eqs['eq_T16_2'] = sp.Eq(U_3, sp.Rational(1, 2) * sp.Integral(
+        E_3(x) * A_3(x) * eps0_3(x, t)**2
+        + ksy_3(x) * G_3(x) * A_3(x) * gy_3(x, t)**2
+        + ksz_3(x) * G_3(x) * A_3(x) * gz_3(x, t)**2
+        + G_3(x) * J_3(x) * kx_3(x, t)**2
+        + E_3(x) * Iy_3(x) * ky_3(x, t)**2
+        + E_3(x) * Iz_3(x) * kz_3(x, t)**2, x))
+
+    # T17 virtual work, boundary data and initial data.  q_6 and r_6 are
+    # ordered (u,v,w,phi,theta_y,theta_z) and
+    # (N,Q_y,Q_z,M_x,M_y,M_z); this keeps the catalogue symbolic without
+    # pretending six scalar fields are one scalar.
+    dq_6, de_6, r_6, f_6, q_6, q0_6, qd0_6 = sp.symbols(
+        'delta_q_6 delta_epsilon_6 r_6 f_6 q_6 q6_0 qdot6_0', cls=sp.Function)
+    Csec_6, Msec_6, n_end = sp.symbols('C_sec6 M_sec6 n_end')
+    dW_int, dW_in, dW_ext, t_end = sp.symbols(
+        'delta_W_{int} delta_W_{inertia} delta_W_{ext} t_{end}')
+    eqs['eq_T17_1'] = sp.Eq(dW_int, sp.Integral(
+        transpose(de_6(x, t)) * r_6(x, t), x))
+    eqs['eq_T17_2'] = sp.Eq(dW_in, sp.Integral(
+        transpose(dq_6(x, t)) * Msec_6 * sp.Derivative(q_6(x, t), t, 2), x))
+    eqs['eq_T17_3'] = sp.Eq(dW_ext, sp.Integral(
+        transpose(dq_6(x, t)) * f_6(x, t), x)
+        + transpose(dq_6(x, t)) * t_end)
+    eqs['eq_T17_4'] = sp.Eq(dW_int + dW_in, dW_ext)
+    eqs['eq_T17_5'] = sp.Eq(t_end, n_end * r_6(x, t))
+    eqs['eq_T17_6'] = sp.Eq(q_6(x, 0), q0_6(x))
+    eqs['eq_T17_7'] = sp.Eq(sp.Subs(sp.Derivative(q_6(x, t), t), t, 0), qd0_6(x))
+    eqs['eq_T17_8'] = sp.Eq(r_6(x, t), Csec_6 * de_6(x, t))
+
+    # T18 the actual finite-element operators.  T4_2/T4_3 said the transpose
+    # was implied and left density/area/inertia ambiguous.  A full equation
+    # set must state the same interpolation, strain, section and inertia
+    # operators used to construct both matrices.
+    N6_e, B6_e, D6_e, R6_e, q6_e = sp.symbols('N_{6e} B_{6e} D_{6e} R_{6e} q_{6e}')
+    Ke_6, Me_6, fe_6 = sp.symbols('K_{6e} M_{6e} f_{6e}')
+    eqs['eq_T18_1'] = sp.Eq(q_6(x, t), N6_e * q6_e)
+    eqs['eq_T18_2'] = sp.Eq(de_6(x, t), B6_e * q6_e)
+    eqs['eq_T18_3'] = sp.Eq(Ke_6, sp.Integral(transpose(B6_e) * D6_e * B6_e, x))
+    eqs['eq_T18_4'] = sp.Eq(Me_6, sp.Integral(transpose(N6_e) * R6_e * N6_e, x))
+    eqs['eq_T18_5'] = sp.Eq(fe_6, sp.Integral(transpose(N6_e) * f_6(x, t), x))
+
+    # T19 shear-flexible reference solutions and stability.  The former
+    # T9_2 is explicitly Euler-Bernoulli; retaining it is useful as the
+    # slender limit, but it cannot be the only deflection in this family.
+    P_tip, d_point, d_uniform, PE, PT, kGA = sp.symbols(
+        'P_{tip} delta_{point} delta_{uniform} P_E P_T kGA')
+    eqs['eq_T19_1'] = sp.Eq(kGA, kappa_s(x) * G_t(x) * A_t(x))
+    eqs['eq_T19_2'] = sp.Eq(d_point,
+                              P_tip * L**3 / (3 * E * I) + P_tip * L / kGA)
+    eqs['eq_T19_3'] = sp.Eq(d_uniform,
+                              w_l * L**4 / (8 * E * I) + w_l * L**2 / (2 * kGA))
+    eqs['eq_T19_4'] = sp.Eq(PE, sp.pi**2 * E * I / (K_L * L)**2)
+    eqs['eq_T19_5'] = sp.Eq(PT, PE / (1 + PE / kGA))
+
+    # T20 one-plane free-wave determinant.  It carries both transverse
+    # inertia and rotary inertia and therefore exposes both Timoshenko
+    # branches; an Euler-Bernoulli frequency substituted here will not pass.
+    k_wave, om_wave, rhoA_w, rhoI_w, EI_w, kGA_w = sp.symbols(
+        'k_{wave} omega_{wave} rhoA rhoI EI kGA_w')
+    eqs['eq_T20_1'] = sp.Eq(
+        (kGA_w * k_wave**2 - rhoA_w * om_wave**2)
+        * (EI_w * k_wave**2 + kGA_w - rhoI_w * om_wave**2)
+        - (kGA_w * k_wave)**2, 0)
+
+    # T21 geometrically exact shear-deformable beam.  T13-T20 are complete
+    # for a straight, small-strain/small-rotation space beam.  A machine part
+    # may undergo large rigid rotation while remaining elastically small, so
+    # that regime needs the objective Simo-Reissner/Cosserat statement rather
+    # than silently applying the linear angles in the world frame.
+    r_g, R_g = sp.symbols('r_g R_g', cls=sp.Function)
+    Gamma_g, Kappa_g, Omega_g = sp.symbols(
+        'Gamma_g Kappa_g Omega_g', cls=sp.Function)
+    n_g, m_g, f_g, ell_g = sp.symbols(
+        'n_g m_g f_g ell_g', cls=sp.Function)
+    Gamma0_g, Kappa0_g = sp.symbols('Gamma0_g Kappa0_g', cls=sp.Function)
+    Cg, Dg, Jg, rhoA_g, e1_g = sp.symbols(
+        'C_Gamma D_Kappa J_section rhoA_g e_1')
+    axial = sp.Function('axial')
+    eqs['eq_T21_1'] = sp.Eq(
+        transpose(R_g(x, t)) * R_g(x, t), sp.Identity(3), evaluate=False)
+    eqs['eq_T21_2'] = sp.Eq(det(R_g(x, t)), 1)
+    eqs['eq_T21_3'] = sp.Eq(
+        Gamma_g(x, t),
+        transpose(R_g(x, t)) * sp.Derivative(r_g(x, t), x) - e1_g)
+    eqs['eq_T21_4'] = sp.Eq(
+        Kappa_g(x, t),
+        axial(transpose(R_g(x, t)) * sp.Derivative(R_g(x, t), x)))
+    eqs['eq_T21_5'] = sp.Eq(
+        Omega_g(x, t),
+        axial(transpose(R_g(x, t)) * sp.Derivative(R_g(x, t), t)))
+    eqs['eq_T21_6'] = sp.Eq(
+        n_g(x, t), Cg * (Gamma_g(x, t) - Gamma0_g(x)))
+    eqs['eq_T21_7'] = sp.Eq(
+        m_g(x, t), Dg * (Kappa_g(x, t) - Kappa0_g(x)))
+    eqs['eq_T21_8'] = sp.Eq(
+        rhoA_g * sp.Derivative(r_g(x, t), t, 2),
+        sp.Derivative(R_g(x, t) * n_g(x, t), x) + f_g(x, t))
+    eqs['eq_T21_9'] = sp.Eq(
+        sp.Derivative(R_g(x, t) * Jg * Omega_g(x, t), t),
+        sp.Derivative(R_g(x, t) * m_g(x, t), x)
+        + cross(sp.Derivative(r_g(x, t), x),
+                R_g(x, t) * n_g(x, t))
+        + ell_g(x, t))
     return eqs
 
 
@@ -3468,6 +3644,100 @@ globals().update(_expand_langmuir_solid_state())
 
 
 # =====================================================================
+# 7c. WOODSHOP -- orthotropic wood, joints and material removal
+# =====================================================================
+def _expand_woodshop():
+    """Minimum constitutive closure for wood stock and hand fabrication.
+
+    Coefficients remain material/tool data.  These equations say how those
+    data participate; they do not turn an unspecified "pine" label into a
+    universal material or hide clamping/support inside a tool animation.
+    """
+    eqs = {}
+
+    # WO1: three-axis clear-wood orthotropy in local L/R/T material axes.
+    eps_L, eps_R, eps_T = sp.symbols('epsilon_L epsilon_R epsilon_T')
+    sig_L, sig_R, sig_T = sp.symbols('sigma_L sigma_R sigma_T')
+    E_L, E_R, E_T = sp.symbols('E_L E_R E_T', positive=True)
+    nu_LR, nu_RL, nu_LT, nu_TL, nu_RT, nu_TR = sp.symbols(
+        'nu_LR nu_RL nu_LT nu_TL nu_RT nu_TR')
+    gamma_LR, gamma_LT, gamma_RT = sp.symbols('gamma_LR gamma_LT gamma_RT')
+    tau_LR, tau_LT, tau_RT = sp.symbols('tau_LR tau_LT tau_RT')
+    G_LR, G_LT, G_RT = sp.symbols('G_LR G_LT G_RT', positive=True)
+    eqs['eq_WO1_1'] = sp.Eq(nu_LR / E_L, nu_RL / E_R)
+    eqs['eq_WO1_2'] = sp.Eq(nu_LT / E_L, nu_TL / E_T)
+    eqs['eq_WO1_3'] = sp.Eq(nu_RT / E_R, nu_TR / E_T)
+    eqs['eq_WO1_4'] = sp.Eq(
+        eps_L, sig_L / E_L - nu_RL * sig_R / E_R - nu_TL * sig_T / E_T)
+    eqs['eq_WO1_5'] = sp.Eq(
+        eps_R, -nu_LR * sig_L / E_L + sig_R / E_R - nu_TR * sig_T / E_T)
+    eqs['eq_WO1_6'] = sp.Eq(
+        eps_T, -nu_LT * sig_L / E_L - nu_RT * sig_R / E_R + sig_T / E_T)
+    eqs['eq_WO1_7'] = sp.Eq(gamma_LR, tau_LR / G_LR)
+    eqs['eq_WO1_8'] = sp.Eq(gamma_LT, tau_LT / G_LT)
+    eqs['eq_WO1_9'] = sp.Eq(gamma_RT, tau_RT / G_RT)
+
+    # WO2: stored water and hygroscopic eigenstrain below fibre saturation.
+    MC, m_wet, m_dry, MC_ref, MC_fsp = sp.symbols(
+        'MC m_wet m_ovendry MC_ref MC_fsp')
+    beta_L, beta_R, beta_T = sp.symbols('beta_L beta_R beta_T')
+    eps_hL, eps_hR, eps_hT = sp.symbols(
+        'epsilon_hL epsilon_hR epsilon_hT')
+    eqs['eq_WO2_1'] = sp.Eq(MC, (m_wet - m_dry) / m_dry)
+    eqs['eq_WO2_2'] = sp.Eq(
+        eps_hL, beta_L * (sp.Min(MC, MC_fsp) - sp.Min(MC_ref, MC_fsp)))
+    eqs['eq_WO2_3'] = sp.Eq(
+        eps_hR, beta_R * (sp.Min(MC, MC_fsp) - sp.Min(MC_ref, MC_fsp)))
+    eqs['eq_WO2_4'] = sp.Eq(
+        eps_hT, beta_T * (sp.Min(MC, MC_fsp) - sp.Min(MC_ref, MC_fsp)))
+
+    # WO3: installed wood-fastener slip/withdrawal and a cohesive bondline.
+    P_w, C_w, G_sg, d_fast, L_emb = sp.symbols(
+        'P_withdraw C_withdraw G_specific d_fastener L_embed')
+    P_lat, k_slip, s_joint = sp.symbols('P_lateral k_slip s_joint')
+    t_nw, t_sw, K_nw, K_sw, delta_nw, delta_sw, d_bond = sp.symbols(
+        't_n t_s K_n K_s delta_n delta_s d_bond')
+    eqs['eq_WO3_1'] = sp.Eq(P_w, C_w * G_sg**2 * d_fast * L_emb)
+    eqs['eq_WO3_2'] = sp.Eq(P_lat, k_slip * s_joint)
+    eqs['eq_WO3_3'] = sp.Eq(t_nw, (1 - d_bond) * K_nw * delta_nw)
+    eqs['eq_WO3_4'] = sp.Eq(t_sw, (1 - d_bond) * K_sw * delta_sw)
+
+    # WO4: mechanistic edge/chip cutting and kerf advance.  K_tc is chip
+    # force per chip area; K_te is edge force per active width.
+    F_cut, K_tc, h_chip, K_te, b_cut = sp.symbols(
+        'F_cut K_tc h_chip K_te b_cut')
+    v_edge, L_stroke, f_stroke = sp.symbols(
+        'v_edge L_stroke f_stroke')
+    P_cut, eta_cut, Vdot_cut, u_cut = sp.symbols(
+        'P_cut eta_cut Vdot_cut u_specific')
+    v_kerf, w_kerf, b_work = sp.symbols(
+        'v_kerf w_kerf b_work')
+    eqs['eq_WO4_1'] = sp.Eq(F_cut, (K_tc * h_chip + K_te) * b_cut)
+    eqs['eq_WO4_2'] = sp.Eq(v_edge, 2 * L_stroke * f_stroke)
+    eqs['eq_WO4_3'] = sp.Eq(P_cut, F_cut * v_edge)
+    eqs['eq_WO4_4'] = sp.Eq(Vdot_cut, eta_cut * P_cut / u_cut)
+    eqs['eq_WO4_5'] = sp.Eq(v_kerf, Vdot_cut / (w_kerf * b_work))
+
+    # WO5: a screw clamp is a temporary force-carrying machine. Handle
+    # torque becomes jaw force through the spindle; the pad spreads that
+    # force into wood, friction carries in-plane load, and the clamp frame
+    # deflects rather than becoming an ideal rigid constraint.
+    T_handle, K_thread, d_spindle, F_clamp = sp.symbols(
+        'T_handle K_thread d_spindle F_clamp')
+    A_pad, p_pad, mu_pad, F_slip = sp.symbols(
+        'A_pad p_pad mu_pad F_slip')
+    k_frame, delta_frame = sp.symbols('k_frame delta_frame')
+    eqs['eq_WO5_1'] = sp.Eq(F_clamp, T_handle / (K_thread * d_spindle))
+    eqs['eq_WO5_2'] = sp.Eq(p_pad, F_clamp / A_pad)
+    eqs['eq_WO5_3'] = sp.Eq(F_slip, mu_pad * F_clamp)
+    eqs['eq_WO5_4'] = sp.Eq(delta_frame, F_clamp / k_frame)
+    return eqs
+
+
+globals().update(_expand_woodshop())
+
+
+# =====================================================================
 # ENGINE / EQUATION REGISTRY
 # =====================================================================
 # Everything above is a flat script: every eq_* name is a module global.
@@ -3511,6 +3781,7 @@ ENGINE_PREFIXES = {
     'EM': ('Emmons', None),
     'MX': ('Maxwell', None),
     'LA': ('Langmuir', None),
+    'WO': ('Woodshop', None),
 }
 
 _EQ_NAME_RE = _re.compile(r'^eq_([A-Z]+)(\d+)_(\d+[a-z]?)$')
@@ -3567,6 +3838,7 @@ ENGINE_SETS = {
     'chamber_witness': ('Lavoisier', 'Bjerknes', 'Fourier', 'Faraday'),
     'ballistics_stack': ('Newton', 'Timoshenko', 'Tartaglia', 'Piobert',
                          'Zeldovich', 'Otto', 'De Laval', 'Tsiolkovsky'),
+    'woodshop_slice': ('Newton', 'Timoshenko', 'Bragg', 'Woodshop'),
 }
 
 
@@ -3778,6 +4050,8 @@ LAW_DECLARATIONS = {
     'eq_T7_3': {'nabla': {'nabla(nabla(w(x, y, t)))': 'laplacian_0', 'nabla(w(x, y, t))': 'laplacian_0'}},   # Kirchhoff plate D nabla^4 w: each placeholder is a scalar Laplacian (source comment: nabla^4)
     'eq_T8_1': {'domain': {'A': {'kind': 'surface', 'closed': False}}},   # second moment of area over the open cross-section
     'eq_T8_6': {'domain': {'s': {'kind': 'line', 'closed': True}}},   # Bredt: contour integral ds/t around the closed thin-wall cell
+    'eq_T18_3': {'domain': {'x': {'kind': 'line'}}},   # complete six-DOF element stiffness integrated along the beam axis
+    'eq_T18_4': {'domain': {'x': {'kind': 'line'}}},   # complete six-DOF consistent mass integrated along the beam axis
     'eq_F1_1': {'nabla': {'nabla(E(t))': 'curl'}},   # Faraday: dB/dt = -curl E
     'eq_F1_2': {'nabla': {'nabla(H(t))': 'curl'}},   # Ampere-Maxwell: dD/dt = curl H - J
     'eq_F1_3': {'nabla': {'nabla(D(t))': 'div'}},   # Gauss: div D = rho_f
@@ -4140,30 +4414,17 @@ def raw_token_report():
 
 
 # =====================================================================
-# LAMBDIFY CACHE: turning equations into runnable, cacheable pieces
+# LLVM PIECES: canonical SymPy -> compiler -> native-law path
 # =====================================================================
-# What "saved" actually means here, checked directly rather than assumed:
-# a lambdify()'d function's compiled object is NOT picklable by reference
-# -- its __module__/__qualname__ do not resolve to anything re-importable,
-# so stdlib pickle raises PicklingError on it. What sympy DOES give you is
-# the generated source text: lambdify registers it with linecache so
-# ``inspect.getsource`` reads it back whole. Caching THAT text and exec'ing
-# it on a hit is what "saved" means below -- it skips sympy's printer/
-# codegen work on a hit, which is the part that scales with equation count,
-# not the act of calling the function itself.
-#
-# This mirrors turing/examples/chamber_dt_join.py's own law-module cache
-# (``load_law_module_cached``: pickle the constructed SymPy trees, keyed on
-# a source digest) -- same idea, applied one level lower, to one law's
-# generated call instead of a whole module's tree construction.
 
 import hashlib as _hashlib
-import inspect as _inspect
 import os as _os
 from pathlib import Path as _Path
 from typing import Dict as _Dict, Optional as _Optional, Sequence as _Sequence
 
-_LAW_CACHE_DIR = _Path(__file__).resolve().parent / "__lawcache__"
+_LLVM_LAW_CACHE_DIR = _Path(__file__).resolve().parent / "artifacts" / "llvm_pieces"
+_LLVM_PIECE_CACHE_SCHEMA = "honorary-llvm-piece-v1"
+_PIECE_MEMORY_CACHE: dict[tuple[str, int, str], object] = {}
 
 # Coordinates and operator placeholders declared once at the top of this
 # module -- scaffolding, never a physical field a piece should read or own.
@@ -4173,61 +4434,70 @@ _STRUCTURAL_NAMES = frozenset({
 })
 
 
-def _lambdify_cache_key(law_id: str, argument_names: tuple, expr) -> str:
-    payload = f"{law_id}|{argument_names}|{sp.srepr(expr)}".encode("utf-8")
+def _llvm_piece_cache_key(law_id: str, batch: int, equations) -> str:
+    equations = tuple(equations)
+    payload = (
+        f"{_LLVM_PIECE_CACHE_SCHEMA}|{law_id}|{batch}|"
+        f"{sp.srepr(sp.Tuple(*equations))}"
+    ).encode("utf-8")
     return _hashlib.sha256(payload).hexdigest()[:24]
 
 
-def lambdify_cached(law_id: str, argument_names: tuple, expr, *, modules="numpy",
-                     cache_dir=None):
-    """A lambdified callable for ``argument_names -> expr``, cached to disk
-    by content hash (law id + argument order + ``sympy.srepr`` of the exact
-    expression). A hit execs the saved source; a miss lambdifies, writes the
-    generated source via ``inspect.getsource``, and returns the live
-    function either way."""
-    root = _Path(cache_dir) if cache_dir is not None else _LAW_CACHE_DIR
-    key = _lambdify_cache_key(law_id, argument_names, expr)
-    cache_file = root / f"{law_id}-{key}.py"
-    if cache_file.exists():
-        source = cache_file.read_text(encoding="utf-8")
-        namespace: dict = {}
-        exec(compile(source, str(cache_file), "exec"), namespace)
-        return namespace["_lambdifygenerated"]
-    symbols = tuple(sp.Symbol(name) for name in argument_names)
-    fn = sp.lambdify(symbols, expr, modules=modules)
-    source = _inspect.getsource(fn)
+def equation_piece(piece_id: str, equations, *, batch: int = 1,
+                   cache_dir=None):
+    """Compile one already-discretized equation set as one real LLVM piece.
+
+    This is the multi-equation form of :func:`law_piece`.  It exists for a
+    dt-system manifestation whose ``*_next`` equations are composed from the
+    catalogue's continuous laws.  It performs no numerical work itself: the
+    sanctioned symbolic compiler and ``piece_from_law`` still own the entire
+    SymPy -> AbstractTensor -> LLVM route.
+    """
+    equations = tuple(equations)
+    if not equations or not all(isinstance(equation, Equality)
+                                for equation in equations):
+        raise TypeError("equation_piece requires one or more SymPy equalities")
+    if any(equation.rhs.has(sp.Derivative, sp.Integral)
+           for equation in equations):
+        raise ValueError("dt-system pieces require discretized equations")
+
+    batch = int(batch)
+    if batch <= 0:
+        raise ValueError("LLVM piece batch must be positive")
+    key = _llvm_piece_cache_key(piece_id, batch, equations)
+    memory_key = (piece_id, batch, key)
+    if memory_key in _PIECE_MEMORY_CACHE:
+        return _PIECE_MEMORY_CACHE[memory_key]
+
+    from src.compiler.native_law_kernels import LLVMPiece
+    from src.compiler.native_package import piece_from_law
+    from src.compiler.symbolic_equation_compiler import compile_sympy_equations
+
+    root = (_Path(cache_dir) if cache_dir is not None
+            else _LLVM_LAW_CACHE_DIR) / piece_id / f"b{batch}" / key
+    piece_path = root / f"{piece_id}.piece"
+    if piece_path.is_file():
+        piece = LLVMPiece.load(piece_path)
+        _PIECE_MEMORY_CACHE[memory_key] = piece
+        return piece
+
+    compilation = compile_sympy_equations(list(equations), name=piece_id)
     root.mkdir(parents=True, exist_ok=True)
-    tmp = cache_file.with_suffix(f".{_os.getpid()}.tmp")
-    tmp.write_text(source, encoding="utf-8")
-    _os.replace(tmp, cache_file)
-    return fn
-
-
-@dataclass(frozen=True)
-class Piece:
-    """One law, lambdified and shaped like an ``LLVMPiece``
-    (``argument_names``/``output_names``/a positional callable) so it can
-    be experimented with against a real dt system deployment without
-    inventing a second interface for the same idea."""
-
-    entry: str
-    argument_names: tuple
-    output_names: tuple
-    fn: object
-
-    def __call__(self, *columns):
-        result = self.fn(*columns)
-        return result if isinstance(result, tuple) else (result,)
+    piece = piece_from_law(
+        compilation, piece_id, batch, directory=root, optimization="O2")
+    temporary = piece_path.with_suffix(f".{_os.getpid()}.tmp")
+    piece.save(temporary)
+    _os.replace(temporary, piece_path)
+    _PIECE_MEMORY_CACHE[memory_key] = piece
+    return piece
 
 
 def _scalarize_applied_functions(expr):
     """Replace every applied function call (``G(x)``) with a plain Symbol
     of the same name (``G``), so a lambdified piece's parameter and its use
-    inside the expression body agree -- lambdify treats an unsubstituted
-    ``AppliedUndef`` as something to CALL, not a scalar input, and a plain
-    parameter symbol of the same name is not the same sympy object as the
-    applied call, which is exactly the 'float object is not callable' bug
-    this fixes.
+    inside the expression body agree. The symbolic compiler's law ABI carries
+    state as named columns; an unsubstituted ``AppliedUndef`` instead denotes
+    a function application and therefore is not that scalar column.
 
     Returns ``None`` (refuse, do not guess) if the same function name is
     applied to more than one distinct argument tuple in ``expr`` -- e.g.
@@ -4247,19 +4517,18 @@ def _scalarize_applied_functions(expr):
     return expr.subs(substitution)
 
 
-def law_piece(law_id: str, eq_obj, *, modules="numpy", cache_dir=None) -> _Optional["Piece"]:
-    """One ``eq_XX_n`` as a ``Piece``: its read symbols (sorted, minus the
-    structural placeholders) are ``argument_names``, its owned symbol is
-    its one ``output_name``. Returns ``None`` for a constraint/relational
-    (no single quantity to lambdify against), for a law that applies the
-    same function name to more than one distinct argument set (see
-    ``_scalarize_applied_functions``), or for a law whose RHS contains
-    something sympy's numpy printer cannot turn into numeric code as-is
-    (an unevaluated ``Derivative``/``Integral``, or one of this module's
-    own operator placeholders like ``nabla``/``transpose`` -- those need a
-    discretization choice before they are a numeric piece, which is
-    modeling work this function does not invent on your behalf) rather
-    than guessing one or crashing the whole batch.
+def law_piece(law_id: str, eq_obj, *, batch: int = 1,
+              cache_dir=None) -> _Optional[object]:
+    """Compile one honorary equality into the compiler's real ``LLVMPiece``.
+
+    The honorary notation may put an applied function on the left-hand side;
+    the canonical symbolic compiler requires a named ``Symbol`` output.  The
+    existing owned/read analysis performs only that ABI normalization.  The
+    resulting equality then follows the sanctioned compiler path unchanged:
+    ``compile_sympy_equations`` followed by ``piece_from_law``.
+
+    Constraints and equations requiring a discretization still return
+    ``None``; this function never substitutes a Python evaluator for them.
     """
     if not isinstance(eq_obj, Equality):
         return None
@@ -4271,31 +4540,47 @@ def law_piece(law_id: str, eq_obj, *, modules="numpy", cache_dir=None) -> _Optio
     output_name = next(iter(owned_names))
     read_names = ((_identities_in(lhs) | _identities_in(rhs)) - owned_names
                   - _STRUCTURAL_NAMES) | (lhs_extra_reads - _STRUCTURAL_NAMES)
-    argument_names = tuple(sorted(read_names))
     scalar_rhs = _scalarize_applied_functions(rhs)
     if scalar_rhs is None:
         return None
-    try:
-        fn = lambdify_cached(law_id, argument_names, scalar_rhs, modules=modules, cache_dir=cache_dir)
-    except Exception:
+    if scalar_rhs.has(sp.Derivative, sp.Integral):
         return None
-    return Piece(law_id, argument_names, (output_name,), fn)
+    if any(str(function.func) in _STRUCTURAL_NAMES
+           for function in scalar_rhs.atoms(sp.Function)):
+        return None
+
+    canonical = sp.Eq(sp.Symbol(output_name), scalar_rhs, evaluate=False)
+    return equation_piece(
+        law_id, (canonical,), batch=batch, cache_dir=cache_dir)
 
 
-def law_pieces(engines: _Optional[_Sequence[str]] = None, *, modules="numpy",
-               cache_dir=None) -> _Dict[str, "Piece"]:
-    """Every piece-shaped law across the requested engines, lambdified and
-    cached. Constraint/relational laws are silently skipped (see
-    ``law_piece``); a caller that needs to know which were skipped should
-    compare its own equation set against this function's keys."""
+def law_pieces(engines: _Optional[_Sequence[str]] = None, *,
+               law_ids: _Optional[_Sequence[str]] = None,
+               batch: int = 1, cache_dir=None) -> _Dict[str, object]:
+    """Compile selected honorary equalities into real ``LLVMPiece`` objects.
+
+    ``law_ids`` lets a system compile only the laws it actually owns.  With
+    no selection, all compiler-eligible laws in the requested engine sets are
+    built. Constraints and undiscretized laws are skipped; explicitly
+    requested laws must all produce pieces.
+    """
     by_engine = _discover_equations()
     selected = list(engines) if engines is not None else sorted(by_engine)
-    pieces: _Dict[str, Piece] = {}
+    requested = None if law_ids is None else set(law_ids)
+    pieces: _Dict[str, object] = {}
     for engine in selected:
         for name, obj in by_engine.get(engine, {}).items():
-            piece = law_piece(name, obj, modules=modules, cache_dir=cache_dir)
+            if requested is not None and name not in requested:
+                continue
+            piece = law_piece(name, obj, batch=batch, cache_dir=cache_dir)
             if piece is not None:
                 pieces[name] = piece
+    if requested is not None:
+        missing = requested - set(pieces)
+        if missing:
+            raise RuntimeError(
+                "requested honorary laws did not compile to LLVMPiece: "
+                + ", ".join(sorted(missing)))
     return pieces
 
 

@@ -105,6 +105,10 @@ BONDS = {
         note="held by the retention of a plastic hook, which is a "
              "force, not a strength: it lets go at that force and is "
              "undamaged by having done so, which is what it is for"),
+    "friction-fit": BondMaterial(
+        "friction-fit", "compressed friction-fit surfaces", 0.0, 0.0,
+        note="not an adhesive material strength: sleeve compression times "
+             "surface friction supplies a finite reversible holding force"),
 }
 
 
@@ -146,6 +150,12 @@ JOINT_TYPES = {
         note="one tube inside another. Axial and shear are as good as "
              "welded; MOMENT is limited by the engagement length, because "
              "the couple has only that lever to work with"),
+    "compression-sleeve-fit": JointType(
+        "compression-sleeve-fit", "breakable compression-sleeve fit",
+        (RIGID,) * 6, "friction-fit",
+        note="kinematically rigid while sleeve friction holds; pulling along "
+             "the declared release vector beyond its holding force removes "
+             "the rigid membership without claiming a material weld"),
     # --- articulating ------------------------------------------------
     "pinned-clevis": JointType(
         "pinned-clevis", "pinned clevis", (RIGID, RIGID, RIGID, RIGID, FREE, RIGID),
