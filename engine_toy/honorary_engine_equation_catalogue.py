@@ -4423,7 +4423,7 @@ from pathlib import Path as _Path
 from typing import Dict as _Dict, Optional as _Optional, Sequence as _Sequence
 
 _LLVM_LAW_CACHE_DIR = _Path(__file__).resolve().parent / "artifacts" / "llvm_pieces"
-_LLVM_PIECE_CACHE_SCHEMA = "honorary-llvm-piece-v1"
+_LLVM_PIECE_CACHE_SCHEMA = "honorary-llvm-piece-v2"
 _PIECE_MEMORY_CACHE: dict[tuple[str, int, str], object] = {}
 
 # Coordinates and operator placeholders declared once at the top of this
