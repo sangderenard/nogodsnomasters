@@ -69,8 +69,9 @@ if str(_TURING_EXAMPLES) not in sys.path:
 
 from llvm_dt_system import (
     TELEMETRY_FIELDS,
+    advance_round,
     bind_namespace,
-    dt_system_from_graph,
+    instantiate_system,
     lowered_system,
     piece_leaf,
 )
@@ -755,7 +756,6 @@ class WoodshopWorldRules(DtCompatibleEngine):
         self.newton_dt_state = None
         self._newton_dt_pieces = ()
         self._newton_batch = 0
-        self._newton_dt_next = None
         self._native_newton_system = None
         self._native_newton_state_type = None
         self.newton_native_execution = None
@@ -785,20 +785,86 @@ class WoodshopWorldRules(DtCompatibleEngine):
     def _set_momentum(item: WorldMachine, momentum) -> None:
         item.linear_momentum_kg_m_s = tuple(float(value) for value in momentum)
 
-    def _ensure_newton_dt_system(self) -> None:
+    def _ensure_newton_dt_system(self, window: float | None = None) -> None:
+        """Instantiate the Newton dt system once: its pieces for this lane
+        count, its graph, and its state.  The dt system owns the round, the
+        state and the controller's continuation; this engine only declares
+        its participants and syncs its lanes.  The graph is built at the
+        first window asked for, because the controller's floor is a fraction
+        of the window and the world learns its window only when stepped."""
         batch = len(self.items)
-        if batch == self._newton_batch:
-            return
-        self._newton_dt_pieces = newton_world_dt_pieces(batch)
-        self._newton_batch = batch
-        self.newton_dt_state = None
-        if (self._native_newton_system is not None
-                and self._native_newton_system.batch != batch):
-            # LLVM pieces have a declared lane count. Never drive a binary
-            # compiled for a different world shape.
-            self._native_newton_system = None
-            self._native_newton_state_type = None
-            self.newton_native_execution = None
+        if batch != self._newton_batch:
+            self._newton_dt_pieces = newton_world_dt_pieces(batch)
+            self._newton_batch = batch
+            self.newton_dt_graph = None
+            self.newton_dt_state = None
+            if (self._native_newton_system is not None
+                    and self._native_newton_system.batch != batch):
+                # LLVM pieces have a declared lane count. Never drive a binary
+                # compiled for a different world shape.
+                self._native_newton_system = None
+                self._native_newton_state_type = None
+                self.newton_native_execution = None
+        if self.newton_dt_graph is None and window is not None:
+            requested = float(window)
+            self.newton_dt_graph = RoundNode(
+                plan=SuperstepPlan(round_max=requested, dt_init=requested),
+                controller=ControllerNode(
+                    ctrl=STController(dt_min=requested * 1.0e-6),
+                    targets=Targets(cfl=0.5, div_max=1.0e9, mass_max=1.0e-3,
+                                    energy_exchange_fraction=0.2),
+                    dx=1.0,
+                ),
+                children=[
+                    piece_leaf(piece, label=label)
+                    for piece, label in zip(
+                        self._newton_dt_pieces,
+                        ("N4.1 gravity", "N1.2 momentum", "N1.1 position"),
+                    )
+                ],
+                schedule="sequential",
+                label="woodshop-newton",
+            )
+            self.newton_dt_state = instantiate_system(
+                self.newton_dt_graph, self._newton_lane_columns())
+
+    def _newton_lane_columns(self) -> dict:
+        """The lane columns as the items hold them now.  The dt system's
+        state is instantiated from these once; afterwards its spans are the
+        lanes and are synced in place."""
+        batch = self._newton_batch
+        columns = {
+            name: np.zeros(batch, dtype=np.float64)
+            for name in ("active", "force_x", "force_y", "force_z", "mass",
+                         "momentum_x", "momentum_y", "momentum_z",
+                         "position_x", "position_y", "position_z")
+        }
+        columns["earth_mass"] = np.full(batch, EARTH_MASS_KG)
+        columns["earth_radius"] = np.full(batch, EARTH_RADIUS_M)
+        columns["gravity_constant"] = np.full(
+            batch, GRAVITATIONAL_CONSTANT_M3_KG_S2)
+        self._sync_newton_lanes(columns)
+        return columns
+
+    def _sync_newton_lanes(self, spans) -> None:
+        """Write the items' state into the lane spans, in place.  Interim:
+        until the items are views onto these spans, the per-item state is
+        synced into them before each round and read back after it."""
+        for lane, identity in enumerate(tuple(self.items)):
+            item = self.items[identity]
+            spans["active"][lane] = float(
+                item.custody == "world" and item.mass_kg > 0.0)
+            spans["mass"][lane] = float(item.mass_kg)
+            cx, cy, cz = (float(value) for value in item.center_xyz())
+            spans["position_x"][lane] = cx
+            spans["position_y"][lane] = cy
+            spans["position_z"][lane] = cz
+            mx, my, mz = (float(value) for value in item.linear_momentum_kg_m_s)
+            spans["momentum_x"][lane] = mx
+            spans["momentum_y"][lane] = my
+            spans["momentum_z"][lane] = mz
+        for name in ("force_x", "force_y", "force_z"):
+            spans[name][...] = 0.0
 
     def _attach_native_newton_system(self, system) -> None:
         if int(system.batch) != int(self._newton_batch):
@@ -852,93 +918,38 @@ class WoodshopWorldRules(DtCompatibleEngine):
         return float(state.telemetry[0]), float(state.telemetry[1])
 
     def _advance_newton_dt_system(self, dt: float):
-        """Advance all object lanes through one real LLVM dt-system round."""
-        self._ensure_newton_dt_system()
-        identities = tuple(self.items)
-        active = np.asarray([
-            float(self.items[identity].custody == "world"
-                  and self.items[identity].mass_kg > 0.0)
-            for identity in identities
-        ], dtype=np.float64)
-        centers = np.asarray([
-            self.items[identity].center_xyz() for identity in identities
-        ], dtype=np.float64)
-        momenta = np.asarray([
-            self.items[identity].linear_momentum_kg_m_s
-            for identity in identities
-        ], dtype=np.float64)
-        masses = np.asarray([
-            self.items[identity].mass_kg for identity in identities
-        ], dtype=np.float64)
-        columns = {
-            "active": active,
-            "earth_mass": np.full(self._newton_batch, EARTH_MASS_KG),
-            "earth_radius": np.full(self._newton_batch, EARTH_RADIUS_M),
-            "force_x": np.zeros(self._newton_batch),
-            "force_y": np.zeros(self._newton_batch),
-            "force_z": np.zeros(self._newton_batch),
-            "gravity_constant": np.full(
-                self._newton_batch, GRAVITATIONAL_CONSTANT_M3_KG_S2),
-            "mass": masses,
-            "momentum_x": momenta[:, 0].copy(),
-            "momentum_y": momenta[:, 1].copy(),
-            "momentum_z": momenta[:, 2].copy(),
-            "position_x": centers[:, 0].copy(),
-            "position_y": centers[:, 1].copy(),
-            "position_z": centers[:, 2].copy(),
-        }
+        """Advance all object lanes through one round of the Newton dt system.
+
+        The dt system owns its state, its graph and the controller's
+        continuation.  This engine syncs its lanes in, asks for the window,
+        checks it landed, and reads the lanes back."""
         requested = float(dt)
-        initial = requested if self._newton_dt_next is None else min(
-            requested, float(self._newton_dt_next))
-        controller = STController(dt_min=requested * 1.0e-6)
-        targets = Targets(cfl=0.5, div_max=1.0e9, mass_max=1.0e-3,
-                          energy_exchange_fraction=0.2)
-        self.newton_dt_graph = RoundNode(
-            plan=SuperstepPlan(round_max=requested, dt_init=initial),
-            controller=ControllerNode(
-                ctrl=controller,
-                targets=targets,
-                dx=1.0,
-            ),
-            children=[
-                piece_leaf(piece, label=label)
-                for piece, label in zip(
-                    self._newton_dt_pieces,
-                    ("N4.1 gravity", "N1.2 momentum", "N1.1 position"),
-                )
-            ],
-            schedule="sequential",
-            label="woodshop-newton",
-        )
-        if self._native_newton_system is None:
-            state, _controller, results = dt_system_from_graph(
-                self.newton_dt_graph, columns, rounds=1,
-                state=self.newton_dt_state)
-            self.newton_dt_state = state
-            advanced, self._newton_dt_next, _telemetry = results[0]
-        else:
-            advanced, self._newton_dt_next = self._run_native_newton(
-                columns, targets, controller, requested, initial)
+        self._ensure_newton_dt_system(requested)
+        state = self.newton_dt_state
+        names, _schedule = state.bound_pieces
+        spans = {name: getattr(state, name) for name in names}
+        self._sync_newton_lanes(spans)
+        advanced, _dt_next, _telemetry = advance_round(state, requested)
         if not math.isclose(float(advanced), requested, rel_tol=0.0,
                             abs_tol=1.0e-12 * max(1.0, requested)):
             raise RuntimeError(
                 f"Newton dt system advanced {float(advanced)} of {requested}")
 
-        for lane, identity in enumerate(identities):
-            if not active[lane]:
+        for lane, identity in enumerate(tuple(self.items)):
+            if not spans["active"][lane]:
                 continue
             item = self.items[identity]
             self._set_momentum(item, (
-                columns["momentum_x"][lane],
-                columns["momentum_y"][lane],
-                columns["momentum_z"][lane],
+                spans["momentum_x"][lane],
+                spans["momentum_y"][lane],
+                spans["momentum_z"][lane],
             ))
             translate_machine_3d(item.sim.machine, (
-                float(columns["position_x"][lane]),
-                float(columns["position_y"][lane]),
-                float(columns["position_z"][lane]),
+                float(spans["position_x"][lane]),
+                float(spans["position_y"][lane]),
+                float(spans["position_z"][lane]),
             ))
-        return columns
+        return spans
 
     def lower_newton_dt_system(self, directory, *, backend="c",
                                optimization="O2", piece_mode="link",
@@ -1176,7 +1187,9 @@ class WoodshopWorldRules(DtCompatibleEngine):
             "contacts": copy.deepcopy(self.contacts),
             "world_time": self.world_time,
             "observer_time": self.observer_time,
-            "newton_dt_next": self._newton_dt_next,
+            "newton_dt_next": (
+                None if self.newton_dt_state is None
+                else self.newton_dt_state.dt_next),
         }
 
     def restore(self, snapshot) -> None:
@@ -1198,7 +1211,8 @@ class WoodshopWorldRules(DtCompatibleEngine):
         self.contacts = copy.deepcopy(snapshot["contacts"])
         self.world_time = float(snapshot["world_time"])
         self.observer_time = float(snapshot["observer_time"])
-        self._newton_dt_next = snapshot.get("newton_dt_next")
+        if self.newton_dt_state is not None:
+            self.newton_dt_state.dt_next = snapshot.get("newton_dt_next")
 
 
 @dataclass
