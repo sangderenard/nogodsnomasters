@@ -1,0 +1,2 @@
+def _lambdifygenerated(N, delta_d, epsilon, epsilon_ij, k_a, k_b, k_d, n_d, phi_d, q_i, q_j, r, r_b, Dummy_323, sigma_ij, theta_a, Dummy_322):
+    return (builtins.sum((1/2)*k_a*(-Dummy_322 + theta_a)**2 for a in range(1, N+1))) + (builtins.sum((1/2)*k_b*(-Dummy_323 + r_b)**2 for b in range(1, N+1))) + (builtins.sum(k_d*(cos(delta_d - n_d*phi_d) + 1) for d in range(1, N+1))) + (builtins.sum(4*epsilon_ij*(-sigma_ij**6/r**6 + sigma_ij**12/r**12) + (1/4)*q_i*q_j/(pi*epsilon*r) for ij in range(1, N+1)))

@@ -69,7 +69,7 @@ where $y$ is differential state, $z$ algebraic state, and $\theta$ declared para
 
 ## 1. Newton — classical motion and force providers
 
-**State:** positions, momenta, orientations, angular momenta, contact/constraint state. Hooke and the spring/ball lineage live here as law providers, not a competing clock. Molecular force fields are selected providers, not universal chemistry. References: [R1–R3].
+**State:** positions, momenta, orientations, angular momenta, contact/constraint state. Hooke and the spring/ball lineage live here as law providers, not a competing clock. Molecular force fields are selected providers, not universal chemistry. References: [R1–R3, R35–R40].
 
 ### N1. Translation and rigid-body orientation
 
@@ -164,7 +164,65 @@ $$\frac{d(m\mathbf v)}{dt}=\mathbf F_{\rm ext}+\sum_{\rm in}\dot m\mathbf v_{\rm
 
 This is a lumped open-body balance, not permission to apply $m\dot v=F$ while silently changing $m$.
 
-**Witnesses:** isolated pair action–reaction; free rotation; harmonic oscillator; elastic sphere collision; molecular energy-gradient finite differences; momentum and mechanical-plus-dissipated-energy balance.
+### N8. Tire and friction contact
+
+Empirical closures for a rolling contact patch. The Stribeck velocity dependence of the friction coefficient is
+
+$$\mu(v)=\mu_k+(\mu_s-\mu_k)\,e^{-|v_{\rm slip}/v_S|^{\delta_S}},$$
+
+with $\delta_S\approx2$ (Gaussian) or $1$ (exponential); the vehicle code writes the Lorentzian variant $1/(1+(v/v_S)^2)$. The Coulomb limit with load and patch scaling, and the brush saturation of a requested tangential force at that limit, are
+
+$$F_{\rm lim}=\mu(v)\,s_{\rm load}\,s_{\rm patch}\,F_N,\qquad F_{\rm fr}=F_{\rm lim}\tanh\!\left(\frac{F_{\rm req}}{F_{\rm lim}}\right).$$
+
+Load sensitivity, as a linear derate of the patch factor and as a Pacejka-style peak-friction law:
+
+$$s_{\rm load}=1-\epsilon_L\max\!\left(0,\frac{F_N}{F_{\rm ref}}-1\right),\qquad \mu(F_z)=\mu_0\!\left[1-\epsilon_L\frac{F_z-F_{z0}}{F_{z0}}\right].$$
+
+The code clamps $s_{\rm load}$ to $[0.58,1]$. The requested force is a sidewall shear spring–damper demand, and the transmitted tire force follows its steady value through a relaxation length:
+
+$$F_{\rm req}=-(k_{sw}\delta_{sw}+c_{sw}\dot\delta_{sw}),\qquad \frac{\sigma_{\rm relax}}{|v_x|}\dot F_{\rm tire}+F_{\rm tire}=F_{ss}.$$
+
+These are fitted constitutive closures, not laws of nature: each coefficient needs its own provenance. They are alternatives to the N5 cone for the same tangential reaction, never additions to it. References: [R39, R40].
+
+### N11. Game-physics constraints and constraint-dynamics response stages
+
+Force providers used by the `dt_system` engines. Clamped non-adhesive penalty contact ($v_n>0$ separating), tension-only rope (slack carries nothing) and an asymmetric bump/rebound damper:
+
+$$F_{\rm pen}=\max(0,\,k_{\rm pen}\delta_{\rm pen}-b_{\rm pen}v_n),\qquad F_{\rm rope}=\begin{cases}k_{\rm rope}(l-l_0)+c_{\rm rope}\dot l,& l>l_0\\0,&\text{otherwise,}\end{cases}\qquad F_{\rm damper}=\begin{cases}-c_{\rm bump}v,&v<0\\-c_{\rm rebound}v,&\text{otherwise.}\end{cases}$$
+
+**XPBD stage** (Macklin 2016). For one constraint $C(x)$ with compliance $\alpha$ over a step $\Delta t$,
+
+$$\tilde\alpha=\frac{\alpha}{\Delta t^2},\qquad \Delta\lambda=\frac{-C(x)-\tilde\alpha\lambda}{\nabla C\,M^{-1}\nabla C^T+\tilde\alpha},\qquad \Delta x=M^{-1}\nabla C^T\Delta\lambda.$$
+
+This is the per-constraint update of one Gauss–Seidel sweep; the sweep is the consumer's. Linear (Stokes) drag, valid only in the creeping regime:
+
+$$F_{\rm Stokes}=-b_{\rm Stokes}v_{\rm rel},\qquad b_{\rm Stokes}=6\pi\mu_{\rm fluid}R_{\rm sphere}.$$
+
+**Constraint-dynamics response stages.** Every law below is one *stage* of a projected Gauss–Seidel or sequential-impulse solve for one contact row, written with explicit iterate symbols $\lambda^{k}\to\lambda^{k+1}$: one simultaneous map, no loop. The sweep over rows and the convergence loop belong to the dt-graph fixed-point cycle, never to the law. $a_{\rm eff}=JM^{-1}J^T$ is the row's effective-mass scalar and $b_c$ its velocity bias, composed by the consumer from N5's restitution target $v_n^+=-e_rv_n^-$ and/or the Baumgarte term below. For the normal row $\lambda$ is N5's $\lambda_n$; $\mu_f$, $\lambda_n$ are N5's cone symbols. Scalar per-contact forms only: a normal is three scalar components carried by the consumer.
+
+Signorini slack and complementarity residual of one row (Baraff 1994; the conditions $w\ge0$, $\lambda\ge0$, $\lambda w=0$ are N5's):
+
+$$w_c=a_{\rm eff}\lambda^{k}+b_c,\qquad r_{\rm comp}=|\lambda^{k}w_c|.$$
+
+Projected Gauss–Seidel update of one normal multiplier (Baraff 1994; Catto 2005):
+
+$$\lambda^{k+1}=\max\!\left(0,\ \lambda^{k}-\frac{b_c+a_{\rm eff}\lambda^{k}}{a_{\rm eff}}\right).$$
+
+Sequential impulses in velocity form (Catto 2005), the same fixed point in velocity space; the accumulated multiplier is clamped, never the increment:
+
+$$m_{\rm eff}=\frac1{a_{\rm eff}},\qquad \Delta\lambda^{k}=-\frac{v_n^{k}+b_c}{a_{\rm eff}},\qquad \lambda^{k+1}=\max(0,\lambda^{k}+\Delta\lambda^{k}),\qquad v_n^{k+1}=v_n^{k}+\frac{\lambda^{k+1}-\lambda^{k}}{m_{\rm eff}}.$$
+
+Coulomb friction-cone projection of the accumulated tangential impulse (Coulomb; Catto 2005), as the box cone and as the exact cone:
+
+$$\lambda_t^{k+1}=\min\!\big(\max(\lambda_t^{k}+\Delta\lambda_t^{k},\,-\mu_f\lambda_n),\ \mu_f\lambda_n\big),\qquad \lambda_t^{k+1}=\lambda_t^{\rm free}\,\min\!\left(1,\ \frac{\mu_f\lambda_n}{\max(|\lambda_t^{\rm free}|,\epsilon_{\rm cone})}\right).$$
+
+With two tangential components $|\lambda_t^{\rm free}|$ is their magnitude and the factor applies to each; $\epsilon_{\rm cone}$ guards $0/0$ at rest. Baumgarte stabilisation corrects penetration drift $\delta_{\rm pen}$ inside the solve as a velocity bias, never as a position teleport (Baumgarte 1972):
+
+$$b_{\rm stab}=b_c+\frac{\beta_{\rm stab}}{\Delta t}\,\delta_{\rm pen},\qquad 0\le\beta_{\rm stab}\le1.$$
+
+Multiplier-change residual of one row: $r_\lambda=|\lambda^{k+1}-\lambda^{k}|$. The cycle reduces $r_{\rm comp}$ or $r_\lambda$ by $\max$ over rows and tests it against its tolerance. Validity, declared as the `constraint_response_stage` scale: $a_{\rm eff}>0$, $0\le\beta_{\rm stab}\le1$, $\mu_f\ge0$; one sweep is a stage, convergence is the consumer's fixed-point cycle. References: [R35–R38].
+
+**Witnesses:** isolated pair action–reaction; free rotation; harmonic oscillator; elastic sphere collision; molecular energy-gradient finite differences; momentum and mechanical-plus-dissipated-energy balance; single resting contact, where one PGS sweep from $\lambda^{k}=0$ gives $\lambda^{k+1}=\max(0,-b_c/a_{\rm eff})$ and $w_c=0$ at the fixed point.
 
 ---
 
@@ -1880,6 +1938,12 @@ The user-supplied naming/proposition transcript defines the engine names and arc
 - **R32. Richard Fitzpatrick, Collisional Conservation Laws.** Number, momentum and energy moments. https://farside.ph.utexas.edu/teaching/plasma/Plasmahtml/node34.html
 - **R33. LAMMPS, Langevin thermostat.** Fluctuation–dissipation and bath reduction; same primary reference as R3. https://docs.lammps.org/fix_langevin.html
 - **R34. Emmy Noether, Invariant Variation Problems, translated by M. A. Tavel.** Primary symmetry/variational-theorem source. https://arxiv.org/html/physics/0503066v3
+- **R35. D. Baraff (1994), Fast Contact Force Computation for Nonpenetrating Rigid Bodies, SIGGRAPH '94.** Linear-complementarity (Signorini) formulation of contact forces and its projected iterative solution. doi:10.1145/192161.192168
+- **R36. E. Catto (2005), Iterative Dynamics with Temporal Coherence, GDC 2005.** Sequential impulses in velocity form, accumulated-impulse clamping, friction-cone projection and warm starting.
+- **R37. J. Baumgarte (1972), Stabilization of constraints and integrals of motion in dynamical systems, Comput. Methods Appl. Mech. Eng. 1(1):1–16.** Constraint-drift correction as a velocity/acceleration bias inside the solve. doi:10.1016/0045-7825(72)90018-7
+- **R38. M. Macklin, M. Müller, N. Chentanez (2016), XPBD: Position-Based Simulation of Compliant Constrained Dynamics, MIG '16.** Time-scaled compliance and the per-constraint Lagrange-multiplier update. doi:10.1145/2994258.2994272
+- **R39. B. Armstrong-Hélouvry, P. Dupont, C. Canudas de Wit (1994), A survey of models, analysis tools and compensation methods for the control of machines with friction, Automatica 30(7):1083–1138.** Stribeck curve and friction-model survey. doi:10.1016/0005-1098(94)90209-7
+- **R40. H. B. Pacejka, Tire and Vehicle Dynamics, Butterworth-Heinemann.** Load sensitivity of peak friction and the relaxation-length transient.
 
 ## Closing contract
 

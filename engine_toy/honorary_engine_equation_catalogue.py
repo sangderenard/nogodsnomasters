@@ -1239,6 +1239,34 @@ def _expand_newton():
     eqs['eq_N11_6'] = sp.Eq(dx, M_inv * transpose(gradC) * dlam)  # XPBD position correction (Macklin 2016); turing softbody
     eqs['eq_N11_7'] = sp.Eq(F_st, -b_st * v_rel)  # linear (Stokes) drag; turing dt_system engines
     eqs['eq_N11_8'] = sp.Eq(b_st, 6 * sp.pi * mu_fl * R_sp)  # Stokes sphere drag coefficient; standard form
+    # N11 constraint-dynamics RESPONSE stages (turing/docs/COLLISION_CYCLE_DESIGN_2026-09-29.md s2.2).
+    # Each law is ONE stage of a projected Gauss-Seidel / sequential-impulse solve
+    # for one contact row: iterate symbols explicit (lambda^{k} in, lambda^{k+1}
+    # out, as eq_NS14_6's u^{n+1}); the sweep over rows and the convergence loop
+    # belong to the consumer (the dt-system fixed-point cycle), never to the law.
+    # a_{eff} = J M^{-1} J^T is the row's effective-mass scalar (declared input);
+    # b_c is the row's velocity bias, composed by the consumer from the
+    # restitution target eq_N5_6 and/or the Baumgarte term eq_N11_18.  For the
+    # normal row lambda is N5's lambda_n; mu_f, lambda_n are N5's Coulomb-cone
+    # symbols (see KNOWN_COLLISIONS['mu_f']); Delta_t and delta_{pen} are the
+    # XPBD/penalty symbols above.  Scalar per-contact forms only; a normal is
+    # three scalar components carried by the consumer.
+    lam_k, lam_k1, w_c, b_c, a_eff, m_eff = sp.symbols('lambda^{k} lambda^{k+1} w_c b_c a_{eff} m_{eff}')
+    r_comp, r_lam, dlam_k, vn_k, vn_k1 = sp.symbols('r_{comp} r_{lambda} Delta_lambda^{k} v_n^{k} v_n^{k+1}')
+    lamt_k, lamt_k1, dlamt_k, lamt_free, eps_cone = sp.symbols('lambda_t^{k} lambda_t^{k+1} Delta_lambda_t^{k} lambda_t^{free} epsilon_{cone}')
+    b_stab, beta_stab = sp.symbols('b_{stab} beta_{stab}')
+    mu_f, lambda_n = sp.symbols('mu_f lambda_n')
+    eqs['eq_N11_9'] = sp.Eq(w_c, a_eff * lam_k + b_c)  # Signorini slack of one contact row, w = A lambda + b in effective-mass form (Baraff 1994 LCP; the conditions w >= 0, lambda >= 0, lambda w = 0 are eq_N5_1..3)
+    eqs['eq_N11_10'] = sp.Eq(r_comp, sp.Abs(lam_k * w_c))  # complementarity residual of one row; the cycle reduces Max over rows (Baraff 1994)
+    eqs['eq_N11_11'] = sp.Eq(lam_k1, sp.Max(0, lam_k - (b_c + a_eff * lam_k) / a_eff))  # projected Gauss-Seidel update of one normal multiplier; one sweep = one stage, the cycle repeats it (Baraff 1994; Catto 2005)
+    eqs['eq_N11_12'] = sp.Eq(m_eff, 1 / a_eff)  # effective mass of the constraint row, the reciprocal of a_eff = J M^{-1} J^T (Catto 2005)
+    eqs['eq_N11_13'] = sp.Eq(dlam_k, -(vn_k + b_c) / a_eff)  # sequential impulse, velocity form: candidate impulse increment from the row's current relative normal velocity v_n^{k} (Catto 2005)
+    eqs['eq_N11_14'] = sp.Eq(lam_k1, sp.Max(0, lam_k + dlam_k))  # accumulated-impulse clamping: the accumulated multiplier is clamped, never the increment (Catto 2005); same fixed point as eq_N11_11
+    eqs['eq_N11_15'] = sp.Eq(vn_k1, vn_k + (lam_k1 - lam_k) / m_eff)  # velocity update by the applied (clamped) increment; Newton's restitution eq_N5_6 is the target the consumer folds into b_c (Catto 2005)
+    eqs['eq_N11_16'] = sp.Eq(lamt_k1, sp.Min(sp.Max(lamt_k + dlamt_k, -mu_f * lambda_n), mu_f * lambda_n))  # Coulomb friction, box-cone projection of the accumulated tangential impulse onto eq_N5_4 (Coulomb; Catto 2005)
+    eqs['eq_N11_17'] = sp.Eq(lamt_k1, lamt_free * sp.Min(1, mu_f * lambda_n / sp.Max(sp.Abs(lamt_free), eps_cone)))  # Coulomb friction, exact cone: radial scaling of the free tangential impulse onto |lambda_t| <= mu_f lambda_n; with two tangential components |lambda_t^{free}| is their magnitude and the factor applies to each; epsilon_{cone} guards 0/0 at rest (Coulomb)
+    eqs['eq_N11_18'] = sp.Eq(b_stab, b_c + (beta_stab / dt_s) * pen)  # Baumgarte stabilisation: penetration drift corrected inside the solve as a velocity bias, gain beta in [0,1]; never a position teleport (Baumgarte 1972)
+    eqs['eq_N11_19'] = sp.Eq(r_lam, sp.Abs(lam_k1 - lam_k))  # multiplier-change residual of one row; the cycle reduces Max over rows (Catto 2005)
 
     # N12 centrifugal governor
     m_g, w_g, r_g, F_0g, k_g, r_min, F_s, F_f = sp.symbols('m_{ball} omega_{gov} r_{ball} F_{preload} k_{gov} r_{min} F_{spring} F_{fric}')
@@ -3947,6 +3975,9 @@ def _law_scales():
     d_s, delta, omega, mu, sigma, v, w, a = sp.symbols('d delta omega mu sigma v w a')
     Rm = sp.Symbol('Rm')
     h, eps, a_c, R_c, Phi, c, v_b = sp.symbols('h epsilon a_contact R_contact Phi c v_body')
+    # N11 response-stage symbols; mu_fric is N5/N11's Coulomb coefficient and
+    # prints as the same token as the viscosity mu_f above -- KNOWN_COLLISIONS['mu_f'].
+    a_eff, beta_stab, mu_fric = sp.symbols('a_{eff} beta_{stab} mu_f')
     skin = sp.sqrt(2 / (omega * mu * sigma))
     return {
         "continuum": LawScale(
@@ -3990,6 +4021,11 @@ def _law_scales():
         "hertz_contact": LawScale(
             "Hertz contact", ("eq_N5_8",), (a_c / R_c < sp.Rational(1, 10),),
             source="contact radius << curvature radius, frictionless elastic (Johnson, Contact Mechanics)"),
+        "constraint_response_stage": LawScale(
+            "constraint-dynamics response stage (PGS / sequential-impulse sweep)",
+            tuple(f"eq_N11_{n}" for n in range(9, 20)),
+            (a_eff > 0, beta_stab >= 0, beta_stab <= 1, mu_fric >= 0),
+            source="one sweep of a projected Gauss-Seidel / sequential-impulse solve; convergence is the consumer's fixed-point cycle (Baraff 1994; Catto 2005; Baumgarte 1972)"),
         "weak_field_gravity": LawScale(
             "weak-field (Newtonian) gravity", ("eq_E6_1", "eq_E6_2"), (sp.Abs(Phi) / c**2 < sp.Rational(1, 100),),
             source="|Phi|/c^2 << 1 (Misner-Thorne-Wheeler 18)"),
@@ -4321,6 +4357,16 @@ KNOWN_COLLISIONS = {
             'Element-by-species incidence matrix, A*n = element totals.',
             (SymbolUsage('Lavoisier', "sp.Symbol('A') inline", 'L1 stoichiometry/composition'),
              SymbolUsage('Noether', 'A_n', 'NO4 chemical conservation check'))),
+    ),
+    'mu_f': (
+        SymbolIdentity(
+            'coulomb_friction_coefficient',
+            'Coulomb friction coefficient in the cone |lambda_t| <= mu_f lambda_n.',
+            (SymbolUsage('Newton', 'mu_f', 'N5 friction cone; N11 cone projections eq_N11_16/17 and the constraint_response_stage LawScale'),)),
+        SymbolIdentity(
+            'dynamic_viscosity',
+            'Fluid dynamic viscosity in the particle Reynolds number Re_p = rho_f v_p d_p / mu_f.',
+            (SymbolUsage('Law scales', 'mu_f', 'LAW_SCALES stokes_drag / newton_drag Re_p groups'),)),
     ),
 }
 
