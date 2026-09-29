@@ -362,12 +362,6 @@ def main() -> None:
     from OpenGL import GL
 
     sim = WoodshopSimulation()
-    native_build = (
-        Path(__file__).resolve().parent / "build" / "woodshop_pygame_newton"
-    )
-    print("[woodshop] compiling complete Newton window for ctypes...", flush=True)
-    newton_library = sim.enable_native_newton(native_build)
-    print(f"[woodshop] Newton ctypes binary: {newton_library}", flush=True)
 
     BaseGLRenderer, MaterialDatabase, OpenGLTextPanel = _renderer_modules()
     pygame.init()
@@ -393,7 +387,6 @@ def main() -> None:
     yaw, pitch = 0.0, -0.36
     messages = [
         "Centre the crosshair on an object and press E to pick it up.",
-        f"Newton: ctypes -> {newton_library.name}",
     ]
     clock = pygame.time.Clock()
     frame = 0

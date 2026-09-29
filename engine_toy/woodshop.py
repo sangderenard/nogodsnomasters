@@ -68,9 +68,7 @@ if str(_TURING_EXAMPLES) not in sys.path:
     sys.path.insert(0, str(_TURING_EXAMPLES))
 
 from llvm_dt_system import (
-    TELEMETRY_FIELDS,
     advance_round,
-    bind_namespace,
     instantiate_system,
     lowered_system,
     piece_leaf,
@@ -756,9 +754,6 @@ class WoodshopWorldRules(DtCompatibleEngine):
         self.newton_dt_state = None
         self._newton_dt_pieces = ()
         self._newton_batch = 0
-        self._native_newton_system = None
-        self._native_newton_state_type = None
-        self.newton_native_execution = None
         self._laws = law_pieces(
             ("Newton",),
             law_ids=("eq_N5_5", "eq_N5_6", "eq_N5_7"),
@@ -798,13 +793,6 @@ class WoodshopWorldRules(DtCompatibleEngine):
             self._newton_batch = batch
             self.newton_dt_graph = None
             self.newton_dt_state = None
-            if (self._native_newton_system is not None
-                    and self._native_newton_system.batch != batch):
-                # LLVM pieces have a declared lane count. Never drive a binary
-                # compiled for a different world shape.
-                self._native_newton_system = None
-                self._native_newton_state_type = None
-                self.newton_native_execution = None
         if self.newton_dt_graph is None and window is not None:
             requested = float(window)
             self.newton_dt_graph = RoundNode(
@@ -865,57 +853,6 @@ class WoodshopWorldRules(DtCompatibleEngine):
             spans["momentum_z"][lane] = mz
         for name in ("force_x", "force_y", "force_z"):
             spans[name][...] = 0.0
-
-    def _attach_native_newton_system(self, system) -> None:
-        if int(system.batch) != int(self._newton_batch):
-            raise ValueError(
-                f"Newton binary batch {system.batch} does not match "
-                f"world batch {self._newton_batch}")
-        namespace = bind_namespace(system.pieces, schedule="sequential")
-        self._native_newton_system = system
-        self._native_newton_state_type = namespace["PieceState"]
-        self.newton_native_execution = None
-
-    def enable_native_newton(self, directory, *, optimization="O2",
-                             trace=False, trace_full_values=False) -> Path:
-        """Compile and attach the complete Newton window's native DLL.
-
-        The Python world remains the owner of object and contact state. Only
-        the N4.1 -> N1.2 -> N1.1 dt window crosses ctypes, through the native
-        pointer-table ABI published by ``lower_newton_dt_system``. The outer
-        adaptive loop is emitted as C and the three law modules remain LLVM
-        links; the whole-program LLVM loop lane currently loses carried Phis.
-        """
-        self._ensure_newton_dt_system()
-        system = self.lower_newton_dt_system(
-            directory, backend="c", optimization=optimization,
-            piece_mode="link", trace=trace,
-            trace_full_values=trace_full_values)
-        self._attach_native_newton_system(system)
-        return Path(system.artifact.library_path)
-
-    def _run_native_newton(self, columns, targets, controller,
-                           requested: float, initial: float):
-        system = self._native_newton_system
-        State = self._native_newton_state_type
-        if system is None or State is None:
-            raise RuntimeError("native Newton system is not attached")
-        state = State(
-            *(columns[name] for name in system.columns),
-            np.zeros((self._newton_batch,), dtype=np.float64),
-            np.zeros((len(TELEMETRY_FIELDS),), dtype=np.float64),
-        )
-        execution = system.prepare(
-            state, targets, controller, requested, initial, 1.0)
-        execution.run()  # CModuleArtifact.entry(): ctypes -> linked native DLL
-
-        field_ids = system.state_field_ids()
-        for name in system.columns:
-            columns[name][...] = execution.buffers[field_ids[name]]
-        state.telemetry[...] = execution.buffers[field_ids["telemetry"]]
-        self.newton_dt_state = state
-        self.newton_native_execution = execution
-        return float(state.telemetry[0]), float(state.telemetry[1])
 
     def _advance_newton_dt_system(self, dt: float):
         """Advance all object lanes through one round of the Newton dt system.
@@ -1442,13 +1379,6 @@ class WoodshopSimulation:
         self.active_drop: DropPlacement | None = None
         self.hand_use_elapsed = {"left": 0.0, "right": 0.0}
 
-    def enable_native_newton(self, directory, *, optimization="O2",
-                             trace=False, trace_full_values=False) -> Path:
-        """Put the playable world's Newton step behind its compiled DLL."""
-        return self.world_rules.enable_native_newton(
-            directory, optimization=optimization, trace=trace,
-            trace_full_values=trace_full_values)
-
     @staticmethod
     def default_save_path() -> Path:
         """Return the per-user save location used by the playable client."""
@@ -1499,7 +1429,6 @@ class WoodshopSimulation:
             raise ValueError(
                 f"unsupported woodshop save version {snapshot.schema_version}")
 
-        native_newton = self.world_rules._native_newton_system
         self.state_table.restore(snapshot.state_table)
         self.object_graph = copy.deepcopy(snapshot.object_graph)
         self.items = self.object_graph.nodes
@@ -1541,10 +1470,6 @@ class WoodshopSimulation:
             self.items, object_graph=self.object_graph)
         self.world_rules.attach_assembly(shared)
         self.world_rules.restore(snapshot.world_rules)
-        if (native_newton is not None
-                and native_newton.batch == len(self.items)):
-            self.world_rules._ensure_newton_dt_system()
-            self.world_rules._attach_native_newton_system(native_newton)
 
         self.woodworking_joints = WoodworkingJointInterface(self.object_graph)
         self.woodworking_joints.joints = copy.deepcopy(

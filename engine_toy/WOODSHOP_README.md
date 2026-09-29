@@ -32,13 +32,19 @@ pieces for cutting force, edge speed, power, removal rate, and kerf advance.
 The pieces are cached LLVM artifacts; the gameplay process does not compile
 them again when the matching artifact is already present.
 
-World motion uses the real linked-law dt system. The playable
-`woodshop_pygame.py` demo lowers the complete Newton window before opening the
-display, loads the resulting DLL through ctypes, and makes one native call for
-that window per frame. Python still owns gameplay, geometry/contact resolution,
-and rendering; the adaptive dt shell is native C and its N4.1 -> N1.2 -> N1.1
-law modules are LLVM links in the same binary. The console and HUD name the
-loaded DLL.
+World motion uses the real linked-law dt system. `WoodshopWorldRules`
+instantiates that system once (`instantiate_system`) from the batched Newton
+pieces, their sequential `RoundNode`, and the lane columns; the dt system owns
+the round, the state, and the controller's continuation. Each step the world
+asks the system for its window (`advance_round`), checks that the window
+landed, and reads the lanes back. Until the items are views onto the state's
+lane spans, their per-item state is synced into the spans before each round
+and read back after it; that sync is interim. No native piece runs inside the
+Python program: the step is the eager Python step, and the same code is the
+source of a whole-program native compile. A native realization of the
+woodshop is the whole program compiled, never a DLL called from Python. The
+playable `woodshop_pygame.py` demo runs the eager step; Python owns gameplay,
+geometry/contact resolution, and rendering.
 
 `WoodshopWorldRules` manifests the
 existing N4.1, N1.2 and N1.1 equations as three full-batch LLVM pieces:
@@ -53,8 +59,8 @@ are published into the shared `StateTable`.
 
 `WoodshopWorldRules.lower_newton_dt_system(path)` invokes the repository's
 whole-dt native lowerer over the same three pieces. Its C shell route emits the
-complete pointer-table ABI and links the LLVM laws into the binary used by the
-playable demo.
+complete pointer-table ABI and links the LLVM laws into one binary. That
+artifact is a compiler product; the Python program does not load or call it.
 
 Controls are shown in `woodshop_pygame.py`. Number keys equip the right hand;
 Shift plus a number equips the left. Left and right mouse buttons hold the
