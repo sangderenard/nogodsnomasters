@@ -32,7 +32,15 @@ pieces for cutting force, edge speed, power, removal rate, and kerf advance.
 The pieces are cached LLVM artifacts; the gameplay process does not compile
 them again when the matching artifact is already present.
 
-World motion uses the real LLVM dt system. `WoodshopWorldRules` manifests the
+World motion uses the real linked-law dt system. The playable
+`woodshop_pygame.py` demo lowers the complete Newton window before opening the
+display, loads the resulting DLL through ctypes, and makes one native call for
+that window per frame. Python still owns gameplay, geometry/contact resolution,
+and rendering; the adaptive dt shell is native C and its N4.1 -> N1.2 -> N1.1
+law modules are LLVM links in the same binary. The console and HUD name the
+loaded DLL.
+
+`WoodshopWorldRules` manifests the
 existing N4.1, N1.2 and N1.1 equations as three full-batch LLVM pieces:
 gravity, then momentum, then position. A sequential `RoundNode` states those
 same-step dependencies. Each piece is called once over the complete object
@@ -44,12 +52,9 @@ same batch with their active lane disabled. Momentum and resolved contacts
 are published into the shared `StateTable`.
 
 `WoodshopWorldRules.lower_newton_dt_system(path)` invokes the repository's
-whole-dt native lowerer over the same three pieces. At the present compiler
-revision, that route reaches ProcessGraph source-closure construction and
-then fails in `graph_express2._resolve_ast_parent_reference` while recursively
-resolving `ExtractionContract.program_abi/path`; it does not reach C emission.
-The managed LLVM-piece dt graph is operational despite that distinct
-whole-program compiler frontier.
+whole-dt native lowerer over the same three pieces. Its C shell route emits the
+complete pointer-table ABI and links the LLVM laws into the binary used by the
+playable demo.
 
 Controls are shown in `woodshop_pygame.py`. Number keys equip the right hand;
 Shift plus a number equips the left. Left and right mouse buttons hold the
