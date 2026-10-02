@@ -202,12 +202,13 @@ class OrbitalJumper:
         self.window_s = float(window_s)
         self.pieces = orbital_jumper_dt_pieces(len(self.centers))
         columns = self._initial_columns(mass_kg, position_m, velocity_m_s)
-        # No ``energy_exchange_fraction``: the Newton pieces publish no
-        # energy channel, so every participant would read HOLD ("do not
-        # grow"), and each window's landing remainder would then ratchet dt
-        # down round after round (measured: 3.3 s -> 3.7e-4 s in six rounds
-        # of a 291 s window).  dt is the CFL bound on ``max_vel``.
-        targets = Targets(cfl=float(cfl), div_max=1.0e9, mass_max=1.0e-3)
+        # Woodshop's targets.  The Newton pieces publish no energy channel, so
+        # every participant reads HOLD ("do not grow"); dt is the CFL bound on
+        # ``max_vel``.  The window's clipped landing substep no longer becomes
+        # the continuation (``run_superstep``; see
+        # ``turing/docs/DT_LAST_SUBSTEP_RATCHET_CONTINUATION.md``).
+        targets = Targets(cfl=float(cfl), div_max=1.0e9, mass_max=1.0e-3,
+                          energy_exchange_fraction=0.2)
         # The first attempt is the controller's own CFL proposal at the
         # initial state; every later attempt is the controller's continuation.
         speed = float(np.linalg.norm(np.asarray(velocity_m_s, dtype=float)))
