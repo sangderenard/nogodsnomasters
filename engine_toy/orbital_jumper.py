@@ -9,16 +9,28 @@ the craft later becomes, it meets the trajectory through two functions
 (decision 8):
 
     r() -> (position, velocity)     what the dt state holds now
-    F(force)                        the applied force for the next round
+    F(force)                        the raw applied force (an override)
+    throttle(u)                     the control signal: per-thruster
+                                    throttles (build step 2)
 
 Pieces, in causal order (one ``RoundNode``, ``sequential`` schedule):
 
+    actuation      applied_force_* <- B @ clamp(u) + raw_force_*
+                   (``orbital_actuation``: eq_TS1_2 per declared thruster)
     N4.1 gravity   force_* <- sum over centers of N4.1 + applied_force_*
     N1.2 momentum  momentum_* <- momentum_* + dt * force_*
     N1.1 position  position_* <- position_* + dt * momentum_* / mass;
                    publishes ``max_vel`` (the controller's CFL input, as the
                    Woodshop Newton pieces do; they publish no energy channel)
-    thrust cost    fuel_impulse <- fuel_impulse + dt * |applied_force|
+    thrust cost    thruster{k}_impulse += dt * clamp(u_k) * max_thrust_k;
+                   fuel_impulse += dt * (sum_k clamp(u_k) * max_thrust_k
+                                         + |raw_force|)
+
+Which one wins: neither -- they superpose.  The throttles drive the
+actuation piece; ``F()`` writes ``raw_force_*``, which the same piece adds
+on top, unchanged from step 1's meaning (a raw force, kept for tests and
+for forces that are not thrusters).  With every throttle at zero ``F()`` is
+exactly step 1's seam; with ``F`` at zero the force is the thrusters' alone.
 
 Provenance (decision 5).  The catalogue law ``eq_N4_1`` is the truth for
 gravity; it is the same form as the original set's
@@ -30,9 +42,11 @@ set (its ``force_cost_integral``) unchanged; arc length becomes time
 (decision 1), so ``ds`` is discretized as the step's ``dt``.
 
 Mass is a column, constant for now (fuel-burn mass loss is build step 7).
-``fuel_impulse`` accumulates the applied impulse magnitude in N*s; with a
-specific impulse per thruster kind it becomes propellant mass (step 7) and
-it is the consumption term of decision 7's cost.
+``fuel_impulse`` (name kept from step 1) accumulates the total thrust
+impulse in N*s, now per thruster (``thruster{k}_impulse``, decision 7): two
+opposed thrusters at full throttle cost fuel though their net force is
+zero.  With a specific impulse per thruster kind each becomes propellant
+mass (step 7); the total is the consumption term of decision 7's cost.
 """
 from __future__ import annotations
 
@@ -61,10 +75,20 @@ from src.common.dt_system.dt_controller import STController, Targets
 from src.common.dt_system.dt_graph import ControllerNode, RoundNode
 from src.transmogrifier.orbital_transfer import OrbitalTransfer
 
+from orbital_actuation import (
+    AXES,
+    CraftDesign,
+    actuation_force_rhs,
+    actuation_matrix,
+    clamp_throttles,
+    thrust_magnitude,
+    thruster_columns,
+    thruster_symbols,
+)
 
-AXES = ("x", "y", "z")
-PIECE_LABELS = ("N4.1 gravity", "N1.2 momentum", "N1.1 position",
-                "thrust cost")
+
+PIECE_LABELS = ("actuation", "N4.1 gravity", "N1.2 momentum",
+                "N1.1 position", "thrust cost")
 #: The original set keys its gravitational parameter by the Greek letter mu.
 _ORIGINAL_MU_KEY = chr(0x3BC)
 
@@ -119,28 +143,41 @@ def gravity_force_rhs(axis: str, center_count: int):
     return total
 
 
-def thrust_cost_integrand():
+def thrust_cost_integrand(prefix: str = "applied_force"):
     """The original ``force_cost_integral`` integrand, |F_extra|, spelled
-    on the applied-force columns."""
+    on the ``{prefix}_*`` columns (the cost piece spells it on
+    ``raw_force_*``)."""
     spline = original_transfer_set()
     integral = spline["force_cost_integral"]
     extra = spline["force_components"]["F_extra"]
     return integral.function.xreplace({
-        extra[index]: sp.Symbol(f"applied_force_{axis}")
+        extra[index]: sp.Symbol(f"{prefix}_{axis}")
         for index, axis in enumerate(AXES)
     })
 
 
-def orbital_jumper_dt_pieces(center_count: int, batch: int = 1):
-    """Manifest N4.1 -> N1.2 -> N1.1 (+ thrust cost) as batched LLVM pieces.
+def orbital_jumper_dt_pieces(center_count: int, thruster_count: int = 0,
+                             batch: int = 1):
+    """Manifest actuation -> N4.1 -> N1.2 -> N1.1 (+ thrust cost) as
+    batched LLVM pieces.
 
     Substitutions into the catalogue equations followed only by
     symplectic-Euler time discretization, as ``newton_world_dt_pieces``.
     """
     if center_count < 0:
         raise ValueError("center_count must be non-negative")
+    if thruster_count < 0:
+        raise ValueError("thruster_count must be non-negative")
     dt, mass = sp.symbols("dt mass")
     applied = {axis: sp.Symbol(f"applied_force_{axis}") for axis in AXES}
+    raw = {axis: sp.Symbol(f"raw_force_{axis}") for axis in AXES}
+
+    actuation = equation_piece(
+        f"orbital_jumper_actuation_t{thruster_count}", tuple(
+            sp.Eq(sp.Symbol(f"applied_force_{axis}_next"),
+                  actuation_force_rhs(axis, thruster_count) + raw[axis],
+                  evaluate=False)
+            for axis in AXES), batch=batch)
     force = {axis: sp.Symbol(f"force_{axis}") for axis in AXES}
     momentum = {axis: sp.Symbol(f"momentum_{axis}") for axis in AXES}
     position = {axis: sp.Symbol(f"position_{axis}") for axis in AXES}
@@ -176,12 +213,26 @@ def orbital_jumper_dt_pieces(center_count: int, batch: int = 1):
         sp.Eq(sp.Symbol("max_vel"), speed, evaluate=False),
     ), batch=batch)
 
+    # per-thruster fuel (decision 7): each thruster's TS1.2 thrust is its
+    # impulse rate, whatever the others do; the raw override costs |F| as
+    # in the original set's integrand
     fuel = sp.Symbol("fuel_impulse")
-    cost_piece = equation_piece("orbital_jumper_thrust_cost", (
-        sp.Eq(sp.Symbol("fuel_impulse_next"),
-              fuel + dt * thrust_cost_integrand(), evaluate=False),
-    ), batch=batch)
-    return gravity, momentum_piece, position_piece, cost_piece
+    per_thruster = []
+    for index in range(thruster_count):
+        impulse = thruster_symbols(index)["impulse"]
+        per_thruster.append(sp.Eq(
+            sp.Symbol(f"{impulse.name}_next"),
+            impulse + dt * thrust_magnitude(index), evaluate=False))
+    total_rate = (sum((thrust_magnitude(index)
+                       for index in range(thruster_count)), sp.Integer(0))
+                  + thrust_cost_integrand("raw_force"))
+    cost_piece = equation_piece(
+        f"orbital_jumper_thrust_cost_t{thruster_count}", (
+            *per_thruster,
+            sp.Eq(sp.Symbol("fuel_impulse_next"), fuel + dt * total_rate,
+                  evaluate=False),
+        ), batch=batch)
+    return actuation, gravity, momentum_piece, position_piece, cost_piece
 
 
 class OrbitalJumper:
@@ -192,16 +243,27 @@ class OrbitalJumper:
     round only writes the seam's force columns and calls ``advance_round``.
     ``length_scale_m`` is the controller's ``dx``: the CFL bound is
     ``dt <= cfl * dx / max_vel``.
+
+    The craft is a :class:`orbital_actuation.CraftDesign` (thrusters +
+    mass).  ``mass_kg`` alone is step 1's thrusterless jumper.
     """
 
-    def __init__(self, centers: Sequence[GravityCenter], *, mass_kg: float,
+    def __init__(self, centers: Sequence[GravityCenter], *,
                  position_m, velocity_m_s, length_scale_m: float,
-                 window_s: float, cfl: float = 0.5):
+                 window_s: float, mass_kg: float | None = None,
+                 design: CraftDesign | None = None, cfl: float = 0.5):
+        if (mass_kg is None) == (design is None):
+            raise ValueError("give exactly one of mass_kg (no thrusters) "
+                             "or design")
+        self.design = (CraftDesign((), float(mass_kg), identity="jumper")
+                       if design is None else design)
         self.centers = tuple(centers)
         self.length_scale_m = float(length_scale_m)
         self.window_s = float(window_s)
-        self.pieces = orbital_jumper_dt_pieces(len(self.centers))
-        columns = self._initial_columns(mass_kg, position_m, velocity_m_s)
+        self.pieces = orbital_jumper_dt_pieces(
+            len(self.centers), self.design.thruster_count)
+        columns = self._initial_columns(
+            self.design.mass_kg, position_m, velocity_m_s)
         # Woodshop's targets.  The Newton pieces publish no energy channel, so
         # every participant reads HOLD ("do not grow"); dt is the CFL bound on
         # ``max_vel``.  The window's clipped landing substep no longer becomes
@@ -242,6 +304,8 @@ class OrbitalJumper:
             columns[f"momentum_{axis}"] = np.full(1, mass * velocity[index])
             columns[f"force_{axis}"] = np.zeros(1)
             columns[f"applied_force_{axis}"] = np.zeros(1)
+            columns[f"raw_force_{axis}"] = np.zeros(1)
+        columns.update(thruster_columns(self.design))
         for index, center in enumerate(self.centers):
             for slot, axis in enumerate(AXES):
                 columns[f"center{index}_{axis}"] = np.full(
@@ -262,10 +326,39 @@ class OrbitalJumper:
         return position, momentum / float(self._span("mass")[0])
 
     def F(self, force_n) -> None:
-        """Set the applied force (N) the next round integrates."""
+        """Set the raw applied force (N) the next round integrates.
+
+        It superposes on the thrusters' ``B @ clamp(u)`` in the actuation
+        piece; with every throttle at zero it is the whole applied force."""
         force = np.asarray(force_n, dtype=float).reshape(3)
         for index, axis in enumerate(AXES):
-            self._span(f"applied_force_{axis}")[...] = force[index]
+            self._span(f"raw_force_{axis}")[...] = force[index]
+
+    def throttle(self, throttles) -> None:
+        """Set the per-thruster throttles (design order) the next round
+        applies; the piece clamps each to its declared range."""
+        u = np.asarray(throttles, dtype=float).reshape(
+            self.design.thruster_count)
+        for index, value in enumerate(u):
+            self._span(f"thruster{index}_throttle")[...] = value
+
+    def throttles(self) -> np.ndarray:
+        """The commanded (unclamped) throttles."""
+        return np.asarray([float(self._span(f"thruster{k}_throttle")[0])
+                           for k in range(self.design.thruster_count)])
+
+    def applied_force(self) -> np.ndarray:
+        """The applied force (N) the last substep integrated."""
+        return np.asarray([float(self._span(f"applied_force_{axis}")[0])
+                           for axis in AXES])
+
+    def commanded_force(self) -> np.ndarray:
+        """``B @ clamp(u) + raw`` evaluated on the host from the design --
+        what the next round's actuation piece will write."""
+        raw = np.asarray([float(self._span(f"raw_force_{axis}")[0])
+                          for axis in AXES])
+        return (actuation_matrix(self.design)
+                @ clamp_throttles(self.design, self.throttles()) + raw)
 
     # ------------------------------------------------------------ the round
     def advance(self, window_s: float | None = None):
@@ -286,6 +379,12 @@ class OrbitalJumper:
     @property
     def fuel_impulse_n_s(self) -> float:
         return float(self._span("fuel_impulse")[0])
+
+    @property
+    def thruster_impulses_n_s(self) -> np.ndarray:
+        """Per-thruster accumulated thrust impulse (N*s), design order."""
+        return np.asarray([float(self._span(f"thruster{k}_impulse")[0])
+                           for k in range(self.design.thruster_count)])
 
     @property
     def substeps(self) -> int:
