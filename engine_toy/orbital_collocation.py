@@ -14,7 +14,10 @@ k = 1..N, are free.  x_0 is the present state and is not a variable, so
 every plan -- and every re-plan -- is the total trip from the current moment
 over a horizon that shrinks as the trip proceeds (sum dt_k is free).
 
-Dynamics defects ``x_{k+1} - step(x_k, u_k, dt_k)``.  ``step`` is the
+Dynamics defects ``x_{k+1} - flow(x_k, u_k, dt_k)``; the flow is
+``substeps`` steps of ``dt_k / substeps`` (16: 3.6 m worst per-slice error
+against 256 steps on the LEO -> 8000 km plan; ONE step per slice left 994 m,
+which the tracker then paid fuel to follow).  ``step`` is the
 jumper's own laws (``orbital_jumper`` / ``orbital_actuation``): actuation
 eq_TS1_2 at the planning attitude, propellant flow eq_TS1_2/TS1_4, gravity
 eq_N4_1, the variable-mass momentum law eq_N7_2, position eq_N1_1 -- stepped
@@ -38,6 +41,10 @@ Cost (decision 7; plan deviation is not here -- zero by construction):
     T = sum_k dt_k                              time to arrive
     J = alpha I / T + beta T - kappa log(1 - I / fuel_budget)
 
+compiled as two motions: the slice's fuel (one per slice, shared) and J on
+the totals (I, T); the totals' adjoint is dJ/dI, dJ/dT broadcast to every
+slice (the adjoint of a sum), so nothing compiles per N.
+
 ``w_j`` prices thruster j as the tracker does (``orbital_tracker.
 fuel_price``'s rule): its propellant per impulse 1/c (kg/(N s)) when the
 design burns propellant, else 1 (impulse, the reactionless kind).  The thrust
@@ -50,7 +57,9 @@ ingested by ``symbolic_process_graph.ingest_sympy_expressions``,
 differentiated by ``process_graph_autograd`` (graph-native reverse), fused
 into ONE forward/backward motion with an explicit upstream seed per row,
 lowered and compiled once; a Jacobian row is one native run with that row's
-seed one-hot.  One slice motion serves every slice.  Nothing here
+seed one-hot.  One slice motion serves every slice and sub-step: a slice's
+Jacobian is its sub-steps' compiled Jacobians chained in order.  Compiled
+rows persist across processes (:data:`CACHE_DIRECTORY`).  Nothing here
 differentiates numerically or symbolically.
 
 Public surface:
@@ -61,6 +70,7 @@ Public surface:
                          tracker's plan protocol)
     plan_transfer(problem, t0, position, velocity, ...) -> (plan, hohmann)
     collocation_replanner(problem, craft=) -> the tracker's re-planner
+    pointing_proxy(design) -> a planning design for a craft that points
     compile_reverse_rows(name, expressions, wrt) -> ReverseRows
 """
 from __future__ import annotations
@@ -787,6 +797,8 @@ class CollocationPlan:
     jacobian_s: float
     solve_s: float
     transcription: object = field(repr=False, default=None)
+    polish_evaluations: int = 0
+    _thrusting_cache: object = field(repr=False, default=None)
     _coast: list = field(repr=False, default_factory=list)
 
     @property
@@ -819,13 +831,39 @@ class CollocationPlan:
     def ideal_delta_v(self) -> float:
         return float(np.sum(np.linalg.norm(self.slice_delta_v(), axis=1)))
 
-    def impulses(self, threshold_m_s: float = 1.0e-3) -> tuple:
-        """Each slice that thrusts (``|dv| > threshold``) as one impulse at
-        its midpoint, for the tracker's open-loop burns."""
-        mids = 0.5 * (self.times[:-1] + self.times[1:])
-        return tuple(PlannedImpulse(float(t), dv)
-                     for t, dv in zip(mids, self.slice_delta_v())
-                     if np.linalg.norm(dv) > threshold_m_s)
+    #: A slice whose thrust delta-v is at most this is a coast slice (its
+    #: reference is its flow and the tracker's trims take it up).  Below
+    #: 1 m/s the slices of an unconverged (polished) plan carry optimizer
+    #: residue -- 0.0-0.9 m/s on the kick re-plan -- and each became a burn
+    #: the craft slewed to.
+    THRUST_THRESHOLD_M_S = 1.0
+
+    def _thrusting(self) -> np.ndarray:
+        return (np.linalg.norm(self.slice_delta_v(), axis=1)
+                > self.THRUST_THRESHOLD_M_S)
+
+    def impulses(self) -> tuple:
+        """One impulse per thrusting slice, at its midpoint: the step the
+        reference takes there (see :meth:`reference`)."""
+        out = []
+        for k in np.flatnonzero(self._thrusting()):
+            mid = 0.5 * float(self.times[k] + self.times[k + 1])
+            before = self._side(k, mid, after=False)
+            after = self._side(k, mid, after=True)
+            out.append(PlannedImpulse(mid, (after[:3] / (self.transcription.dry
+                                                         + after[6]))
+                                      - before[:3] / (self.transcription.dry
+                                                      + before[6])))
+        return tuple(out)
+
+    def _side(self, k, t, *, after: bool):
+        """Coast (u = 0) from node k forward, or from node k+1 backward."""
+        tr = self.transcription
+        coast = np.zeros(tr.n_u)
+        if after:
+            return tr.advance(self._state(k + 1), coast,
+                              t - float(self.times[k + 1]))
+        return tr.advance(self._state(k), coast, t - float(self.times[k]))
 
     def _state(self, k):
         return np.concatenate([
@@ -833,18 +871,32 @@ class CollocationPlan:
             * self.velocities[k], self.positions[k], [self.propellant_kg[k]]])
 
     def reference(self, t):
-        """``(r, v)`` the plan prescribes at ``t``: inside slice k its own
-        step law from node k over ``t - t_k`` (u_k held); after arrival a
-        coast by the same flow in legs of at most 60 s from the arrival
-        node; before the start, the start node.  Inside slice k: the slice's
-        flow (``substeps`` steps) over ``t - t_k``."""
+        """``(r, v)`` the plan prescribes at ``t``.
+
+        Coast slice k: the slice's flow (``substeps`` steps of its law) from
+        node k over ``t - t_k``.  Thrusting slice k: its impulsive
+        equivalent -- coast from node k up to the midpoint, coast BACK from
+        node k+1 after it -- so the reference steps exactly by
+        :meth:`impulses` at the time the tracker centres its burn (the
+        tracker reads a burn against a pre-burn reference; a reference that
+        ramps through a long partial-throttle slice was counted twice:
+        measured, the kick re-plan's 243 m/s burn was never flown).  For
+        constant thrust the midpoint impulse has no position step to first
+        order.  After arrival: a coast by the same flow in legs of at most
+        60 s from the arrival node; before the start, the start node."""
         tr, t = self.transcription, float(t)
         if t <= self.t_start:
             x = self._state(0)
         elif t < self.t_arrive:
             k = int(np.searchsorted(self.times, t, side="right")) - 1
-            x = tr.advance(self._state(k), self.throttles[k],
-                           t - float(self.times[k]))
+            if self._thrusting_cache is None:
+                self._thrusting_cache = self._thrusting()
+            if self._thrusting_cache[k]:
+                mid = 0.5 * float(self.times[k] + self.times[k + 1])
+                x = self._side(k, t, after=t >= mid)
+            else:
+                x = tr.advance(self._state(k), self.throttles[k],
+                               t - float(self.times[k]))
         else:
             if not self._coast:
                 self._coast.append((self.t_arrive, self._state(-1)))
@@ -879,34 +931,71 @@ def _plan_from(tr, z, result, solve_s):
 
 def plan_transfer(problem: CollocationProblem, t0: float, position, velocity,
                   *, propellant_kg=None, max_iterations: int = 300,
-                  tolerance: float = 1.0e-12):
+                  tolerance: float = 1.0e-12, method: str = "SLSQP",
+                  feasibility: float = 1.0e-8):
     """Solve the transcription from the present state, warm-started from
-    Hohmann (SLSQP fed the compiled Jacobian).  Returns (plan, hohmann)."""
-    from scipy.optimize import minimize
+    Hohmann, by ``scipy.optimize.minimize`` (``SLSQP`` or ``trust-constr``)
+    fed the compiled Jacobian.  A result whose scaled defects exceed
+    ``feasibility`` is polished by least squares on the defects alone
+    (``plan.polish_evaluations``).  Returns (plan, hohmann)."""
+    from scipy.optimize import Bounds, NonlinearConstraint, minimize
 
     hp, tr, z0 = hohmann_warm_start(problem, t0, position, velocity,
                                     propellant_kg)
     started = time.perf_counter()
-    result = minimize(
-        lambda z: tr.evaluate(z)[0], z0, jac=lambda z: tr.evaluate(z)[1],
-        method="SLSQP", bounds=tr.bounds(),
-        constraints=[{"type": "eq", "fun": lambda z: tr.evaluate(z)[2],
-                      "jac": lambda z: tr.evaluate(z)[3]}],
-        options={"maxiter": max_iterations, "ftol": tolerance})
-    return _plan_from(tr, result.x, result, time.perf_counter() - started), hp
+    cost = lambda z: tr.evaluate(z)[0]
+    gradient = lambda z: tr.evaluate(z)[1]
+    defects = lambda z: tr.evaluate(z)[2]
+    jacobian = lambda z: tr.evaluate(z)[3]
+    if method == "SLSQP":
+        result = minimize(
+            cost, z0, jac=gradient, method="SLSQP", bounds=tr.bounds(),
+            constraints=[{"type": "eq", "fun": defects, "jac": jacobian}],
+            options={"maxiter": max_iterations, "ftol": tolerance})
+    elif method == "trust-constr":
+        low, high = np.array(tr.bounds()).T
+        result = minimize(
+            cost, z0, jac=gradient, method="trust-constr",
+            hess=lambda z: np.zeros((z.size, z.size)),
+            bounds=Bounds(low, high),
+            constraints=[NonlinearConstraint(defects, 0.0, 0.0, jac=jacobian)],
+            options={"maxiter": max_iterations, "gtol": tolerance,
+                     "xtol": tolerance})
+        result.nit = getattr(result, "nit", result.get("niter", -1))
+    else:
+        raise ValueError(f"unknown method {method!r}")
+    z = result.x
+    polished = 0
+    if float(np.max(np.abs(defects(z)))) > feasibility:
+        # the optimizer stopped short of feasible (iteration limit on a flat
+        # optimum): restore the dynamics by least squares on the defects
+        # alone from where it stopped, same compiled Jacobian, same bounds
+        from scipy.optimize import least_squares
+        low, high = np.array(tr.bounds()).T
+        polish = least_squares(defects, np.clip(z, low, high), jac=jacobian,
+                               bounds=(low, high), method="trf",
+                               xtol=1e-15, ftol=1e-15, gtol=1e-15,
+                               max_nfev=1000)
+        z, polished = polish.x, int(polish.nfev)
+    plan = _plan_from(tr, z, result, time.perf_counter() - started)
+    plan.polish_evaluations = polished
+    return plan, hp
 
 
 def collocation_replanner(problem: CollocationProblem, craft=None, **solve):
     """The tracker's re-planner (``fly(..., replanner=)``): the whole
     remaining trip from the present state to the problem's target circle.
-    ``craft``, when given, supplies the propellant left (the tracker's
-    re-planner signature carries no mass).  ``replanner.plans`` keeps every
+    ``craft``, when given, supplies the propellant left through its
+    ``mass_kg`` (the tracker's re-planner signature carries no mass).  ``replanner.plans`` keeps every
     plan made."""
     def replanner(previous, time_s, position_m, velocity_m_s):
         now = problem
         propellant = None
         if craft is not None:
-            propellant = float(craft.propellant_kg)
+            # through the seam's mass (decision 8): wet minus the planning
+            # design's dry mass (a MachineCraft keeps no propellant_kg)
+            propellant = max(0.0, float(craft.mass_kg)
+                             - problem.design.dry_mass_kg)
             if problem.burns_propellant:      # the tank left is the budget
                 now = dataclasses.replace(problem, fuel_budget=propellant)
         plan, _hohmann = plan_transfer(now, time_s, position_m, velocity_m_s,

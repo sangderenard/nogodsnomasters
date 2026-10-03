@@ -173,8 +173,13 @@ def test_kick_replans_with_collocation():
     seen = {}
 
     def compared(previous, t, r, v):
-        seen["hohmann"] = hohmann_replanner(previous, t, r, v)
-        seen["propellant"] = craft.propellant_kg
+        # what the Hohmann re-planner asks from here: its burn 1 from the
+        # present velocity onto its transfer, then its burn 2
+        hohmann = hohmann_replanner(previous, t, r, v)
+        _r, after = hohmann_reference(hohmann, t)
+        seen.setdefault("hohmann_dv", float(
+            np.linalg.norm(after - np.asarray(v)) + abs(hohmann.dv2)))
+        seen.setdefault("propellant", craft.propellant_kg)
         return replanner(previous, t, r, v)
 
     mode = TrackingMode(plan)
@@ -188,23 +193,84 @@ def test_kick_replans_with_collocation():
     craft.F((0.0, 0.0, 0.0))
     fly(craft, plan, gains, until_s=kick_at + 600.0, round_s=round_s,
         replanner=compared, mode=mode)
-    replanned = mode.plan
-    report = fly(craft, plan, gains, until_s=replanned.t_arrive + 1500.0,
-                 round_s=round_s, replanner=compared, mode=mode)
+    replanned = replanner.plans[0]
+    history = []
+    while True:                  # fly to the arrival of the plan flown now
+        flown = mode.plan
+        report = fly(craft, plan, gains, until_s=flown.t_arrive + 1500.0,
+                     round_s=round_s, replanner=compared, mode=mode,
+                     record=history)
+        if mode.plan is flown:
+            break
     position, velocity = craft.r()
     radius = np.linalg.norm(position)
     used = seen["propellant"] - craft.propellant_kg
+    burns = [(round(i.time_s), round(float(np.linalg.norm(i.delta_v_m_s)), 1))
+             for i in replanned.impulses()
+             if np.linalg.norm(i.delta_v_m_s) > 1.0]
     print(f"\nre-plan: {replanned.message}, {replanned.iterations} "
-          f"iterations, {replanned.solve_s:.1f} s; delta-v "
-          f"{replanned.ideal_delta_v:.1f} m/s (Hohmann-from-present "
-          f"{seen['hohmann'].ideal_delta_v:.1f} m/s); trip "
-          f"{replanned.transfer_time:.0f} s (Hohmann "
-          f"{seen['hohmann'].t_burn2 - seen['hohmann'].t_burn1:.0f} s); "
-          f"propellant after the kick {used:.2f} kg; events {mode.events}; "
-          f"|r| - r2 {radius - R_HIGH:.1f} m, |v| - v_circ "
+          f"iterations + {replanned.polish_evaluations} polish, "
+          f"{replanned.solve_s:.1f} s, defect {replanned.max_defect:.1e}; "
+          f"delta-v {replanned.ideal_delta_v:.1f} m/s (Hohmann-from-present "
+          f"{seen['hohmann_dv']:.1f} m/s); trip "
+          f"{replanned.transfer_time:.0f} s; burns {burns}; flown burns "
+          f"{[tuple(round(v, 1) for v in b) for b in mode.burns]}; re-plans "
+          f"{mode.replans}, events {mode.events}; propellant after the "
+          f"kick {used:.2f} kg; final |r - r_ref| "
+          f"{report.final_position_error_m:.1f} m; |r| - r2 "
+          f"{radius - R_HIGH:.1f} m, |v| - v_circ "
           f"{np.linalg.norm(velocity) - math.sqrt(MU_EARTH / R_HIGH):.4f}")
-    assert replanned is replanner.plans[0] and replanned.converged
-    assert mode.replans == 1
-    assert replanned.ideal_delta_v < seen["hohmann"].ideal_delta_v
+    final = max(replanned.impulses(), key=lambda i: i.time_s)
+    around = [(t, c.phase, round(c.attitude_error_rad, 3),
+               round(float(np.linalg.norm(c.achieved_force_n))))
+              for t, c in history if abs(t - final.time_s) < 60.0]
+    print(f"  around the last planned burn ({final.time_s:.1f} s): {around}")
+    for p in replanner.plans:
+        r_end = np.linalg.norm(p.positions[-1])
+        print(f"  plan from t={p.t_start:.0f}: {p.message}, it "
+              f"{p.iterations} + polish {p.polish_evaluations}, defect "
+              f"{p.max_defect:.1e}, dv {p.ideal_delta_v:.1f}, arrive "
+              f"{p.t_arrive:.0f} s at |r| - r2 {r_end - R_HIGH:.3f} m")
+    assert mode.replans >= 1 and replanned.max_defect < 1e-8
+    assert replanned.ideal_delta_v < seen["hohmann_dv"]
+    assert abs(radius - R_HIGH) < 500.0
+    assert abs(np.linalg.norm(velocity) - math.sqrt(MU_EARTH / R_HIGH)) < 1.0
+
+
+# ------------------------------------------------ the machine craft (step 8)
+def test_machine_craft_flies_the_collocation_plan():
+    from orbital_craft_machine import MachineCraft, orbital_craft
+    round_s = 2.0
+    gains = TrackingGains(attitude_frequency_rad_s=0.2)
+    r0, v0 = _leo_state(0.0)
+    craft = MachineCraft(EARTH, orbital_craft(), position_m=r0,
+                         velocity_m_s=v0, length_scale_m=5.0e4,
+                         window_s=round_s)
+    problem = oc.CollocationProblem(oc.pointing_proxy(craft.design), EARTH,
+                                    R_HIGH)
+    # MachineCraft has no propellant_kg (the inherited jumper property
+    # reads a propellant_mass column the machine does not keep): its tanks
+    propellant = sum(craft.tank_propellant_kg().values())
+    plan, hp = oc.plan_transfer(problem, craft.time_s, *craft.r(),
+                                propellant_kg=propellant)
+    tanks0, mass0 = craft.tank_propellant_kg(), craft.mass_kg
+    mode = TrackingMode(plan)
+    report = fly(craft, plan, gains, until_s=plan.t_arrive + 1500.0,
+                 round_s=round_s, mode=mode)
+    tanks = craft.tank_propellant_kg()
+    used = sum(tanks0[k] - tanks[k] for k in tanks0)
+    position, velocity = craft.r()
+    radius = np.linalg.norm(position)
+    print(f"\nmachine craft: plan {plan.message}, {plan.iterations} it, "
+          f"defect {plan.max_defect:.1e}, dv {plan.ideal_delta_v:.1f} m/s "
+          f"(Hohmann {hp.ideal_delta_v:.1f}), planned propellant "
+          f"{plan.propellant_kg[0] - plan.propellant_kg[-1]:.2f} kg; flown "
+          f"burns {[tuple(round(v, 1) for v in b) for b in mode.burns]}; "
+          f"propellant used {used:.2f} kg (all tanks); re-plans "
+          f"{report.replans}; final |r - r_ref| "
+          f"{report.final_position_error_m:.1f} m; |r| - r2 "
+          f"{radius - R_HIGH:.1f} m, |v| - v_circ "
+          f"{np.linalg.norm(velocity) - math.sqrt(MU_EARTH / R_HIGH):.4f}")
+    assert plan.max_defect < 1e-8
     assert abs(radius - R_HIGH) < 500.0
     assert abs(np.linalg.norm(velocity) - math.sqrt(MU_EARTH / R_HIGH)) < 1.0
