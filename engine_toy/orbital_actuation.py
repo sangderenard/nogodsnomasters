@@ -101,6 +101,11 @@ THRUSTER_KINDS = {kind.identity: kind for kind in (
 )}
 
 
+#: Declared thruster roles (step 8); ``""`` is the undeclared role of the
+#: steps 2-7 designs.
+THRUSTER_ROLES = ("", "navigation", "brake", "main")
+
+
 @dataclass(frozen=True)
 class Thruster:
     """One thruster, declared the way a thruster sheet lists it.
@@ -114,6 +119,29 @@ class Thruster:
     throttle, a fraction of the maximum mass flow, inside [0, 1].
     ``mass_kg`` is the thruster hardware, a point mass at its mount (part of
     the craft's dry mass).
+
+    Machine-craft declarations (step 8, :mod:`orbital_craft_machine`; the
+    defaults are the fixed, instant, unfed thruster of steps 2-7):
+
+    ``role``                ``navigation`` (RCS), ``brake`` (retro, against
+                            the main thrust) or ``main``.
+    ``cone_half_angle_rad`` the gimbal's cone of available directions about
+                            ``direction`` (0 = fixed).  A gimballed thruster
+                            is a Cardan gimbal: actuator angle ``a`` turns
+                            the thrust about ``gimbal_axis`` (``e1``), then
+                            ``b`` about ``e2 = direction x e1``, so
+                            ``d = cos a cos b n + cos a sin b e1 - sin a e2``
+                            and ``n . d = cos a cos b``: the cone is exactly
+                            ``cos a cos b >= cos(cone)``.
+    ``gimbal_slew_rad_s``   each gimbal actuator's angular rate limit.
+    ``throttle_slew_per_s`` the throttle state's rate limit (spool-up and
+                            shut-down), throttle fraction per second.
+    ``deadband``            the minimum stable throttle: a throttle state
+                            below it delivers no thrust (0 = none).
+    ``feeds``               ``((tank identity, mass fraction), ...)``: which
+                            tanks this thruster's propellant flow is drawn
+                            from, in what mass shares (a bipropellant engine
+                            draws fuel and oxidiser at its mixture ratio).
     """
 
     identity: str
@@ -124,6 +152,13 @@ class Thruster:
     throttle_max: float = 1.0
     kind: str = "ideal"
     mass_kg: float = 0.0
+    role: str = ""
+    cone_half_angle_rad: float = 0.0
+    gimbal_axis: tuple[float, float, float] | None = None
+    gimbal_slew_rad_s: float = math.inf
+    throttle_slew_per_s: float = math.inf
+    deadband: float = 0.0
+    feeds: tuple = ()
 
     def __post_init__(self):
         direction = np.asarray(self.direction, dtype=float).reshape(3)
@@ -146,10 +181,67 @@ class Thruster:
                              f"THRUSTER_KINDS {sorted(THRUSTER_KINDS)}")
         if self.mass_kg < 0.0:
             raise ValueError(f"thruster {self.identity!r}: negative mass")
+        if self.role not in THRUSTER_ROLES:
+            raise ValueError(f"thruster {self.identity!r}: role "
+                             f"{self.role!r} is not one of {THRUSTER_ROLES}")
+        if not 0.0 <= self.cone_half_angle_rad < 0.5 * math.pi:
+            raise ValueError(f"thruster {self.identity!r}: cone half-angle "
+                             "must be inside [0, pi/2)")
+        if self.cone_half_angle_rad > 0.0:
+            if self.gimbal_axis is None:
+                raise ValueError(f"thruster {self.identity!r}: a gimballed "
+                                 "thruster declares its gimbal_axis")
+            axis = np.asarray(self.gimbal_axis, dtype=float).reshape(3)
+            if (not math.isclose(float(np.linalg.norm(axis)), 1.0,
+                                 rel_tol=0.0, abs_tol=1.0e-12)
+                    or abs(float(axis @ direction)) > 1.0e-12):
+                raise ValueError(f"thruster {self.identity!r}: gimbal_axis "
+                                 "must be a unit vector normal to direction")
+        if not (self.gimbal_slew_rad_s > 0.0
+                and self.throttle_slew_per_s > 0.0):
+            raise ValueError(f"thruster {self.identity!r}: slew rates must "
+                             "be positive (math.inf: instant)")
+        if not 0.0 <= self.deadband <= self.throttle_max:
+            raise ValueError(f"thruster {self.identity!r}: deadband must be "
+                             "inside [0, throttle_max]")
+        object.__setattr__(self, "feeds", tuple(
+            (str(tank), float(share)) for tank, share in self.feeds))
+        if self.feeds:
+            shares = [share for _tank, share in self.feeds]
+            tanks = [tank for tank, _share in self.feeds]
+            if (len(set(tanks)) != len(tanks) or min(shares) <= 0.0
+                    or not math.isclose(sum(shares), 1.0, rel_tol=0.0,
+                                        abs_tol=1.0e-12)):
+                raise ValueError(f"thruster {self.identity!r}: feeds are "
+                                 "distinct tanks with positive mass shares "
+                                 "summing to 1")
 
     @property
     def thruster_kind(self) -> ThrusterKind:
         return THRUSTER_KINDS[self.kind]
+
+    @property
+    def gimballed(self) -> bool:
+        return self.cone_half_angle_rad > 0.0
+
+    def gimbal_frame(self) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """``(n, e1, e2)``: the nominal axis, the first gimbal axis and
+        ``e2 = n x e1`` (right-handed).  A fixed thruster has ``e1 = e2 =
+        0``."""
+        n = np.asarray(self.direction, dtype=float).reshape(3)
+        if not self.gimballed:
+            return n, np.zeros(3), np.zeros(3)
+        e1 = np.asarray(self.gimbal_axis, dtype=float).reshape(3)
+        return n, e1, np.cross(n, e1)
+
+    def direction_at(self, a: float = 0.0, b: float = 0.0) -> np.ndarray:
+        """The thrust direction (craft frame) at gimbal angles ``(a, b)``:
+        ``cos a cos b n + cos a sin b e1 - sin a e2``."""
+        n, e1, e2 = self.gimbal_frame()
+        if not self.gimballed:
+            return n
+        return (math.cos(a) * math.cos(b) * n + math.cos(a) * math.sin(b) * e1
+                - math.sin(a) * e2)
 
 
 @dataclass(frozen=True)
@@ -473,3 +565,603 @@ def thruster_columns(design: CraftDesign) -> dict:
             columns[f"{prefix}_position_{axis}"] = np.full(
                 1, float(thruster.position_m[slot]))
     return columns
+
+
+# =====================================================================
+# Step 8: the machine craft's thrusters -- gimbals, slews, deadband, feeds
+# =====================================================================
+# The laws below are the per-thruster state machines of
+# :mod:`orbital_craft_machine`.  The seam's ``thruster{k}_throttle`` column
+# stays the COMMAND; what the thruster delivers is its own STATE:
+#
+#   throttle state   s <- s + clamp(clamp(u, u_min, u_max) - s, -r dt, r dt)
+#   gimbal actuator  a <- a + clamp(clamp(a_cmd, -cone, cone) - a, -g dt, g dt)
+#                    (and b likewise): each actuator slews at its rate
+#   delivered        v = s if s >= deadband else 0 (its own column,
+#                    written with the state by the slew piece)
+#   direction        d = cos a cos b n + cos a sin b e1 - sin a e2
+#   supply           per TANK, the step average of H(tank) at its demand
+#                    (the step-7 law, one tank at a time); a thruster
+#                    delivers the least supply of the tanks it draws from
+#   thrust           TS1.2 at m_dot = v * supply * m_dot_max
+#   torque           sum_k (r_k - c) x F_k about the CURRENT centre of mass
+#   tank flow        sum over thrusters of share_kt * TS1.2 flow
+#
+# The structure (which thrusters gimbal, which tanks feed which thruster)
+# is the machine's declaration and decides which columns an equation
+# names; every number is a column.
+
+
+def machine_thruster_symbols(index: int) -> dict:
+    """Thruster ``index``'s columns: the step-7 ones plus its state
+    machine's."""
+    prefix = f"thruster{index}"
+    symbols = thruster_symbols(index)
+    symbols.update({
+        "state": sp.Symbol(f"{prefix}_throttle_state"),
+        "delivered": sp.Symbol(f"{prefix}_delivered"),
+        "throttle_slew": sp.Symbol(f"{prefix}_throttle_slew"),
+        "deadband": sp.Symbol(f"{prefix}_deadband"),
+        "gimbal_a": sp.Symbol(f"{prefix}_gimbal_a"),
+        "gimbal_b": sp.Symbol(f"{prefix}_gimbal_b"),
+        "gimbal_a_command": sp.Symbol(f"{prefix}_gimbal_a_command"),
+        "gimbal_b_command": sp.Symbol(f"{prefix}_gimbal_b_command"),
+        "cone": sp.Symbol(f"{prefix}_cone"),
+        "gimbal_slew": sp.Symbol(f"{prefix}_gimbal_slew"),
+        "e1": {axis: sp.Symbol(f"{prefix}_gimbal_e1_{axis}")
+               for axis in AXES},
+        "e2": {axis: sp.Symbol(f"{prefix}_gimbal_e2_{axis}")
+               for axis in AXES},
+    })
+    return symbols
+
+
+def feed_symbol(index: int, tank: int) -> sp.Symbol:
+    """The mass share of thruster ``index``'s flow drawn from tank ``tank``."""
+    return sp.Symbol(f"thruster{index}_feed{tank}")
+
+
+def tank_symbols(tank: int) -> dict:
+    prefix = f"tank{tank}"
+    return {"propellant": sp.Symbol(f"{prefix}_propellant"),
+            "supply": sp.Symbol(f"{prefix}_supply"),
+            "flow": sp.Symbol(f"{prefix}_flow")}
+
+
+CENTRE_OF_MASS = {axis: sp.Symbol(f"centre_of_mass_{axis}") for axis in AXES}
+
+
+def _slew(current, target, rate):
+    """``current`` moved toward ``target`` by at most ``rate * dt``."""
+    step = rate * DT
+    return current + sp.Max(-step, sp.Min(step, target - current))
+
+
+def throttle_state_rhs(index: int):
+    """The throttle state slews toward the clamped command at its rate."""
+    s = machine_thruster_symbols(index)
+    command = sp.Min(sp.Max(s["throttle"], s["throttle_min"]),
+                     s["throttle_max"])
+    return _slew(s["state"], command, s["throttle_slew"])
+
+
+def gimbal_state_rhs(index: int, actuator: str):
+    """Gimbal actuator ``actuator`` ('a' or 'b') slews toward its command,
+    held to the actuator travel ``[-cone, cone]``."""
+    s = machine_thruster_symbols(index)
+    command = sp.Max(-s["cone"], sp.Min(s["cone"],
+                                        s[f"gimbal_{actuator}_command"]))
+    return _slew(s[f"gimbal_{actuator}"], command, s["gimbal_slew"])
+
+
+def delivered_throttle_rhs(index: int):
+    """The throttle the thruster delivers at its NEW state (the slew law's
+    result this substep): the state, or nothing below the deadband.  Written
+    by the slew piece as ``thruster{k}_delivered``; every later law reads
+    that column (spelling the deadband inside each tank's supply condition
+    made SymPy's Piecewise construction recurse without bound)."""
+    s = machine_thruster_symbols(index)
+    state = throttle_state_rhs(index)
+    return sp.Piecewise((state, state >= s["deadband"]),
+                        (sp.Integer(0), True))
+
+
+def delivered_throttle(index: int):
+    """The delivered-throttle column (``delivered_throttle_rhs``)."""
+    return machine_thruster_symbols(index)["delivered"]
+
+
+def machine_direction(index: int, gimballed: bool) -> dict:
+    """Thruster ``index``'s thrust direction (craft frame), per axis."""
+    s = machine_thruster_symbols(index)
+    n = s["direction"]
+    if not gimballed:
+        return dict(n)
+    a, b = s["gimbal_a"], s["gimbal_b"]
+    return {axis: (sp.cos(a) * sp.cos(b) * n[axis]
+                   + sp.cos(a) * sp.sin(b) * s["e1"][axis]
+                   - sp.sin(a) * s["e2"][axis]) for axis in AXES}
+
+
+def _ts12_flow(index: int, thrust):
+    """``eq_TS1_2`` solved for ``m_dot`` at ``thrust``, ``1/c`` from the
+    kind (the step-7 propellant_demand, at a given thrust)."""
+    (m_dot,) = sp.solve(honorary.eq_TS1_2, honorary.m_dot)
+    s = machine_thruster_symbols(index)
+    return m_dot.xreplace({honorary.F_thrust: thrust,
+                           honorary.c_eff: 1 / s["propellant_per_impulse"]})
+
+
+def _ts12_thrust(index: int, flow_fraction):
+    """``eq_TS1_2`` at ``m_dot = flow_fraction * max_thrust / c``; ``c``
+    cancels (the step-7 thrust_magnitude, at a given flow fraction)."""
+    s = machine_thruster_symbols(index)
+    thrust = honorary.eq_TS1_2.rhs.xreplace({
+        honorary.m_dot: flow_fraction * s["max_thrust"] / honorary.c_eff})
+    if thrust.has(honorary.c_eff):
+        raise RuntimeError("TS1.2: c did not cancel against max_thrust / c")
+    return thrust
+
+
+def _feeds(thruster: Thruster, tank_index: dict) -> list:
+    try:
+        return [tank_index[tank] for tank, _share in thruster.feeds]
+    except KeyError as missing:
+        raise ValueError(f"thruster {thruster.identity!r} is fed by "
+                         f"undeclared tank {missing}") from None
+
+
+def tank_supply_rhs(tank: int, thrusters, tank_index: dict):
+    """Tank ``tank``'s supply fraction this step: the step-7 exact step
+    average of ``H(propellant)`` at the demanded draw ``D`` (the TS1.2
+    flows of the delivered throttles, in their declared shares)."""
+    demand = sp.Integer(0)
+    for index, thruster in enumerate(thrusters):
+        if tank in _feeds(thruster, tank_index):
+            demand += feed_symbol(index, tank) * _ts12_flow(
+                index, _ts12_thrust(index, delivered_throttle(index)))
+    if demand == 0:
+        return sp.Integer(1)
+    propellant = tank_symbols(tank)["propellant"]
+    return sp.Piecewise(
+        (sp.Max(sp.Integer(0), sp.Min(sp.Integer(1),
+                                      propellant / (DT * demand))),
+         demand > 0),
+        (sp.Integer(1), True))
+
+
+def thruster_supply(index: int, thruster: Thruster, tank_index: dict):
+    """The least supply of the tanks thruster ``index`` draws from (a
+    bipropellant engine stops when either propellant does); ``1`` for a
+    reactionless thruster.  A thruster that burns propellant must declare
+    its feeds."""
+    tanks = _feeds(thruster, tank_index)
+    if not tanks:
+        if math.isinf(thruster.thruster_kind.specific_impulse_s):
+            return sp.Integer(1)
+        raise ValueError(f"thruster {thruster.identity!r} burns propellant "
+                         "and declares no feed tank")
+    supplies = [tank_symbols(tank)["supply"] for tank in tanks]
+    return supplies[0] if len(supplies) == 1 else sp.Min(*supplies)
+
+
+def machine_thrust(index: int, thruster: Thruster, tank_index: dict):
+    """Thruster ``index``'s delivered TS1.2 thrust."""
+    return _ts12_thrust(index, delivered_throttle(index)
+                        * thruster_supply(index, thruster, tank_index))
+
+
+def machine_force_rhs(axis: str, thrusters, tank_index: dict):
+    """Row ``axis`` of the world thrust ``R @ sum_k F_k d_k``."""
+    craft = {b: sp.Integer(0) for b in AXES}
+    for index, thruster in enumerate(thrusters):
+        thrust = machine_thrust(index, thruster, tank_index)
+        direction = machine_direction(index, thruster.gimballed)
+        for b in AXES:
+            craft[b] += thrust * direction[b]
+    rotation = attitude_symbols()
+    row = AXES.index(axis)
+    return sum((rotation[(row, col)] * craft[b]
+                for col, b in enumerate(AXES)), sp.Integer(0))
+
+
+def machine_torque_rhs(axis: str, thrusters, tank_index: dict):
+    """Row ``axis`` of ``sum_k (r_k - c) x F_k`` (craft frame, about the
+    current centre of mass ``c``)."""
+    i = AXES.index(axis)
+    j, k = AXES[(i + 1) % 3], AXES[(i + 2) % 3]
+    total = sp.Integer(0)
+    for index, thruster in enumerate(thrusters):
+        s = machine_thruster_symbols(index)
+        arm = {a: s["position"][a] - CENTRE_OF_MASS[a] for a in AXES}
+        thrust = machine_thrust(index, thruster, tank_index)
+        d = machine_direction(index, thruster.gimballed)
+        total += (arm[j] * d[k] - arm[k] * d[j]) * thrust
+    return total
+
+
+def tank_flow_rhs(tank: int, thrusters, tank_index: dict):
+    """Tank ``tank``'s draw: the declared share of every thruster's TS1.2
+    flow at its delivered thrust."""
+    total = sp.Integer(0)
+    for index, thruster in enumerate(thrusters):
+        if tank in _feeds(thruster, tank_index):
+            total += feed_symbol(index, tank) * _ts12_flow(
+                index, machine_thrust(index, thruster, tank_index))
+    return total
+
+
+def machine_thruster_columns(thrusters, tank_index: dict) -> dict:
+    """The step-8 columns of every thruster (one lane): states and commands
+    at zero; declared rates, cone, deadband, gimbal frame and feeds."""
+    columns = {}
+    for index, thruster in enumerate(thrusters):
+        prefix = f"thruster{index}"
+        _n, e1, e2 = thruster.gimbal_frame()
+        values = {
+            "throttle_state": 0.0,
+            "delivered": 0.0,
+            "throttle_slew": thruster.throttle_slew_per_s,
+            "deadband": thruster.deadband,
+            "gimbal_a": 0.0, "gimbal_b": 0.0,
+            "gimbal_a_command": 0.0, "gimbal_b_command": 0.0,
+            "cone": thruster.cone_half_angle_rad,
+            "gimbal_slew": thruster.gimbal_slew_rad_s,
+        }
+        for slot, axis in enumerate(AXES):
+            values[f"gimbal_e1_{axis}"] = float(e1[slot])
+            values[f"gimbal_e2_{axis}"] = float(e2[slot])
+        for tank, share in thruster.feeds:
+            values[f"feed{tank_index[tank]}"] = share
+        for name, value in values.items():
+            columns[f"{prefix}_{name}"] = np.full(1, float(value))
+    return columns
+
+
+# ------------------------------------------------- host-side machine wrench
+def delivered_throttles(thrusters, throttles) -> np.ndarray:
+    """The deadband applied to throttle states (or commands)."""
+    u = np.asarray(throttles, dtype=float).reshape(len(thrusters))
+    band = np.asarray([t.deadband for t in thrusters], dtype=float)
+    return np.where(u >= band, u, 0.0)
+
+
+def machine_wrench(thrusters, throttles, gimbal_rad, centre_of_mass_m,
+                   attitude=None):
+    """``(force (world), torque (craft, about c))`` delivered at the given
+    throttle and gimbal STATES (deadband applied; full supply)."""
+    rotation = (np.eye(3) if attitude is None
+                else np.asarray(attitude, dtype=float).reshape(3, 3))
+    centre = np.asarray(centre_of_mass_m, dtype=float).reshape(3)
+    v = delivered_throttles(thrusters, throttles)
+    angles = np.asarray(gimbal_rad, dtype=float).reshape(len(thrusters), 2)
+    force = np.zeros(3)
+    torque = np.zeros(3)
+    for k, thruster in enumerate(thrusters):
+        f = thruster.max_thrust_n * v[k] * thruster.direction_at(*angles[k])
+        force += f
+        torque += np.cross(np.asarray(thruster.position_m, float) - centre, f)
+    return rotation @ force, torque
+
+
+@dataclass(frozen=True)
+class Allocation:
+    """One allocation: the commands and the wrench they achieve.
+
+    ``throttles`` (n,) and ``gimbal_rad`` (n, 2) are the COMMANDS (the
+    states they bring the thrusters to within the round).  ``force_n``
+    (world) and ``torque_n_m`` (craft frame, about the centre of mass) are
+    the wrench delivered once the states arrive; the shortfalls are request
+    minus achieved.  ``branches`` is the number of deadband on/off
+    combinations solved."""
+
+    throttles: np.ndarray
+    gimbal_rad: np.ndarray
+    force_n: np.ndarray
+    torque_n_m: np.ndarray
+    force_shortfall_n: np.ndarray
+    torque_shortfall_n_m: np.ndarray
+    cost: float
+    branches: int
+
+    @property
+    def wrench(self) -> tuple[np.ndarray, np.ndarray]:
+        return self.force_n, self.torque_n_m
+
+    @property
+    def achieved(self) -> "AchievedWrench":
+        """The achieved wrench in the tracker seam's shape (``.force_n``,
+        ``.torque_n_m``)."""
+        return AchievedWrench(self.force_n, self.torque_n_m)
+
+
+@dataclass(frozen=True)
+class AchievedWrench:
+    """A force (N, world) and a torque (N m, craft frame, about the centre
+    of mass): the shape of ``orbital_tracker.Wrench``."""
+
+    force_n: np.ndarray
+    torque_n_m: np.ndarray
+
+
+def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
+                    attitude=None, throttle_state=None, gimbal_state=None,
+                    tank_propellant_kg: dict | None = None,
+                    round_s: float | None = None, force_weight: float = 1.0,
+                    torque_weight: float = 1.0, fuel_weight: float = 1.0e-4,
+                    max_branches: int = 64) -> Allocation:
+    """The commands that best achieve a wrench: ``force_n`` (world) and
+    ``torque_n_m`` (craft frame, about ``centre_of_mass_m``).
+
+    Decision variables: each thruster's throttle and each gimballed
+    thruster's two actuator angles ``(a, b)``.  Cost (the tracker's form):
+
+        J = W_F |F(x) - F*|^2 / (2 T_max^2) + W_tau |tau(x) - tau*|^2
+            / (2 tau_max^2) + fuel_weight sum_k T_k u_k / T_max
+
+    with ``F = R sum_k T_k u_k d_k(a_k, b_k)`` and ``tau = sum_k (r_k - c)
+    x T_k u_k d_k``.  Constraints, all exact:
+
+    * throttle box: the declared range intersected, over the round
+      ``round_s``, with the slew reach ``state +/- rate * round_s``;
+    * deadband: a thruster whose reach straddles its deadband is either
+      OFF (delivers nothing) or ON in ``[max(low, deadband), high]``; the
+      choice is enumerated (``2^m`` branches for ``m`` such thrusters), each
+      branch a smooth problem, the best kept;
+    * gimbal: the actuator box ``state +/- slew * round_s`` inside the
+      travel ``[-cone, cone]``, and the cone ``cos a cos b >= cos(cone)``;
+    * fuel: per tank, ``round_s * sum_k share_kt * flow_k(u_k) <= tank``;
+      a thruster with an empty feed tank delivers nothing.
+
+    Each branch is solved by SLSQP from the current states (warm) and from
+    the gimbal centre, the better kept.  Without ``round_s`` there is no
+    slew or fuel limit (the static allocation).
+    """
+    from scipy.optimize import minimize
+
+    thrusters = tuple(thrusters)
+    count = len(thrusters)
+    target_f = np.asarray(force_n, dtype=float).reshape(3)
+    target_t = np.asarray(torque_n_m, dtype=float).reshape(3)
+    rotation = (np.eye(3) if attitude is None
+                else np.asarray(attitude, dtype=float).reshape(3, 3))
+    centre = np.asarray(centre_of_mass_m, dtype=float).reshape(3)
+    state = (np.zeros(count) if throttle_state is None
+             else np.asarray(throttle_state, dtype=float).reshape(count))
+    angles0 = (np.zeros((count, 2)) if gimbal_state is None
+               else np.asarray(gimbal_state, dtype=float).reshape(count, 2))
+    tanks = dict(tank_propellant_kg or {})
+    h = None if round_s is None else float(round_s)
+    if h is not None and not h > 0.0:
+        raise ValueError("round_s must be positive")
+
+    thrust = np.asarray([t.max_thrust_n for t in thrusters], dtype=float)
+    arms = np.asarray([np.asarray(t.position_m, float) - centre
+                       for t in thrusters]).reshape(count, 3)
+    force_scale = float(thrust.max()) if count else 1.0
+    torque_scale = max((float(np.linalg.norm(np.cross(
+        arms[k], thrust[k] * np.asarray(t.direction, float))))
+        for k, t in enumerate(thrusters)), default=0.0) or 1.0
+    wf = math.sqrt(force_weight) / force_scale
+    wt = math.sqrt(torque_weight) / torque_scale
+    flow = np.asarray([t.max_thrust_n
+                       * t.thruster_kind.propellant_per_impulse_kg_n_s
+                       for t in thrusters], dtype=float)
+
+    low = np.empty(count)
+    high = np.empty(count)
+    alive = np.ones(count, dtype=bool)
+    for k, t in enumerate(thrusters):
+        lo, hi = t.throttle_min, t.throttle_max
+        if h is not None and math.isfinite(t.throttle_slew_per_s):
+            reach = t.throttle_slew_per_s * h
+            lo, hi = max(lo, state[k] - reach), min(hi, state[k] + reach)
+        low[k], high[k] = lo, max(lo, hi)
+        if flow[k] > 0.0 and any(tanks.get(tank, math.inf) <= 0.0
+                                 for tank, _ in t.feeds):
+            alive[k] = False
+    gimbals = [k for k, t in enumerate(thrusters) if t.gimballed]
+    gimbal_box = {}
+    for k in gimbals:
+        t = thrusters[k]
+        cone = t.cone_half_angle_rad
+        reach = (math.inf if h is None or math.isinf(t.gimbal_slew_rad_s)
+                 else t.gimbal_slew_rad_s * h)
+        gimbal_box[k] = [(max(-cone, angles0[k, j] - reach),
+                          min(cone, angles0[k, j] + reach)) for j in (0, 1)]
+
+    # the deadband's discrete choice: "free" (no deadband, one continuous
+    # range through zero), "on", "off", or both of the last two
+    options = []
+    for k, t in enumerate(thrusters):
+        band = t.deadband
+        if not alive[k]:
+            options.append(("off",))
+        elif band <= 0.0:
+            options.append(("free",))
+        else:
+            can_on = high[k] >= max(low[k], band)
+            can_off = low[k] < band
+            options.append(tuple(name for name, ok in (("off", can_off),
+                                                       ("on", can_on)) if ok)
+                           or ("off",))
+    split = [k for k, o in enumerate(options) if len(o) == 2]
+    if 2 ** len(split) > max_branches:
+        raise ValueError(f"{len(split)} thrusters straddle their deadband: "
+                         f"{2 ** len(split)} branches > {max_branches}")
+
+    def solve_branch(choice):
+        on = [k for k in range(count) if choice[k] != "off"]
+        u_bounds = {k: ((max(low[k], thrusters[k].deadband), high[k])
+                        if choice[k] == "on" else (low[k], high[k]))
+                    for k in on}
+        g_on = [k for k in gimbals if k in u_bounds]
+        n_u, n_g = len(on), 2 * len(g_on)
+        bounds = [u_bounds[k] for k in on]
+        for k in g_on:
+            bounds.extend(gimbal_box[k])
+
+        def unpack(x):
+            u = np.zeros(count)
+            ang = angles0.copy()
+            for i, k in enumerate(on):
+                u[k] = x[i]
+            for i, k in enumerate(g_on):
+                ang[k] = x[n_u + 2 * i:n_u + 2 * i + 2]
+            return u, ang
+
+        price = np.asarray([fuel_weight * thrust[k] / force_scale
+                            for k in on])
+
+        def fun(x):
+            u, ang = unpack(x)
+            force = np.zeros(3)
+            torque = np.zeros(3)
+            jac = np.zeros((6, n_u + n_g))
+            for i, k in enumerate(on):
+                f = thrust[k] * thrusters[k].direction_at(*ang[k])
+                force += u[k] * f
+                torque += u[k] * np.cross(arms[k], f)
+                jac[:3, i] = wf * (rotation @ f)
+                jac[3:, i] = wt * np.cross(arms[k], f)
+            for i, k in enumerate(g_on):
+                n, e1, e2 = thrusters[k].gimbal_frame()
+                a, b = ang[k]
+                da = (-math.sin(a) * math.cos(b) * n
+                      - math.sin(a) * math.sin(b) * e1 - math.cos(a) * e2)
+                db = (-math.cos(a) * math.sin(b) * n
+                      + math.cos(a) * math.cos(b) * e1)
+                for j, dd in enumerate((da, db)):
+                    f = thrust[k] * u[k] * dd
+                    jac[:3, n_u + 2 * i + j] = wf * (rotation @ f)
+                    jac[3:, n_u + 2 * i + j] = wt * np.cross(arms[k], f)
+            residual = np.concatenate([wf * (rotation @ force - target_f),
+                                       wt * (torque - target_t)])
+            value = 0.5 * float(residual @ residual) + float(price @ x[:n_u])
+            grad = jac.T @ residual
+            grad[:n_u] += price
+            return value, grad
+
+        constraints = []
+        for i, k in enumerate(g_on):
+            cos_cone = math.cos(thrusters[k].cone_half_angle_rad)
+            slot = n_u + 2 * i
+
+            def cone(x, slot=slot, cos_cone=cos_cone):
+                return np.asarray([math.cos(x[slot]) * math.cos(x[slot + 1])
+                                   - cos_cone])
+
+            def cone_jac(x, slot=slot):
+                row = np.zeros(n_u + n_g)
+                row[slot] = -math.sin(x[slot]) * math.cos(x[slot + 1])
+                row[slot + 1] = -math.cos(x[slot]) * math.sin(x[slot + 1])
+                return row[None, :]
+            constraints.append({"type": "ineq", "fun": cone,
+                                "jac": cone_jac})
+        budgets = []
+        if h is not None:
+            for tank, kg in tanks.items():
+                row = np.zeros(n_u + n_g)
+                for i, k in enumerate(on):
+                    for name, share in thrusters[k].feeds:
+                        if name == tank:
+                            row[i] += h * share * flow[k]
+                if np.any(row):
+                    budgets.append((row, float(kg)))
+                    constraints.append({
+                        "type": "ineq",
+                        "fun": lambda x, row=row, kg=kg: np.asarray(
+                            [kg - row @ x]),
+                        "jac": lambda x, row=row: -row[None, :]})
+        if not bounds:
+            u, ang = unpack(np.zeros(0))
+            value = fun(np.zeros(0))[0]
+        else:
+            lower = np.asarray([b[0] for b in bounds])
+            upper = np.asarray([b[1] for b in bounds])
+            warm = np.concatenate([np.asarray([state[k] for k in on]),
+                                   *[angles0[k] for k in g_on]])
+            warm = np.clip(warm, lower, upper)
+            centred = warm.copy()
+            centred[n_u:] = np.clip(0.0, lower[n_u:], upper[n_u:])
+            best = None
+            # SLSQP's ftol is absolute on the objective; an RCS-sized request
+            # at the main engine's scale has an objective of ~1e-9, so the
+            # solver sees the cost relative to its value at the warm start
+            # (the same problem, the minimiser unchanged)
+            unit = max(fun(warm)[0], fun(centred)[0], 1.0e-300)
+
+            def scaled(x):
+                value, grad = fun(x)
+                return value / unit, grad / unit
+            for x0 in ((warm,) if np.array_equal(warm, centred)
+                       else (warm, centred)):
+                result = minimize(scaled, x0, jac=True, method="SLSQP",
+                                  bounds=bounds, constraints=constraints,
+                                  options={"ftol": 1.0e-15,
+                                           "maxiter": 1000})
+                x = np.clip(result.x, lower, upper)
+                x = _onto_cones(x, n_u, g_on, thrusters)
+                x = _within_budgets(x, n_u, budgets)
+                value = fun(x)[0]
+                if best is None or value < best[0]:
+                    best = (value, x)
+            value, x = best
+            u, ang = unpack(x)
+        for k in range(count):
+            if choice[k] == "off":
+                u[k] = thrusters[k].throttle_min
+        return value, u, ang
+
+    best = None
+    branches = 0
+    for bits in range(2 ** len(split)):
+        choice = [o[0] for o in options]
+        for position, k in enumerate(split):
+            choice[k] = "on" if bits >> position & 1 else "off"
+        value, u, ang = solve_branch(choice)
+        branches += 1
+        if best is None or value < best[0]:
+            best = (value, u, ang, choice)
+    value, u, ang, choice = best
+    delivered = np.where([c != "off" for c in choice], u, 0.0)
+    force, torque = machine_wrench(thrusters, delivered, ang, centre,
+                                   rotation)
+    return Allocation(throttles=u, gimbal_rad=ang, force_n=force,
+                      torque_n_m=torque,
+                      force_shortfall_n=target_f - force,
+                      torque_shortfall_n_m=target_t - torque,
+                      cost=float(value), branches=branches)
+
+
+def _onto_cones(x, n_u, g_on, thrusters):
+    """Pull a gimbal the solver left a rounding outside its cone back onto
+    it along its own ray (the cone region is convex and contains the
+    centre)."""
+    x = x.copy()
+    for i, k in enumerate(g_on):
+        slot = n_u + 2 * i
+        cos_cone = math.cos(thrusters[k].cone_half_angle_rad)
+        a, b = x[slot], x[slot + 1]
+        if math.cos(a) * math.cos(b) >= cos_cone:
+            continue
+        lo, hi = 0.0, 1.0
+        for _ in range(60):
+            mid = 0.5 * (lo + hi)
+            if math.cos(mid * a) * math.cos(mid * b) >= cos_cone:
+                lo = mid
+            else:
+                hi = mid
+        x[slot], x[slot + 1] = lo * a, lo * b
+    return x
+
+
+def _within_budgets(x, n_u, budgets):
+    """Scale the throttles down onto a tank budget the solver overshot by a
+    rounding (each budget is linear in the throttles, through zero)."""
+    x = x.copy()
+    for row, kg in budgets:
+        used = float(row @ x)
+        if used > kg and used > 0.0:
+            x[:n_u] *= kg / used
+    return x

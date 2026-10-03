@@ -178,6 +178,33 @@ _BASE_FLUIDS: tuple[Fluid, ...] = (
           boiling_point_k=184.7, freezing_point_k=182.3,
           oxidiser=True, oxygen_equivalence=0.364,
           decomposition_j_kg=1_864_000.0, self_sustaining=True),
+    # ---- spacecraft propellants (orbital_craft_machine), at 20-25 C ----
+    # Storable and hypergolic: MMH and NTO ignite on contact, so they
+    # live in separate tanks on separate lines that meet only at the
+    # injector; hydrazine alone decomposes over a catalyst bed.
+    Fluid("hydrazine", "hydrazine (N2H4)", "liquid", 1004.0, 0.00087, 0.0663,
+          circuits=("propellant-hydrazine",), keywords=("hydrazine", "n2h4"),
+          leak_material="leak_fuel", flammable=True, autoignition_k=543.0,
+          ullage_vapour=True, specific_heat_j_per_kg_k=3080.0,
+          conductivity_w_per_m_k=0.355, boiling_point_k=386.7,
+          freezing_point_k=274.7),
+    Fluid("monomethylhydrazine", "monomethylhydrazine (MMH)", "liquid", 875.0,
+          0.000775, 0.0336, circuits=("propellant-mmh",),
+          keywords=("monomethylhydrazine",),
+          leak_material="leak_fuel", flammable=True, autoignition_k=467.0,
+          ullage_vapour=True, specific_heat_j_per_kg_k=2930.0,
+          conductivity_w_per_m_k=0.25, boiling_point_k=360.6,
+          freezing_point_k=220.7),
+    # N2O4 -> N2 + 2 O2: 64 g of oxygen from 92 g of tetroxide
+    Fluid("nitrogen-tetroxide", "nitrogen tetroxide (NTO)", "liquid", 1443.0,
+          0.000423, 0.0265, circuits=("propellant-nto",),
+          # no bare "nto"/"mmh": the keyword pass is a substring test
+          # ("into", "pinto")
+          keywords=("nitrogen-tetroxide", "tetroxide", "n2o4"),
+          leak_material="leak_gas", flammable=False,
+          specific_heat_j_per_kg_k=1550.0, conductivity_w_per_m_k=0.13,
+          boiling_point_k=294.3, freezing_point_k=261.9,
+          oxidiser=True, oxygen_equivalence=64.0 / 92.0),
     Fluid("gas", "gas", "gas", 1.2, 1.8e-5, 0.0,
           circuits=("intake-air", "exhaust", "pneumatic-reserve", "pneumatic",
                     "nitrous", "boost", "refrigerant", "blanket", "nitrogen"),

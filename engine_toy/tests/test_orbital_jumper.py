@@ -83,7 +83,10 @@ def test_circular_orbit_one_period_holds_radius_and_energy():
           f"{energy_drift:.3e}, substeps {jumper.substeps}, mean dt "
           f"{mean_dt:.3f} s (CFL bound 0.5*dx/v = "
           f"{0.5 * 5.0e4 / speed:.3f} s)")
-    # measured (2026-10-02): radius 2.06e-3, energy 1.38e-5, 2224 substeps
+    # measured (2026-10-02): radius 2.06e-3, energy 1.38e-5, 2224 substeps;
+    # (2026-10-03, r() synchronised, momentum seeded half a step back:
+    # the leapfrog reading of the same integrator) radius 6.6e-6,
+    # energy 4.3e-9, 1760 substeps
     assert radius_error < 5.0e-3
     assert energy_drift < 1.0e-4
     assert jumper.fuel_impulse_n_s == 0.0
@@ -345,3 +348,77 @@ def test_thrust_direction_follows_a_declared_attitude():
         actuation_matrix(design, R) @ u, rel=1e-13, abs=1e-12)
     # no rate, no torque: the attitude is held exactly
     assert np.array_equal(jumper.attitude(), R)
+
+
+def _stations():
+    """The game's stations: thrusterless bodies at one radius, different
+    phases (one speed, so a shared dt is each single lane's own dt) and
+    different masses."""
+    speed = math.sqrt(MU_EARTH / R_ORBIT)
+    phases = np.asarray((0.0, 0.9, 2.1, 4.0))
+    masses = np.asarray((1000.0, 2.0e4, 5.0, 3.3e5))
+    positions = R_ORBIT * np.stack([np.cos(phases), np.sin(phases),
+                                    np.zeros(4)], axis=1)
+    velocities = speed * np.stack([-np.sin(phases), np.cos(phases),
+                                   np.zeros(4)], axis=1)
+    return masses, positions, velocities
+
+
+def test_batched_lanes_share_one_dt_state_and_match_single_lanes():
+    # Four stations as ONE dt state at batch 4 against four batch-1 states.
+    # The singles run to completion BEFORE the batched state is built: a
+    # persistent state runs the advance_pieces of the LAST state
+    # instantiated in the process (llvm_dt_system defect, see
+    # test_interleaved_states_each_run_their_own_program), so states are
+    # not interleaved here.
+    import time
+    masses, positions, velocities = _stations()
+    center = [GravityCenter((0.0, 0.0, 0.0), MU_EARTH)]
+    common = dict(length_scale_m=5.0e4, window_s=300.0)
+    rounds = 5
+    singles = []
+    start = time.perf_counter()
+    for m, p, v in zip(masses, positions, velocities):
+        single = OrbitalJumper(center, mass_kg=m, position_m=p,
+                               velocity_m_s=v, **common)
+        for _ in range(rounds):
+            single.advance()
+        singles.append((single.r(), single.substeps))
+    singles_s = time.perf_counter() - start
+    start = time.perf_counter()
+    batched = OrbitalJumper(center, mass_kg=masses, position_m=positions,
+                            velocity_m_s=velocities, batch=4, **common)
+    for _ in range(rounds):
+        batched.advance()
+    batched_s = time.perf_counter() - start
+    position, velocity = batched.r()
+    assert position.shape == velocity.shape == (4, 3)
+    assert batched.mass_kg == pytest.approx(masses, rel=0.0)
+    worst = 0.0
+    for lane, ((p, v), substeps) in enumerate(singles):
+        worst = max(worst, float(np.linalg.norm(position[lane] - p)))
+        assert position[lane] == pytest.approx(p, rel=1e-12, abs=1e-6)
+        assert velocity[lane] == pytest.approx(v, rel=1e-12, abs=1e-9)
+        assert substeps == batched.substeps
+    print(f"\nbatch 4: {batched.substeps} substeps, {batched_s:.3f} s "
+          f"(build + {rounds} rounds); 4 singles: "
+          f"{sum(n for _, n in singles)} substeps, {singles_s:.3f} s; "
+          f"worst lane difference {worst:.3e} m")
+
+
+@pytest.mark.xfail(strict=True, reason=(
+    "llvm_dt_system defect: instantiate_state binds advance_pieces as a "
+    "module global (bind_pieces) and dt_system_over calls that global, so "
+    "every persistent state runs the program of the state instantiated "
+    "LAST; a batch-4 state advanced after a batch-1 state was built runs "
+    "the batch-1 step and writes lane 0 into every lane"))
+def test_interleaved_states_each_run_their_own_program():
+    masses, positions, velocities = _stations()
+    center = [GravityCenter((0.0, 0.0, 0.0), MU_EARTH)]
+    common = dict(length_scale_m=5.0e4, window_s=300.0)
+    batched = OrbitalJumper(center, mass_kg=masses, position_m=positions,
+                            velocity_m_s=velocities, batch=4, **common)
+    OrbitalJumper(center, mass_kg=1000.0, position_m=positions[0],
+                  velocity_m_s=velocities[0], **common)
+    batched.advance()
+    assert batched.mass_kg == pytest.approx(masses, rel=0.0)
