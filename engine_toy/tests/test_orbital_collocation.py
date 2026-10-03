@@ -97,9 +97,12 @@ def test_planner_converges_from_hohmann(planned):
           f"{plan.fuel / hohmann_fuel:.4f} x Hohmann; time "
           f"{plan.transfer_time:.1f} s = "
           f"{plan.transfer_time / hp.transfer_time:.4f} x Hohmann; burns "
-          f"{len(plan.impulses())}")
+          f"{len(plan.impulses())}; structure {plan.structure}; stages "
+          f"{plan.stages}")
     assert plan.converged
     assert plan.max_defect < 1e-8
+    assert plan.solve_s < 5.0
+    assert plan.fuel == pytest.approx(hohmann_fuel, rel=1e-3)
     r_end, v_end = plan.positions[-1], plan.velocities[-1]
     assert np.linalg.norm(r_end) == pytest.approx(R_HIGH, rel=1e-8)
     assert np.linalg.norm(v_end) == pytest.approx(
@@ -135,6 +138,47 @@ def test_tracker_flies_the_collocation_plan(planned):
 
 
 # ------------------------------------------------ off plan: the re-planner
+def _main_and_rcs_plan():
+    """The kick scenario's craft on a collocation plan from LEO at t = 0."""
+    problem = oc.CollocationProblem(oc.pointing_proxy(_main_and_rcs(450.0)),
+                                    EARTH, R_HIGH)
+    r0, v0 = _leo_state(0.0)
+    plan, _hp = oc.plan_transfer(problem, 0.0, r0, v0, propellant_kg=450.0)
+    return problem, plan
+
+
+@pytest.mark.parametrize("kick_at", [302.0, 600.0, 1500.0])
+def test_kick_replan_from_the_remainder_is_live(kick_at):
+    # a 300 m/s radial kick off the plan's own reference; the re-plan is
+    # warm-started from the plan's remainder and must be live (< 5 s),
+    # reach the same plan as a cold start from Hohmann, and beat the
+    # Hohmann transfer from the kicked state
+    from orbital_tracker import hohmann_replanner
+    problem, plan = _main_and_rcs_plan()
+    r, v = plan.reference(kick_at)
+    v = v + 300.0 * r / np.linalg.norm(r)
+    k = int(np.searchsorted(plan.times, kick_at)) - 1
+    propellant = float(plan.propellant_kg[k + 1])
+    now = oc.dataclasses.replace(problem, fuel_budget=propellant)
+    warm, _ = oc.plan_transfer(now, kick_at, r, v, propellant_kg=propellant,
+                               previous=plan)
+    cold, _ = oc.plan_transfer(now, kick_at, r, v, propellant_kg=propellant)
+    hohmann = hohmann_replanner(plan, kick_at, r, v)
+    _r, after = hohmann_reference(hohmann, kick_at)
+    hohmann_dv = float(np.linalg.norm(after - v) + abs(hohmann.dv2))
+    print(f"\nkick at {kick_at:.0f} s: remainder {warm.message}, "
+          f"{warm.iterations} it, {warm.evaluations} Jacobians, "
+          f"{warm.solve_s:.2f} s, dv {warm.ideal_delta_v:.1f} m/s, fuel "
+          f"{warm.fuel:.2f} kg, trip {warm.transfer_time:.0f} s, structure "
+          f"{warm.structure}; cold {cold.solve_s:.2f} s, dv "
+          f"{cold.ideal_delta_v:.1f}, cost {cold.cost:.8f} vs "
+          f"{warm.cost:.8f}; Hohmann from present {hohmann_dv:.1f} m/s")
+    assert warm.converged and warm.max_defect < 1e-8
+    assert warm.solve_s < 5.0
+    assert warm.cost <= cold.cost * (1.0 + 1e-6)
+    assert warm.ideal_delta_v < hohmann_dv
+
+
 def _main_and_rcs(propellant_kg):
     from orbital_actuation import CraftDesign, Thruster
     rcs = 50.0
@@ -158,17 +202,18 @@ def test_kick_replans_with_collocation():
     # test_kick_off_plan_replans_once_and_arrives) with the collocation
     # re-planner in place of hohmann_replanner
     from orbital_tracker import hohmann_replanner
+    # (the craft now flies a COLLOCATION plan, so the re-plan is warm-
+    # started from that plan's remainder -- decision 4)
     round_s = 2.0
     gains = TrackingGains(attitude_frequency_rad_s=0.2,
                           off_plan_threshold=0.03, on_plan_threshold=0.005)
-    plan = hohmann_plan(MU_EARTH, R_LEO, R_HIGH, t_burn1=300.0)
     design = _main_and_rcs(450.0)
-    r0, v0 = hohmann_reference(plan, 0.0)
+    problem, plan = _main_and_rcs_plan()
+    r0, v0 = plan.reference(0.0)
     craft = OrbitalJumper(EARTH, design=design, position_m=r0,
                           velocity_m_s=v0, length_scale_m=5.0e4,
                           window_s=round_s,
                           angular_velocity_rad_s=(0.0, 0.0, 0.05))
-    problem = oc.CollocationProblem(oc.pointing_proxy(design), EARTH, R_HIGH)
     replanner = oc.collocation_replanner(problem, craft=craft)
     seen = {}
 
@@ -177,13 +222,15 @@ def test_kick_replans_with_collocation():
         # present velocity onto its transfer, then its burn 2
         hohmann = hohmann_replanner(previous, t, r, v)
         _r, after = hohmann_reference(hohmann, t)
-        seen.setdefault("hohmann_dv", float(
-            np.linalg.norm(after - np.asarray(v)) + abs(hohmann.dv2)))
-        seen.setdefault("propellant", craft.propellant_kg)
+        if t >= kick_at and "hohmann_dv" not in seen:   # the kick's re-plan
+            seen["hohmann_dv"] = float(
+                np.linalg.norm(after - np.asarray(v)) + abs(hohmann.dv2))
+            seen["propellant"] = craft.propellant_kg
+            seen["index"] = len(replanner.plans)
         return replanner(previous, t, r, v)
 
     mode = TrackingMode(plan)
-    kick_at = plan.t_burn1 + 300.0
+    kick_at = 600.0
     fly(craft, plan, gains, until_s=kick_at, round_s=round_s,
         replanner=compared, mode=mode)
     position, _velocity = craft.r()
@@ -193,7 +240,7 @@ def test_kick_replans_with_collocation():
     craft.F((0.0, 0.0, 0.0))
     fly(craft, plan, gains, until_s=kick_at + 600.0, round_s=round_s,
         replanner=compared, mode=mode)
-    replanned = replanner.plans[0]
+    replanned = replanner.plans[seen["index"]]
     history = []
     while True:                  # fly to the arrival of the plan flown now
         flown = mode.plan
@@ -228,10 +275,12 @@ def test_kick_replans_with_collocation():
     for p in replanner.plans:
         r_end = np.linalg.norm(p.positions[-1])
         print(f"  plan from t={p.t_start:.0f}: {p.message}, it "
-              f"{p.iterations} + polish {p.polish_evaluations}, defect "
+              f"{p.iterations}, {p.solve_s:.2f} s, defect "
               f"{p.max_defect:.1e}, dv {p.ideal_delta_v:.1f}, arrive "
               f"{p.t_arrive:.0f} s at |r| - r2 {r_end - R_HIGH:.3f} m")
     assert mode.replans >= 1 and replanned.max_defect < 1e-8
+    assert replanned.message.startswith("remainder")
+    assert replanned.solve_s < 5.0
     assert replanned.ideal_delta_v < seen["hohmann_dv"]
     assert abs(radius - R_HIGH) < 500.0
     assert abs(np.linalg.norm(velocity) - math.sqrt(MU_EARTH / R_HIGH)) < 1.0
@@ -248,9 +297,10 @@ def test_machine_craft_flies_the_collocation_plan():
                          window_s=round_s)
     problem = oc.CollocationProblem(oc.pointing_proxy(craft.design), EARTH,
                                     R_HIGH)
-    # MachineCraft has no propellant_kg (the inherited jumper property
-    # reads a propellant_mass column the machine does not keep): its tanks
-    propellant = sum(craft.tank_propellant_kg().values())
+    # the machine's propellant is the sum of its tank charges
+    propellant = craft.propellant_kg
+    assert propellant == pytest.approx(
+        sum(craft.tank_propellant_kg().values()), rel=1e-15)
     plan, hp = oc.plan_transfer(problem, craft.time_s, *craft.r(),
                                 propellant_kg=propellant)
     tanks0, mass0 = craft.tank_propellant_kg(), craft.mass_kg
@@ -271,6 +321,8 @@ def test_machine_craft_flies_the_collocation_plan():
           f"{report.final_position_error_m:.1f} m; |r| - r2 "
           f"{radius - R_HIGH:.1f} m, |v| - v_circ "
           f"{np.linalg.norm(velocity) - math.sqrt(MU_EARTH / R_HIGH):.4f}")
-    assert plan.max_defect < 1e-8
+    assert plan.max_defect < 1e-8 and plan.converged
+    assert plan.solve_s < 5.0
+    assert craft.propellant_kg == pytest.approx(propellant - used, rel=1e-12)
     assert abs(radius - R_HIGH) < 500.0
     assert abs(np.linalg.norm(velocity) - math.sqrt(MU_EARTH / R_HIGH)) < 1.0

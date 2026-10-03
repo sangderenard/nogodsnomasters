@@ -735,6 +735,18 @@ class MachineCraft(OrbitalJumper):
         return {tank.identity: self._scalar(f"tank{t}_propellant")
                 for t, tank in enumerate(self.craft.tanks)}
 
+    @property
+    def propellant_kg(self):
+        """The propellant aboard: the sum of the tank charges -- the
+        ``tank{t}_propellant`` columns the mass-properties law reduces
+        (:func:`mass_property_rhs`).  Replaces the jumper's reading of a
+        ``propellant_mass`` column: the machine's momentum piece writes
+        ``propellant_mass_next`` but no piece reads it, so the dt system
+        keeps no such column (a column exists only when a piece reads it)
+        and the inherited property raised AttributeError."""
+        return sum((self._scalar(f"tank{t}_propellant")
+                    for t in range(len(self.craft.tanks))), 0.0)
+
     def centre_of_mass(self) -> np.ndarray:
         """The centre of mass (machine frame) the last substep used."""
         return self._vector("centre_of_mass")

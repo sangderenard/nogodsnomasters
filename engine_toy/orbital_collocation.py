@@ -62,13 +62,31 @@ Jacobian is its sub-steps' compiled Jacobians chained in order.  Compiled
 rows persist across processes (:data:`CACHE_DIRECTORY`).  Nothing here
 differentiates numerically or symbolically.
 
+Solve (2026-10-03 rework, measurements in
+``turing/docs/concordance_census/CONTINUATION_orbital_step4_collocation.md``).
+The full transcription above stays the plan's form and the reference
+method (``plan_transfer(method="SLSQP")``), but the planner solves it
+CONDENSED over a burn structure (:class:`_Condensed`): burn slices own a
+duration and per-thruster impulses, coast slices form arcs of equal slices,
+and the nodes follow by forward substitution of the block-bidiagonal
+defects (each defect zero by construction).  :func:`solve_structured`
+promotes coast slices to burns by the switching function (primer vector:
+the adjoint of the same compiled Jacobians).  Every plan starts from
+Hohmann or, for a re-plan, from the previous plan's remainder
+(:func:`remainder_warm_start`).  The compiled rows are read inside the
+throttle box (:meth:`_Transcription.inside`): the laws' clamp halves the
+derivative on the box edge.
+
 Public surface:
 
     CollocationProblem   frozen: craft, centers, target, budget, weights, N
     CollocationPlan      the trip: nodes, throttles; ``reference(t)``,
                          ``impulses()``, ``mu``, ``ideal_delta_v`` (the
                          tracker's plan protocol)
-    plan_transfer(problem, t0, position, velocity, ...) -> (plan, hohmann)
+    plan_transfer(problem, t0, position, velocity, previous=, ...)
+                         -> (plan, hohmann)
+    remainder_warm_start(previous, problem, t0, position, velocity, ...)
+    solve_structured(transcription, u, dt, burn, ...)
     collocation_replanner(problem, craft=) -> the tracker's re-planner
     pointing_proxy(design) -> a planning design for a craft that points
     compile_reverse_rows(name, expressions, wrt) -> ReverseRows
@@ -649,6 +667,11 @@ class _Transcription:
             feeds.update(zip(self.u_names, u[k]))
             feeds[_DT.name] = dt[k]
             (fuel[k],), (grad,) = self.fuel_rows(feeds)
+            inside = self.inside(u[k])
+            if not np.array_equal(inside, u[k]):    # see inside()
+                _, (grad_u,) = self.fuel_rows({**feeds, **dict(
+                    zip(self.u_names, inside))})
+                grad = {**grad, **{n: grad_u[n] for n in self.u_names}}
             d_fuel[k] = [grad.get(n, 0.0) for n in self.u_names] + [
                 grad.get(_DT.name, 0.0)]
         (cost,), (grad,) = self.cost_rows({
@@ -695,10 +718,15 @@ class _Transcription:
         S = self.problem.substeps
         ix, iu, idt = self._columns_of
         x = np.asarray(x_k, float)
+        inside = self.inside(u_k)
+        on_edge = not np.array_equal(inside, u_k)
         Jx, Ju, Jdt = np.eye(7), np.zeros((7, self.n_u)), np.zeros(7)
         for _ in range(S):
             values, D = self.slice_rows.jacobian(
-                self.slice_feeds(x, u_k, dt / S, np.zeros(7)))
+                self.slice_feeds(x, inside, dt / S, np.zeros(7)))
+            if on_edge:          # the value at the throttle itself
+                values = self.slice_rows.values(
+                    self.slice_feeds(x, u_k, dt / S, np.zeros(7)))
             A = -D[:, ix]
             Jx = A @ Jx
             Ju = A @ Ju - D[:, iu]
@@ -706,12 +734,346 @@ class _Transcription:
             x = -values
         return x, Jx, Ju, Jdt
 
+    #: How far inside its box a throttle on the box's edge is read for
+    #: DERIVATIVES (values are always read at the throttle itself).
+    EDGE_READ = 1.0e-9
+
+    @functools.cached_property
+    def _throttle_box(self):
+        return (np.array([t.throttle_min for t in self.problem.design.thrusters]),
+                np.array([t.throttle_max for t in self.problem.design.thrusters]))
+
+    def inside(self, u_k) -> np.ndarray:
+        """``u_k`` with every throttle on its box's edge moved
+        :data:`EDGE_READ` inside.
+
+        The laws clamp the throttle (``thrust_magnitude``: Min(Max(u, lo),
+        hi)); the compiled reverse reads a tie of Max/Min as the average of
+        its two sides, so on the edge itself every throttle column of the
+        slice and fuel Jacobians is HALF its value inside (measured: d
+        momentum/d throttle -10043 at u = 0 and at u = 1 against -20086 at
+        1e-12 and 0.5).  The planner's iterates live in the box, where the
+        clamp is the identity: its derivative there is the inside one.  The
+        law is linear in the throttle inside the box, so the inside reading
+        is exact."""
+        lo, hi = self._throttle_box
+        u = np.asarray(u_k, float)
+        eps = self.EDGE_READ * (hi - lo)
+        return np.where(u <= lo + eps, lo + eps,
+                        np.where(u >= hi - eps, hi - eps, u))
+
+    def slice_fuel(self, u, dt, *, jac=True):
+        """Per-slice fuel through the compiled fuel rows: (N,), and
+        (N, n_u + 1) d fuel/d (u, dt [s]) read inside the box (see
+        :meth:`inside`) when ``jac``."""
+        fw = self.fuel_rows
+        where = {n: i for i, n in enumerate(fw.gradient_ids)}
+        cols = [where[n] for n in self.u_names] + [where[_DT.name]]
+        fuel = np.zeros(self.N)
+        d_fuel = np.zeros((self.N, self.n_u + 1)) if jac else None
+        feeds = dict(self.columns)
+        for k in range(self.N):
+            feeds.update(zip(self.u_names, u[k]))
+            feeds[_DT.name] = dt[k]
+            if not jac:
+                fuel[k] = fw.values(feeds)[0]
+                continue
+            values, D = fw.jacobian(feeds)
+            fuel[k] = values[0]
+            d_fuel[k] = D[0, cols]
+            inside = self.inside(u[k])
+            if not np.array_equal(inside, u[k]):
+                _, D = fw.jacobian({**feeds, **dict(zip(self.u_names,
+                                                        inside))})
+                d_fuel[k, :-1] = D[0, cols[:-1]]
+        return fuel, d_fuel
+
     def fuel(self, u, dt):
-        price = np.array([self.columns[_fuel_price_symbol(j).name]
+        price =np.array([self.columns[_fuel_price_symbol(j).name]
                           * t.max_thrust_n for j, t in
                           enumerate(self.problem.design.thrusters)])
         return float(sum((clamp_throttles(self.problem.design, uk) @ price)
                          * d for uk, d in zip(u, dt)))
+
+
+# --------------------------------------------- the condensed transcription
+class _Condensed:
+    """The transcription with its nodes eliminated by their defects, over a
+    declared burn STRUCTURE.
+
+    Why (measured 2026-10-03, CONTINUATION_orbital_step4_collocation.md):
+    on the full transcription (560 variables, 285 defects) SLSQP never
+    terminates on the kick re-plan -- 300 iterations, defects swinging to
+    0.3, and restarted from its own polished result it creeps 0.94910 ->
+    0.94841 over 300 more.  The full transcription carries ~35 exactly flat
+    directions (redistributing one coast arc's duration among its slices
+    changes nothing but discretization) plus the bilinear throttle x
+    duration valley of every slice, and SLSQP's dense BFGS has to learn
+    them; a structured SQP (per-slice damped BFGS, sparse elastic QP) crept
+    the same way.  This class removes both:
+
+    - burn slices (``burn``) own a duration and an IMPULSE per thruster
+      ``w = u dt`` (``u = w / dt``, box ``u_min dt <= w <= u_max dt`` as
+      linear rows); every other slice coasts (u = 0) and a run of coast
+      slices -- an arc -- shares one duration, split equally;
+    - the nodes follow from the present state by the slice flow (the
+      block-bidiagonal defect system solved by forward substitution: every
+      defect is zero by construction) and derivatives by forward
+      accumulation of the compiled slice Jacobians through the chain.
+
+    What remains is a dense problem of ``(n_u + 1) * burns + arcs``
+    variables and the five arrival rows -- SLSQP's own size.  With
+    ``fixed_durations`` only the impulses are free (the continuation's
+    first stage)."""
+
+    def __init__(self, tr, burn, u, dt, *, fixed_durations=False):
+        self.tr = tr
+        N, n_u = tr.N, tr.n_u
+        self.burn = np.asarray(burn, bool)
+        self.B = np.flatnonzero(self.burn)
+        arcs, k = [], 0
+        while k < N:
+            if self.burn[k]:
+                k += 1
+                continue
+            arc = []
+            while k < N and not self.burn[k]:
+                arc.append(k)
+                k += 1
+            arcs.append(arc)
+        self.arcs = arcs
+        nb = len(self.B)
+        n_w = nb * n_u
+        self.n_v = n_w if fixed_durations else n_w + nb + len(arcs)
+        dt = np.asarray(dt, float)
+        u = np.asarray(u, float)
+        self.dt_fixed = np.zeros(N)
+        self.W = np.zeros((N, n_u, self.n_v))       # d w_k / d v
+        self.D = np.zeros((N, self.n_v))            # d dt_k / d v (seconds)
+        for i, k in enumerate(self.B):
+            self.W[k, :, i * n_u:(i + 1) * n_u] = np.eye(n_u)
+        if fixed_durations:
+            self.dt_fixed = dt.copy()
+        else:
+            for i, k in enumerate(self.B):
+                self.D[k, n_w + i] = tr.s_dt
+            for a, arc in enumerate(arcs):
+                self.D[arc, n_w + nb + a] = tr.s_dt / len(arc)
+        self.u_lo, self.u_hi = tr._throttle_box
+        dlo, dhi = tr.problem.dt_bounds_s
+        lo = [0.0] * n_w
+        hi = [np.inf] * n_w
+        if not fixed_durations:
+            lo += [dlo / tr.s_dt] * nb + [len(a) * dlo / tr.s_dt for a in arcs]
+            hi += [dhi / tr.s_dt] * nb + [len(a) * dhi / tr.s_dt for a in arcs]
+        self.lo, self.hi = np.array(lo), np.array(hi)
+        v0 = list(np.ravel(u[self.B] * dt[self.B, None] / tr.s_dt))
+        if not fixed_durations:
+            v0 += list(dt[self.B] / tr.s_dt)
+            v0 += [float(np.sum(dt[a])) / tr.s_dt for a in arcs]
+        self.v0 = np.clip(np.array(v0), self.lo, self.hi)
+        # the throttle box as linear rows on (w, dt): w - u_min dt >= 0,
+        # u_max dt - w >= 0.  With u_min = 0 the first row IS the bound
+        # w >= 0 and is left out: the duplicate makes the active set
+        # degenerate at w = 0, and SLSQP then stops at its first iteration
+        # (measured: a burn promoted at zero impulse never moved)
+        rows, offsets = [], []
+        for i, k in enumerate(self.B):
+            for j in range(n_u):
+                pairs = [(-1.0, self.u_hi[j])]
+                if self.u_lo[j] > 0.0:
+                    pairs.append((1.0, self.u_lo[j]))
+                for sign, bound in pairs:
+                    row = np.zeros(self.n_v)
+                    row[i * n_u + j] = sign
+                    row -= sign * bound * self.D[k] / tr.s_dt
+                    rows.append(row)
+                    offsets.append(-sign * bound * self.dt_fixed[k] / tr.s_dt)
+        self.box_rows = np.array(rows).reshape(-1, self.n_v)
+        self.box_offsets = np.array(offsets)
+        self._key = None
+        self.jacobians = self.forwards = 0
+
+    def slices(self, v):
+        """u (N, n_u), dt (N,) and du/dv (N, n_u, n_v)."""
+        w = np.einsum("kjv,v->kj", self.W, v)
+        dt = self.dt_fixed + self.D @ v
+        u = np.zeros_like(w)
+        U = np.zeros_like(self.W)
+        s = self.tr.s_dt
+        for k in self.B:
+            u[k] = w[k] * s / dt[k]
+            U[k] = (self.W[k] * s / dt[k]
+                    - np.outer(w[k] * s / dt[k]**2, self.D[k]))
+        return u, dt, U
+
+    def evaluate(self, v, jac=True):
+        """(cost, d cost/dv, arrival rows c (scaled), dc/dv, nodes, u, dt)."""
+        key = v.tobytes()
+        if self._key == key and (self._jac or not jac):
+            return self._value
+        tr = self.tr
+        N = tr.N
+        started = time.perf_counter()
+        u, dt, U = self.slices(v)
+        x = np.empty((N + 1, 7))
+        x[0] = tr.x0
+        X = np.zeros((7, self.n_v))
+        flows = []
+        for k in range(N):
+            if jac:
+                x[k + 1], Jx, Ju, Jdt = tr.flow(x[k], u[k], dt[k])
+                X = Jx @ X + Ju @ U[k] + np.outer(Jdt, self.D[k])
+                flows.append((Jx, Ju))
+            else:
+                x[k + 1] = tr.advance(x[k], u[k], dt[k])
+        feeds = dict(tr.columns)
+        feeds.update(zip(tr.x_names, x[N]))
+        if jac:
+            values, Ja = tr.arrival_rows.jacobian(feeds)
+            where = {n: i for i, n in enumerate(tr.arrival_rows.gradient_ids)}
+            Ja = Ja[:, [where[n] for n in tr.x_names]] / tr.arrival_scale[:, None]
+            dc = Ja @ X
+        else:
+            values, dc = tr.arrival_rows.values(feeds), None
+        c = values / tr.arrival_scale
+        fuel, d_fuel = tr.slice_fuel(u, dt, jac=jac)
+        I, T = float(np.sum(fuel)), float(np.sum(dt))
+        inputs = {**tr.columns, **tr.weights, _FUEL.name: I, _DURATION.name: T}
+        if jac:
+            (cost,), (grad,) = tr.cost_rows(inputs)
+            dJ_dI = grad[_FUEL.name]
+            dI = (np.einsum("kj,kjv->v", d_fuel[:, :-1], U)
+                  + d_fuel[:, -1] @ self.D)
+            g = dJ_dI * dI + grad[_DURATION.name] * self.D.sum(axis=0)
+            self._adjoint = (flows, Ja, dJ_dI * d_fuel[:, :-1])
+            self.jacobians += 1
+            tr.evaluations += 1
+            tr.jacobian_s += time.perf_counter() - started
+        else:
+            (cost,) = tr.cost_rows.values(inputs)
+            g = None
+            self.forwards += 1
+        self._key, self._jac = key, jac
+        self._value = (float(cost), g, c, dc, x, u, dt)
+        return self._value
+
+    def solve(self, *, max_iterations, tolerance):
+        from scipy.optimize import minimize
+        value = lambda v: self.evaluate(v, jac=False)[0]
+        result = minimize(
+            value, self.v0, jac=lambda v: self.evaluate(v)[1],
+            method="SLSQP", bounds=list(zip(self.lo, self.hi)),
+            constraints=[
+                {"type": "eq", "fun": lambda v: self.evaluate(v, jac=False)[2],
+                 "jac": lambda v: self.evaluate(v)[3]},
+                {"type": "ineq",
+                 "fun": lambda v: self.box_rows @ v + self.box_offsets,
+                 "jac": lambda v: self.box_rows}],
+            options={"maxiter": max_iterations, "ftol": tolerance})
+        self.result = result
+        return result
+
+    def multipliers(self, v) -> np.ndarray:
+        """The arrival rows' multipliers at ``v`` (``L = J - lam . c``):
+        minimum-norm least squares of stationarity on the free variables,
+        with the active throttle-box rows as their own unknowns.
+
+        Not SLSQP's ``multipliers``: on an in-plane transfer the two plane
+        rows have no gradient on any free variable, so stationarity leaves
+        their multipliers undetermined and SLSQP's QP returns arbitrary
+        ones (measured: -9.98, -6.68 where the free set determines
+        nothing), which then read as a spurious negative switching value on
+        the out-of-plane thrusters of every coast slice."""
+        _f, g, _c, dc, *_ = self.evaluate(v)
+        free = (v > self.lo + 1e-9) & (v < self.hi - 1e-9)
+        active = self.box_rows @ v + self.box_offsets < 1e-9
+        A = np.vstack([dc, self.box_rows[active]])
+        if not np.any(free):
+            return np.zeros(dc.shape[0])
+        solution, *_ = np.linalg.lstsq(A[:, free].T, g[free], rcond=None)
+        return solution[:dc.shape[0]]
+
+    def switching(self, v, multipliers) -> np.ndarray:
+        """dL/du on every slice, ``L = J - multipliers . c`` (SLSQP's sign),
+        by one adjoint sweep back through the stored slice Jacobians: the
+        primer-vector test -- a coast slice whose entry is negative lowers
+        the cost by thrusting there."""
+        self.evaluate(v)
+        flows, Ja, dJ_du = self._adjoint
+        p = Ja.T @ np.asarray(multipliers, float)
+        out = np.zeros((self.tr.N, self.tr.n_u))
+        for k in range(self.tr.N - 1, -1, -1):
+            Jx, Ju = flows[k]
+            out[k] = dJ_du[k] - Ju.T @ p
+            p = Jx.T @ p
+        return out
+
+
+#: A coast slice is promoted to a burn when its switching value per
+#: throttle-second (cost units) is below minus this.
+SWITCH_TOLERANCE = 1.0e-4
+
+
+def solve_structured(tr, u, dt, burn, *, max_iterations=200,
+                     tolerance=1.0e-10, fixed_first=False, rounds=4):
+    """The planner's solve: the condensed transcription over a burn
+    structure, by continuation --
+
+    1. (``fixed_first``, off by default) the structure fixed, durations
+       included: only the burns' impulses move.  Measured on the 300 m/s
+       kick re-plans from a collocation plan's remainder (kicks at 602,
+       900, 1800 s): this stage never reached a feasible point (SLSQP
+       "positive directional derivative" at defects 0.02-0.04 -- the
+       remainder's timing cannot absorb the kick with its burns) and added
+       0.5-1.4 s; stage 2 from the same start converged to the same plans;
+    2. the durations freed (burn durations and coast arcs);
+    3. up to ``rounds`` structure changes: the coast slice with the most
+       negative switching value (:meth:`_Condensed.switching`) becomes a
+       burn and 2 is re-solved from there; a promotion that does not lower
+       the cost is undone and ends the rounds.
+
+    Returns (u, dt, nodes, receipts)."""
+    burn = np.asarray(burn, bool).copy()
+    receipts = {"iterations": 0, "jacobians": 0, "forwards": 0,
+                "stages": [], "message": ""}
+
+    def run(fixed):
+        stage = _Condensed(tr, burn, u, dt, fixed_durations=fixed)
+        result = stage.solve(max_iterations=max_iterations,
+                             tolerance=tolerance)
+        receipts["iterations"] += int(result.nit)
+        receipts["jacobians"] += stage.jacobians
+        receipts["forwards"] += stage.forwards
+        cost, _g, c, _dc, x, uu, dd = stage.evaluate(result.x)
+        receipts["stages"].append((
+            "fixed" if fixed else "free", tuple(map(int, stage.B)),
+            int(result.nit), str(result.message), cost,
+            float(np.max(np.abs(c)))))
+        return stage, result, cost, x, uu, dd
+
+    if fixed_first:
+        _s, _r, _c, _x, u, dt = run(True)
+    stage, result, cost, x, u, dt = run(False)
+    for _ in range(rounds):
+        sw = stage.switching(result.x, stage.multipliers(result.x))
+        per_second = sw / dt[:, None]
+        per_second[burn] = np.inf
+        k = int(np.argmin(per_second.min(axis=1)))
+        if not per_second[k].min() < -SWITCH_TOLERANCE:
+            break
+        burn[k] = True
+        trial = run(False)
+        feasible = trial[1].x is not None and float(np.max(np.abs(
+            trial[0].evaluate(trial[1].x, jac=False)[2]))) <= 1.0e-8
+        if not (feasible and trial[2] < cost - 1e-12 * abs(cost)):
+            burn[k] = False
+            receipts["stages"].append(("undone", k))
+            break
+        stage, result, cost, x, u, dt = trial
+    receipts["result"] = result
+    receipts["structure"] = tuple(map(int, np.flatnonzero(burn)))
+    return u, dt, x, receipts
 
 
 # --------------------------------------------------------- the warm start
@@ -798,6 +1160,10 @@ class CollocationPlan:
     solve_s: float
     transcription: object = field(repr=False, default=None)
     polish_evaluations: int = 0
+    #: condensed solve receipts: burn slices, stages, forward-only runs
+    structure: tuple = ()
+    stages: list = field(default_factory=list)
+    forwards: int = 0
     _thrusting_cache: object = field(repr=False, default=None)
     _coast: list = field(repr=False, default_factory=list)
 
@@ -929,19 +1295,121 @@ def _plan_from(tr, z, result, solve_s):
         solve_s=solve_s, transcription=tr)
 
 
+def remainder_warm_start(previous: "CollocationPlan", problem,
+                         t0: float, position, velocity, propellant_kg=None):
+    """The re-plan's start (decision 4): the previous plan's REMAINDER from
+    ``t0`` on the problem's N slices -- its burns as they are (the one in
+    progress cut to what is left), its coasts merged into arcs between
+    them, plus a burn slice NOW of zero impulse (the correction the present
+    state may need; the solve gives it impulse or leaves it empty).  Coast
+    slices are spread over the arcs by duration (at least one each).
+    Weights as :func:`hohmann_warm_start` sets them (the same cost).
+    Returns (HohmannPlan, transcription, u, dt, burn)."""
+    hp, tr, z_h = hohmann_warm_start(problem, t0, position, velocity,
+                                     propellant_kg)
+    N, n_u = tr.N, tr.n_u
+    if previous.throttles.shape[1] != n_u:
+        raise ValueError("the previous plan was made for another design")
+    thrusting = previous._thrusting()
+    # (duration, throttles, burn?) in order, from t0 to the old arrival
+    pieces = [(problem.dt_bounds_s[0] * 20.0, np.zeros(n_u), True)]
+    for k in range(len(previous.throttles)):
+        start = max(float(previous.times[k]), float(t0))
+        end = float(previous.times[k + 1])
+        if end - start <= 0.0:
+            continue
+        if thrusting[k]:
+            pieces.append((end - start, previous.throttles[k], True))
+        elif pieces[-1][2]:
+            pieces.append((end - start, np.zeros(n_u), False))
+        else:
+            pieces[-1] = (pieces[-1][0] + end - start, np.zeros(n_u), False)
+    burns = sum(1 for piece in pieces if piece[2])
+    arcs = np.array([piece[0] for piece in pieces if not piece[2]])
+    if burns + arcs.size > N or arcs.size == 0:
+        u, dt, _x = tr.unpack(z_h)
+        burn = np.zeros(N, bool)
+        burn[[0, N - 1]] = True
+        return hp, tr, u, dt, burn
+    share = np.maximum(1, np.floor((N - burns) * arcs / arcs.sum())
+                       ).astype(int)
+    while share.sum() > N - burns:
+        share[np.argmax(share)] -= 1
+    while share.sum() < N - burns:
+        share[np.argmax(arcs / share)] += 1
+    u, dt, burn = [], [], []
+    arc = iter(share)
+    for duration, throttles, is_burn in pieces:
+        if is_burn:
+            u.append(np.asarray(throttles, float))
+            dt.append(duration)
+            burn.append(True)
+            continue
+        n = int(next(arc))
+        u += [np.zeros(n_u)] * n
+        dt += [duration / n] * n
+        burn += [False] * n
+    return hp, tr, np.array(u), np.array(dt), np.array(burn)
+
+
 def plan_transfer(problem: CollocationProblem, t0: float, position, velocity,
-                  *, propellant_kg=None, max_iterations: int = 300,
-                  tolerance: float = 1.0e-12, method: str = "SLSQP",
-                  feasibility: float = 1.0e-8):
-    """Solve the transcription from the present state, warm-started from
-    Hohmann, by ``scipy.optimize.minimize`` (``SLSQP`` or ``trust-constr``)
-    fed the compiled Jacobian.  A result whose scaled defects exceed
-    ``feasibility`` is polished by least squares on the defects alone
-    (``plan.polish_evaluations``).  Returns (plan, hohmann)."""
+                  *, propellant_kg=None, previous=None,
+                  method: str = "condensed", max_iterations: int = 200,
+                  tolerance: float | None = None, fixed_first: bool = False,
+                  rounds: int = 4, feasibility: float = 1.0e-8):
+    """Plan the whole trip from the present state.
+
+    ``method="condensed"`` (the planner): :func:`solve_structured` over the
+    burn structure of the warm start -- the Hohmann transfer from here, or
+    with ``previous`` (a :class:`CollocationPlan`) that plan's remainder
+    (:func:`remainder_warm_start`).
+
+    ``method="SLSQP"`` / ``"trust-constr"``: the full transcription (every
+    node, throttle and duration free) from Hohmann by
+    ``scipy.optimize.minimize``; kept as the measured reference (it does
+    not terminate on the kick re-plan, see :class:`_Condensed`).  A result
+    whose scaled defects exceed ``feasibility`` is polished by least
+    squares on the defects alone (``plan.polish_evaluations``).
+
+    Returns (plan, hohmann)."""
+    from types import SimpleNamespace
+    if method == "condensed":
+        started = time.perf_counter()
+        if isinstance(previous, CollocationPlan):
+            hp, tr, u, dt, burn = remainder_warm_start(
+                previous, problem, t0, position, velocity, propellant_kg)
+            start = "remainder"
+        else:
+            hp, tr, z0 = hohmann_warm_start(problem, t0, position, velocity,
+                                            propellant_kg)
+            u, dt, _x = tr.unpack(z0)
+            burn = np.zeros(tr.N, bool)
+            burn[[0, tr.N - 1]] = True
+            start = "hohmann"
+        u, dt, x, receipts = solve_structured(
+            tr, u, dt, burn, max_iterations=max_iterations,
+            tolerance=1.0e-10 if tolerance is None else tolerance,
+            fixed_first=fixed_first, rounds=rounds)
+        result = receipts["result"]
+        z = tr.pack(u, dt, x)
+        _cost, _g, c, _J = tr.evaluate(z)
+        feasible = float(np.max(np.abs(c))) <= feasibility
+        # SLSQP's "positive directional derivative" (status 8) at a
+        # feasible point is its line search finding no decrease left: the
+        # noise floor of the compiled cost, not a failure
+        done = SimpleNamespace(
+            success=bool(feasible and (result.success or result.status == 8)),
+            message=f"{start}: {result.message}", nit=receipts["iterations"])
+        plan = _plan_from(tr, z, done, time.perf_counter() - started)
+        plan.structure = receipts["structure"]
+        plan.stages = receipts["stages"]
+        plan.forwards = receipts["forwards"]
+        return plan, hp
     from scipy.optimize import Bounds, NonlinearConstraint, minimize
 
     hp, tr, z0 = hohmann_warm_start(problem, t0, position, velocity,
                                     propellant_kg)
+    tolerance = 1.0e-12 if tolerance is None else tolerance
     started = time.perf_counter()
     cost = lambda z: tr.evaluate(z)[0]
     gradient = lambda z: tr.evaluate(z)[1]
@@ -984,22 +1452,23 @@ def plan_transfer(problem: CollocationProblem, t0: float, position, velocity,
 
 def collocation_replanner(problem: CollocationProblem, craft=None, **solve):
     """The tracker's re-planner (``fly(..., replanner=)``): the whole
-    remaining trip from the present state to the problem's target circle.
-    ``craft``, when given, supplies the propellant left through its
-    ``mass_kg`` (the tracker's re-planner signature carries no mass).  ``replanner.plans`` keeps every
-    plan made."""
+    remaining trip from the present state to the problem's target circle,
+    warm-started from the previous plan's remainder when the previous plan
+    is a :class:`CollocationPlan` (decision 4), else from Hohmann.
+    ``craft``, when given, supplies the propellant left
+    (``craft.propellant_kg``; the tracker's re-planner signature carries no
+    mass), which is then also the fuel budget.  ``replanner.plans`` keeps
+    every plan made."""
     def replanner(previous, time_s, position_m, velocity_m_s):
         now = problem
         propellant = None
         if craft is not None:
-            # through the seam's mass (decision 8): wet minus the planning
-            # design's dry mass (a MachineCraft keeps no propellant_kg)
-            propellant = max(0.0, float(craft.mass_kg)
-                             - problem.design.dry_mass_kg)
+            propellant = float(craft.propellant_kg)
             if problem.burns_propellant:      # the tank left is the budget
                 now = dataclasses.replace(problem, fuel_budget=propellant)
         plan, _hohmann = plan_transfer(now, time_s, position_m, velocity_m_s,
-                                       propellant_kg=propellant, **solve)
+                                       propellant_kg=propellant,
+                                       previous=previous, **solve)
         replanner.plans.append(plan)
         return plan
     replanner.plans = []
