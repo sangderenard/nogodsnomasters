@@ -270,6 +270,11 @@ class HohmannPlan:
     e_transfer: float
     transfer_time: float
 
+    def reference(self, t):
+        """The plan's own reference hook (the tracker reads plans through
+        it): :func:`reference` on this plan's legs."""
+        return reference(self, t)
+
     @property
     def ideal_delta_v(self) -> float:
         """|dv1| + |dv2|: the impulsive transfer's total delta-v."""
