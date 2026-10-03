@@ -4470,7 +4470,7 @@ from typing import Dict as _Dict, Optional as _Optional, Sequence as _Sequence
 
 _LLVM_LAW_CACHE_DIR = _Path(__file__).resolve().parent / "artifacts" / "llvm_pieces"
 _LLVM_PIECE_CACHE_SCHEMA = "honorary-llvm-piece-v2"
-_PIECE_MEMORY_CACHE: dict[tuple[str, int, str], object] = {}
+_PIECE_MEMORY_CACHE: dict[tuple[str, int, str, bool], object] = {}
 
 
 class _PieceLock:
@@ -4541,24 +4541,10 @@ class _PieceLock:
         return False
 
 
-def _publish_piece_build(root, piece_id, build_dir, piece, piece_path):
-    """Make a finished build the cached piece without touching what is there
-    until the new one has loaded.  The build directory is renamed to an
-    immutable, content-addressed version directory ``v-<sha256(dll)[:16]>``
-    (a loaded DLL is never overwritten: a new build is a new name); the
-    piece, re-pointed there, is written to a temporary index, loaded back
-    and its DLL loaded, and only then ``os.replace``d over the index."""
-    import shutil
+def _save_piece_index(piece, piece_path):
+    """Validate a temporary piece and its DLL before replacing its index."""
     from src.compiler.native_law_kernels import LLVMPiece
 
-    library = _Path(piece.artifact.library_path)
-    digest = _hashlib.sha256(library.read_bytes()).hexdigest()[:16]
-    version_dir = root / f"v-{digest}"
-    if version_dir.is_dir():
-        shutil.rmtree(build_dir, ignore_errors=True)  # identical bytes already published
-    else:
-        _os.replace(build_dir, version_dir)
-    piece.artifact.library_path = version_dir / library.name
     temporary = piece_path.with_suffix(f".{_os.getpid()}.tmp")
     piece.save(temporary)
     try:
@@ -4567,6 +4553,31 @@ def _publish_piece_build(root, piece_id, build_dir, piece, piece_path):
         temporary.unlink(missing_ok=True)
         raise
     _os.replace(temporary, piece_path)
+
+
+def _publish_piece_build(root, piece_id, build_dir, piece, piece_path, *,
+                         retain_compilation=True):
+    """Make a finished build the cached piece without touching what is there
+    until the new one has loaded.  The build directory is renamed to an
+    immutable, content-addressed version directory ``v-<sha256(dll)[:16]>``
+    (a loaded DLL is never overwritten: a new build is a new name); the
+    piece, re-pointed there, is written to a temporary index, loaded back
+    and its DLL loaded, and only then ``os.replace``d over the index."""
+    import shutil
+    library = _Path(piece.artifact.library_path)
+    digest = _hashlib.sha256(library.read_bytes()).hexdigest()[:16]
+    version_dir = root / f"v-{digest}"
+    if version_dir.is_dir():
+        shutil.rmtree(build_dir, ignore_errors=True)  # identical bytes already published
+    else:
+        _os.replace(build_dir, version_dir)
+    piece.artifact.library_path = version_dir / library.name
+    if not retain_compilation:
+        # Keep the complete compiler record on disk for inspection/linking,
+        # but let subsequent game loads read only the small runtime index.
+        _save_piece_index(piece, root / f"{piece_id}.piece")
+        piece = piece.for_runtime()
+    _save_piece_index(piece, piece_path)
     return piece
 
 # Coordinates and operator placeholders declared once at the top of this
@@ -4587,7 +4598,7 @@ def _llvm_piece_cache_key(law_id: str, batch: int, equations) -> str:
 
 
 def equation_piece(piece_id: str, equations, *, batch: int = 1,
-                   cache_dir=None, serve_stale=None):
+                   cache_dir=None, serve_stale=None, retain_compilation=True):
     """Compile one already-discretized equation set as one real LLVM piece.
 
     This is the multi-equation form of :func:`law_piece`.  It exists for a
@@ -4602,6 +4613,13 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
     sources changed since is stale by name (``piece_staleness``) and is
     rebuilt; ``serve_stale=True`` (or ``ENGINE_TOY_PIECE_SERVE_STALE=1``)
     serves it instead, posting a staleness row naming the changed modules.
+
+    ``retain_compilation=False`` keeps only the executable and its exact ABI
+    and compiler stamps after compilation. It uses a separate runtime cache;
+    existing full pieces remain available for source linking and inspection.
+    Concordance is still recorded during the compile. Its full books and SSA
+    are saved in the full piece archive, then released from memory; they are
+    absent from the runtime file and normal execution-only loads.
     """
     equations = tuple(equations)
     if not equations or not all(isinstance(equation, Equality)
@@ -4615,7 +4633,7 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
     if batch <= 0:
         raise ValueError("LLVM piece batch must be positive")
     key = _llvm_piece_cache_key(piece_id, batch, equations)
-    memory_key = (piece_id, batch, key)
+    memory_key = (piece_id, batch, key, bool(retain_compilation))
     if memory_key in _PIECE_MEMORY_CACHE:
         return _PIECE_MEMORY_CACHE[memory_key]
 
@@ -4626,14 +4644,35 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
 
     root = (_Path(cache_dir) if cache_dir is not None
             else _LLVM_LAW_CACHE_DIR) / piece_id / f"b{batch}" / key
-    piece_path = root / f"{piece_id}.piece"
+    full_path = root / f"{piece_id}.piece"
+    piece_path = (full_path if retain_compilation else
+                  root / f"{piece_id}.runtime.piece")
+
+    def cached_path():
+        # A current full cache can supply the first execution-only load.
+        # Never serve an execution-only file to a source-linking caller.
+        return piece_path if piece_path.is_file() else full_path
+
+    def remember(piece):
+        _PIECE_MEMORY_CACHE[memory_key] = piece
+        if not retain_compilation:
+            # Compiler graphs contain cycles. Collect after the last full
+            # piece/compilation reference is gone, before building the next.
+            import gc
+            gc.collect()
+        return piece
+
     stale = stale_record = None
-    if piece_path.is_file():
-        piece = LLVMPiece.load(piece_path)
+    if cached_path().is_file():
+        loaded_path = cached_path()
+        piece = LLVMPiece.load(loaded_path, retain_compilation=retain_compilation)
         changed = piece_staleness(piece)
         if not changed:
-            _PIECE_MEMORY_CACHE[memory_key] = piece
-            return piece
+            if loaded_path != piece_path:
+                with _PieceLock(root / f"{piece_id}.lock"):
+                    _save_piece_index(piece, piece_path)
+                    post_piece_book(root, piece_id, batch, key, built=piece)
+            return remember(piece)
         if serve_stale is None:
             serve_stale = _os.environ.get(
                 "ENGINE_TOY_PIECE_SERVE_STALE", "").strip() == "1"
@@ -4643,21 +4682,29 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
             print(f"[equation_piece] {piece_id} b{batch}: serving a STALE piece; "
                   f"compiler changed in {list(changed[:8])}"
                   f"{' ...' if len(changed) > 8 else ''}", flush=True)
-            _PIECE_MEMORY_CACHE[memory_key] = piece
-            return piece
+            return remember(piece)
         stale, stale_record = changed, piece.compiler
         print(f"[equation_piece] {piece_id} b{batch}: stale, rebuilding; "
               f"compiler changed in {list(changed[:8])}"
               f"{' ...' if len(changed) > 8 else ''}", flush=True)
+        del piece
 
     root.mkdir(parents=True, exist_ok=True)
     with _PieceLock(root / f"{piece_id}.lock"):
         # Another process may have published while this one waited.
-        if piece_path.is_file():
-            current = LLVMPiece.load(piece_path)
+        if cached_path().is_file():
+            loaded_path = cached_path()
+            current = LLVMPiece.load(loaded_path,
+                                     retain_compilation=retain_compilation)
             if not piece_staleness(current):
-                _PIECE_MEMORY_CACHE[memory_key] = current
-                return current
+                if loaded_path != piece_path:
+                    _save_piece_index(current, piece_path)
+                    post_piece_book(root, piece_id, batch, key, built=current)
+                return remember(current)
+            del current
+        if not retain_compilation:
+            import gc
+            gc.collect()
         import uuid
         build_dir = root / f".build-{_os.getpid()}-{uuid.uuid4().hex[:8]}"
         build_dir.mkdir()
@@ -4666,7 +4713,10 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
             piece = piece_from_law(
                 compilation, piece_id, batch, directory=build_dir,
                 optimization="O2")
-            piece = _publish_piece_build(root, piece_id, build_dir, piece, piece_path)
+            del compilation
+            piece = _publish_piece_build(
+                root, piece_id, build_dir, piece, piece_path,
+                retain_compilation=retain_compilation)
         except BaseException as error:
             import shutil
             shutil.rmtree(build_dir, ignore_errors=True)
@@ -4678,8 +4728,7 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
             raise
         post_piece_book(root, piece_id, batch, key, built=piece, stale=stale,
                         stale_record=stale_record)
-    _PIECE_MEMORY_CACHE[memory_key] = piece
-    return piece
+    return remember(piece)
 
 
 def _scalarize_applied_functions(expr):
