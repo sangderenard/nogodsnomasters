@@ -366,11 +366,8 @@ def _stations():
 
 def test_batched_lanes_share_one_dt_state_and_match_single_lanes():
     # Four stations as ONE dt state at batch 4 against four batch-1 states.
-    # The singles run to completion BEFORE the batched state is built: a
-    # persistent state runs the advance_pieces of the LAST state
-    # instantiated in the process (llvm_dt_system defect, see
-    # test_interleaved_states_each_run_their_own_program), so states are
-    # not interleaved here.
+    # Each persistent state runs its own program (see
+    # test_interleaved_states_each_run_their_own_program).
     import time
     masses, positions, velocities = _stations()
     center = [GravityCenter((0.0, 0.0, 0.0), MU_EARTH)]
@@ -406,12 +403,6 @@ def test_batched_lanes_share_one_dt_state_and_match_single_lanes():
           f"worst lane difference {worst:.3e} m")
 
 
-@pytest.mark.xfail(strict=True, reason=(
-    "llvm_dt_system defect: instantiate_state binds advance_pieces as a "
-    "module global (bind_pieces) and dt_system_over calls that global, so "
-    "every persistent state runs the program of the state instantiated "
-    "LAST; a batch-4 state advanced after a batch-1 state was built runs "
-    "the batch-1 step and writes lane 0 into every lane"))
 def test_interleaved_states_each_run_their_own_program():
     masses, positions, velocities = _stations()
     center = [GravityCenter((0.0, 0.0, 0.0), MU_EARTH)]
