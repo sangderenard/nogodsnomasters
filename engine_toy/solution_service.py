@@ -97,12 +97,27 @@ class Plan:
                 math.degrees(math.atan2(float(d[1]), max(horizontal, 1e-12))))
 
 
+@dataclass(frozen=True)
+class SolveRequest:
+    generation: int
+    payload: object
+
+
+@dataclass(frozen=True)
+class CompletedSolution:
+    request: SolveRequest
+    result: object = None
+    error: str | None = None
+
+
 @dataclass
 class SolutionService:
     """A worker that solves continuously and publishes as it goes."""
-    table: object
+    table: object = None
     cycle_s: float = 0.05             # the computer's own rate
     max_iterations: int = 8
+    # Optional captured-request mode; the firing service remains continuous.
+    solver: object = None
     # published state -- swapped, never mutated
     plan: Plan | None = field(default=None, init=False)
     conditions: Conditions = field(
@@ -110,6 +125,21 @@ class SolutionService:
     solves: int = field(default=0, init=False)
     _thread: object = field(default=None, init=False, repr=False)
     _stop: object = field(default_factory=threading.Event, init=False, repr=False)
+    request: SolveRequest | None = field(default=None, init=False)
+    completed: CompletedSolution | None = field(default=None, init=False)
+    _generation: int = field(default=0, init=False, repr=False)
+
+    def submit(self, payload) -> SolveRequest:
+        """Publish a captured request; superseding a request never waits."""
+        if self.solver is None:
+            raise RuntimeError("captured requests require a solver")
+        self._generation += 1
+        self.request = SolveRequest(self._generation, payload)
+        return self.request
+
+    def latest_result(self) -> CompletedSolution | None:
+        """One whole completed request/result/error, without waiting."""
+        return self.completed
 
     # ---------------- the interface the sim uses ----------------
     def update(self, **kwargs) -> None:
@@ -123,7 +153,9 @@ class SolutionService:
 
     def start(self) -> "SolutionService":
         if self._thread is not None:
-            return self
+            if self._thread.is_alive():
+                return self
+            self._thread = None
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="firing-solution",
                                         daemon=True)
@@ -134,12 +166,30 @@ class SolutionService:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=1.0)
-            self._thread = None
+            # A slow solve may still be running. Do not start a second worker.
+            if not self._thread.is_alive():
+                self._thread = None
 
     # ---------------- the worker ----------------
     def _run(self) -> None:
+        solved_generation = 0
         while not self._stop.is_set():
             began = time.monotonic()
+            if self.solver is not None:
+                request = self.request
+                if request is not None and request.generation != solved_generation:
+                    try:
+                        result = self.solver(request.payload)
+                        completed = CompletedSolution(request, result=result)
+                    except Exception as error:
+                        completed = CompletedSolution(
+                            request, error=f"{type(error).__name__}: {error}")
+                    solved_generation = request.generation
+                    if not self._stop.is_set() and self.request is request:
+                        self.completed = completed
+                        self.solves += 1
+                self._stop.wait(max(0.0, self.cycle_s - (time.monotonic() - began)))
+                continue
             conditions = self.conditions          # one atomic read
             if conditions.valid:
                 plan = self._solve(conditions)
