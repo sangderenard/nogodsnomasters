@@ -226,6 +226,7 @@ class ReverseRows:
     seed_ids: tuple              # per row
     gradient_ids: dict           # wrt symbol name -> output value id
     compile_s: float = 0.0
+    compiler: object = None
 
     @functools.cached_property
     def _execution(self):
@@ -350,8 +351,9 @@ def compile_reverse_rows(name: str, expressions: Sequence[sp.Expr],
     if missing:
         raise CompiledReverseUnavailable(
             f"{name}: the compiled reverse does not publish {missing}")
+    from src.compiler.native_law_kernels import route_compiler_record
     rows = ReverseRows(name, artifact, inputs, losses, seeds, gradient_ids,
-                       time.perf_counter() - started)
+                       time.perf_counter() - started, route_compiler_record())
     _store_rows(rows, key)
     return rows
 
@@ -359,10 +361,8 @@ def compile_reverse_rows(name: str, expressions: Sequence[sp.Expr],
 #: Compiled rows persist across processes, as ``perforated_network_llvm``
 #: persists its compiled reverse: a manifest per artifact, keyed by the laws
 #: and the wrt order.  The compiler-source fingerprint is RECORDED, not part
-#: of the key: a built library keeps computing what it computed, and in a
-#: tree other lanes edit continuously a fingerprint key missed every time
-#: (measured: an 872 s slice compile recompiled on the next run).  Delete
-#: the directory to rebuild under a newer compiler.
+#: of the key. Each load checks the same PieceCompilerRecord as equation_piece:
+#: the old law-only manifest silently served rows built before compiler fixes.
 CACHE_DIRECTORY = Path(tempfile.gettempdir()) / "orbital_collocation_rows"
 
 
@@ -379,13 +379,23 @@ def _cache_key(name, expressions, wrt) -> str:
 def _store_rows(rows: ReverseRows, key: str) -> None:
     import json
     import shutil
-    from src.compiler.perforated_network_llvm import _compiler_fingerprint
+    from src.compiler.native_law_kernels import (
+        PieceCompilerRecord, piece_staleness, post_piece_book)
+    from types import SimpleNamespace
     a = rows.artifact
     directory = CACHE_DIRECTORY / key
     directory.mkdir(parents=True, exist_ok=True)
+    manifest = directory / "contract.json"
+    stale = stale_record = None
+    if manifest.is_file():
+        previous = json.loads(manifest.read_text(encoding="utf-8"))
+        saved = previous.get("compiler")
+        stale_record = (None if saved is None else PieceCompilerRecord(
+            saved["digest"], tuple(tuple(row) for row in saved["modules"])))
+        stale = piece_staleness(SimpleNamespace(compiler=stale_record)) or None
     library = directory / Path(a.library_path).name
     shutil.copy2(a.library_path, library)
-    (directory / "contract.json").write_text(json.dumps({
+    manifest.write_text(json.dumps({
         "name": rows.name, "entry": a.name, "library": library.name,
         "buffer_order": list(map(int, a.buffer_order)),
         "buffer_shapes": [list(shape) for shape in a.buffer_shapes],
@@ -394,16 +404,33 @@ def _store_rows(rows: ReverseRows, key: str) -> None:
         "input_ids": rows.input_ids, "loss_ids": list(rows.loss_ids),
         "seed_ids": list(rows.seed_ids), "gradient_ids": rows.gradient_ids,
         "compile_s": rows.compile_s,
-        "compiler_fingerprint": _compiler_fingerprint()}), encoding="utf-8")
+        "compiler": {"digest": rows.compiler.digest,
+                     "modules": rows.compiler.modules}}), encoding="utf-8")
+    post_piece_book(directory, rows.name, 1, key, built=rows,
+                    stale=stale, stale_record=stale_record)
 
 
 def _load_cached_rows(name: str, key: str):
     import json
+    from src.compiler.native_law_kernels import (
+        PieceCompilerRecord, piece_staleness, post_piece_book)
+    from types import SimpleNamespace
     from src.compiler.ssa_llvm_backend import LLVMFunctionArtifact
     manifest = CACHE_DIRECTORY / key / "contract.json"
     if not manifest.is_file():
         return None
     record = json.loads(manifest.read_text(encoding="utf-8"))
+    saved_compiler = record.get("compiler")
+    compiler = (None if saved_compiler is None else PieceCompilerRecord(
+        saved_compiler["digest"],
+        tuple(tuple(row) for row in saved_compiler["modules"])))
+    changed = piece_staleness(SimpleNamespace(compiler=compiler))
+    if changed:
+        post_piece_book(manifest.parent, name, 1, key, stale=changed,
+                        stale_record=compiler, decision="rebuild_required")
+        print(f"[collocation_rows] {name}: stale, rebuilding; compiler "
+              f"changed in {list(changed[:8])}", flush=True)
+        return None
     library = manifest.parent / record["library"]
     if not library.is_file():
         return None
@@ -418,7 +445,7 @@ def _load_cached_rows(name: str, key: str):
                        {k: int(v) for k, v in record["input_ids"].items()},
                        tuple(record["loss_ids"]), tuple(record["seed_ids"]),
                        {k: int(v) for k, v in record["gradient_ids"].items()},
-                       float(record["compile_s"]))
+                       float(record["compile_s"]), compiler)
 
 
 def _slice_wrt(thruster_count: int):
