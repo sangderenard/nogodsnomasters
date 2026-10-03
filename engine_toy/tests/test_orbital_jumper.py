@@ -144,3 +144,204 @@ def test_seam_r_reflects_state_and_F_sets_next_round_force():
     jumper.F((0.0, 0.0, 0.0))
     jumper.advance()
     assert jumper.r()[1] == pytest.approx(after, rel=1e-12)
+
+
+# ---------------------------------------------------------------- step 7
+# Decision 9: propellant mass falls at F / (I_sp g_0); thrust stops at
+# empty by the law; a torque spins the craft at tau / I; thrust direction
+# follows the attitude.
+import honorary_engine_equation_catalogue as honorary
+from orbital_actuation import (
+    STANDARD_GRAVITY_M_S2,
+    THRUSTER_KINDS,
+    CraftDesign,
+    Thruster,
+    actuation_matrix,
+    principal_inertia,
+    six_axis_jumper,
+    torque_matrix,
+)
+
+
+def _tsiolkovsky_delta_v(exhaust_velocity, m_0, m_f):
+    """The catalogue's TS2.1 evaluated."""
+    return float(honorary.eq_TS2_1.rhs.subs({
+        honorary.c_eff: exhaust_velocity, honorary.m_0: m_0,
+        honorary.m_f: m_f}))
+
+
+def _aft_engine(kind, thrust, mass, propellant):
+    # on the axis through the centre of mass: force, no torque
+    return CraftDesign((Thruster("main", (-1.0, 0.0, 0.0), (1.0, 0.0, 0.0),
+                                 thrust, kind=kind),),
+                       mass_kg=mass, propellant_kg=propellant,
+                       identity="aft-engine test craft")
+
+
+def _resting(design, window, **kwargs):
+    return OrbitalJumper([], design=design, position_m=(0.0, 0.0, 0.0),
+                         velocity_m_s=(0.0, 0.0, 0.0), length_scale_m=1.0e6,
+                         window_s=window, **kwargs)
+
+
+def test_mass_falls_at_thrust_over_isp_g0_through_a_burn():
+    thrust, mass, propellant = 400.0, 1000.0, 200.0
+    design = _aft_engine("bipropellant", thrust, mass, propellant)
+    c = (THRUSTER_KINDS["bipropellant"].specific_impulse_s
+         * STANDARD_GRAVITY_M_S2)
+    window, rounds = 10.0, 5
+    jumper = _resting(design, window)
+    jumper.throttle((1.0,))
+    for _ in range(rounds):
+        jumper.advance()
+    t = window * rounds
+    burned = thrust * t / c                 # m_dot = F / (I_sp g_0), constant
+    print(f"\nburned {mass - jumper.mass_kg:.12f} kg, F t/(Isp g0) "
+          f"{burned:.12f} kg, substeps {jumper.substeps}")
+    assert jumper.mass_kg == pytest.approx(mass - burned, rel=1e-13)
+    assert jumper.propellant_kg == pytest.approx(propellant - burned,
+                                                 rel=1e-13)
+    assert jumper.propellant_flow_kg_s == pytest.approx(thrust / c,
+                                                        rel=1e-14)
+    assert jumper.thruster_impulses_n_s == pytest.approx((thrust * t,),
+                                                         rel=1e-13)
+    # the burn integrates Tsiolkovsky: v_new = v + dt F / m_new is the right
+    # Riemann sum of F / m(t), above TS2.1 by at most dt_max (F/m_f - F/m_0)
+    _position, velocity = jumper.r()
+    ideal = _tsiolkovsky_delta_v(c, mass, mass - burned)
+    bound = window * (thrust / (mass - burned) - thrust / mass)
+    print(f"delta-v {velocity[0]:.9f} m/s, TS2.1 {ideal:.9f} m/s, "
+          f"excess {velocity[0] - ideal:.3e} (bound {bound:.3e})")
+    assert 0.0 <= velocity[0] - ideal <= bound
+    assert velocity[1:] == pytest.approx((0.0, 0.0), abs=0.0)
+
+
+def test_thrust_stops_at_empty_by_the_supply_law():
+    thrust, mass, propellant = 100.0, 300.0, 2.0
+    design = _aft_engine("cold-gas", thrust, mass, propellant)
+    c = THRUSTER_KINDS["cold-gas"].specific_impulse_s * STANDARD_GRAVITY_M_S2
+    burn_time = propellant * c / thrust     # 13.7 s
+    window = 10.0
+    jumper = _resting(design, window)
+    jumper.throttle((1.0,))
+    jumper.advance()                        # t = 10: still burning
+    assert jumper.propellant_supply == 1.0
+    jumper.advance()                        # t = 20: empties inside
+    _p, v_empty = jumper.r()
+    for _ in range(2):                      # t = 40: throttle still open
+        jumper.advance()
+    _p, v_after = jumper.r()
+    print(f"\nburn time {burn_time:.4f} s; propellant left "
+          f"{jumper.propellant_kg:.3e} kg; supply {jumper.propellant_supply};"
+          f" delivered impulse {jumper.thruster_impulses_n_s[0]:.9f} N*s "
+          f"(c P0 = {c * propellant:.9f}); substeps {jumper.substeps}")
+    assert jumper.propellant_kg == pytest.approx(0.0, abs=1e-12)
+    assert jumper.propellant_kg >= 0.0
+    assert jumper.mass_kg == pytest.approx(mass - propellant, rel=1e-14)
+    assert jumper.propellant_supply == pytest.approx(0.0, abs=1e-12)
+    assert jumper.applied_force() == pytest.approx((0.0, 0.0, 0.0),
+                                                   abs=1e-9)
+    assert v_after == pytest.approx(v_empty, abs=1e-12)
+    # exactly the tank's worth of impulse was delivered: c * P0
+    assert jumper.thruster_impulses_n_s[0] == pytest.approx(c * propellant,
+                                                            rel=1e-12)
+    ideal = _tsiolkovsky_delta_v(c, mass, mass - propellant)
+    bound = window * (thrust / (mass - propellant) - thrust / mass)
+    print(f"delta-v {v_after[0]:.9f}, TS2.1 {ideal:.9f}, excess "
+          f"{v_after[0] - ideal:.3e} (bound {bound:.3e})")
+    assert abs(v_after[0] - ideal) <= bound
+
+
+def _spin_craft():
+    # an RCS couple about z (equal and opposite, offset 1 m along y: zero
+    # net force) and a main engine along craft +x through the centre of mass
+    return CraftDesign((
+        Thruster("rcs+y", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), 1.0),
+        Thruster("rcs-y", (0.0, -1.0, 0.0), (1.0, 0.0, 0.0), 1.0),
+        Thruster("main", (-1.0, 0.0, 0.0), (1.0, 0.0, 0.0), 50.0),
+    ), mass_kg=100.0, body_size_m=(2.0, 1.0, 0.5), identity="spin craft")
+
+
+def _rz(angle):
+    c, s = math.cos(angle), math.sin(angle)
+    return np.asarray(((c, -s, 0.0), (s, c, 0.0), (0.0, 0.0, 1.0)))
+
+
+def test_pure_torque_spins_at_the_rate_the_inertia_predicts():
+    design = _spin_craft()
+    inertia = principal_inertia(design)
+    assert inertia == pytest.approx(100.0 / 12.0 * np.asarray(
+        (1.0 + 0.25, 4.0 + 0.25, 4.0 + 1.0)), rel=1e-15)
+    u = np.asarray((1.0, 1.0, 0.0))
+    tau = torque_matrix(design) @ u
+    assert tau == pytest.approx((0.0, 0.0, 2.0), abs=0.0)
+    assert actuation_matrix(design) @ u == pytest.approx((0.0, 0.0, 0.0),
+                                                         abs=0.0)
+    window, rounds = 0.25, 40
+    jumper = _resting(design, window)
+    jumper.throttle(u)
+    for _ in range(rounds):
+        jumper.advance()
+    assert jumper.substeps == rounds        # at rest: dt is the window
+    t = window * rounds
+    alpha = tau[2] / inertia[2]
+    omega = jumper.angular_velocity()
+    print(f"\nomega_z {omega[2]:.15f} rad/s, tau t / I_z "
+          f"{alpha * t:.15f} rad/s")
+    assert jumper.torque() == pytest.approx(tau, abs=0.0)
+    assert omega[2] == pytest.approx(alpha * t, rel=1e-13)
+    assert omega[:2] == pytest.approx((0.0, 0.0), abs=0.0)
+    position, velocity = jumper.r()
+    assert position == pytest.approx((0.0, 0.0, 0.0), abs=1e-12)
+    assert velocity == pytest.approx((0.0, 0.0, 0.0), abs=1e-12)
+    # N1.3 by the Cayley step: each substep turns by 2 atan(dt w_n / 2)
+    # with w_n the new rate; it stays a rotation (N1.4, N1.5)
+    turned = sum(2.0 * math.atan(window * alpha * n * window / 2.0)
+                 for n in range(1, rounds + 1))
+    R = jumper.attitude()
+    print(f"turned {turned:.12f} rad (continuum alpha t^2/2 = "
+          f"{alpha * t * t / 2:.12f}); |R^T R - I| "
+          f"{np.abs(R.T @ R - np.eye(3)).max():.2e}, det {np.linalg.det(R)}")
+    assert R == pytest.approx(_rz(turned), abs=1e-13)
+    assert np.abs(R.T @ R - np.eye(3)).max() < 1e-14
+    assert abs(turned - alpha * t * t / 2) <= alpha * t * window / 2
+
+    # thrust direction follows the attitude the dynamics produced: one
+    # substep of main engine, the couple off (the craft keeps spinning)
+    before = jumper.attitude()
+    jumper.throttle((0.0, 0.0, 1.0))
+    jumper.advance()
+    assert jumper.applied_force() == pytest.approx(
+        before @ np.asarray((50.0, 0.0, 0.0)), rel=1e-14, abs=1e-12)
+    assert jumper.torque() == pytest.approx((0.0, 0.0, 0.0), abs=0.0)
+    assert jumper.angular_velocity()[2] == pytest.approx(alpha * t,
+                                                         rel=1e-13)
+
+
+def test_thrust_direction_follows_a_declared_attitude():
+    design = six_axis_jumper(250.0, 1000.0)
+    quarter = _rz(math.pi / 2.0)
+    jumper = _resting(design, 1.0, attitude=quarter)
+    jumper.throttle((1.0, 0.0, 0.0, 0.0, 0.0, 0.0))     # craft +x
+    jumper.advance()
+    assert jumper.applied_force() == pytest.approx((0.0, 250.0, 0.0),
+                                                   abs=1e-12)
+    _position, velocity = jumper.r()
+    assert velocity == pytest.approx((0.0, 0.25, 0.0), abs=1e-15)
+
+    # an arbitrary attitude: the world force is R @ B_craft @ u
+    axis = np.asarray((1.0, -2.0, 0.5)) / np.linalg.norm((1.0, -2.0, 0.5))
+    angle = 0.83
+    K = np.asarray(((0.0, -axis[2], axis[1]), (axis[2], 0.0, -axis[0]),
+                    (-axis[1], axis[0], 0.0)))
+    R = np.eye(3) + math.sin(angle) * K + (1 - math.cos(angle)) * K @ K
+    jumper = _resting(design, 1.0, attitude=R)
+    u = np.asarray((0.2, 0.5, 1.0, 0.0, 0.125, 0.9))
+    jumper.throttle(u)
+    assert jumper.actuation_matrix() == pytest.approx(
+        R @ actuation_matrix(design), rel=1e-15, abs=1e-15)
+    jumper.advance()
+    assert jumper.applied_force() == pytest.approx(
+        actuation_matrix(design, R) @ u, rel=1e-13, abs=1e-12)
+    # no rate, no torque: the attitude is held exactly
+    assert np.array_equal(jumper.attitude(), R)

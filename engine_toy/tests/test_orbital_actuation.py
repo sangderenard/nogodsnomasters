@@ -69,7 +69,9 @@ def test_mixed_throttles_produce_B_at_u_for_any_design():
         Thruster("canted", (0.0, 1.0, 0.0), (tilt, -tilt, tilt), 120.0,
                  kind="cold-gas"),
         Thruster("ventral", (0.0, 0.0, 1.0), (0.0, 0.6, -0.8), 45.0),
-    ), mass_kg=750.0, identity="three-thruster test craft")
+    ), mass_kg=750.0, identity="three-thruster test craft",
+        # step 7: the cold-gas thruster burns propellant; declare some
+        propellant_kg=50.0)
     jumper = _resting(design)
     u = np.asarray((0.3, 0.75, 1.0))
     jumper.throttle(u)
