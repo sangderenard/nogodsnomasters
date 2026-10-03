@@ -8,24 +8,34 @@ thruster activations animated".
     python orbital_game.py --click 2 --frames 6 --every 40 --out shot
                                                   headless: select target 2,
                                                   save 6 PNGs 40 frames apart
+    python orbital_game.py --click 0 --frames 24 --every 60 --burn-shots
+           --out shots/orbital_game_machine      the default click, with a
+                                                  shot while an engine burns
 
 Nothing here is new machinery; it is the existing pieces wired together:
 
-    the craft      ``orbital_jumper.OrbitalJumper`` with the six-axis
-                   ``orbital_actuation`` design (its own dt state)
-    the targets    ``OrbitalJumper``s (stations, RCS idle) on circular
-                   orbits about the same ``GravityCenter``: the same N4.1 /
-                   N1.2 / N1.1 pieces, advanced over the same windows as the craft, so
-                   craft and targets agree at every frame boundary
-                   (lockstep).  Targets are stations of negligible mass:
-                   they do not attract the craft (the plan is two-body).
+    the craft      ``orbital_craft_machine.MachineCraft`` of
+                   ``orbital_craft()``: the engine_toy machine (gimballed
+                   main engine, two retro "brake" engines, sixteen RCS
+                   "navigation" nozzles, three propellant tanks) in its own
+                   dt state; it applies its own allocation (throttles AND
+                   gimbal commands) when the tracker asks for a wrench
+    the targets    ONE batched ``orbital_jumper.OrbitalJumper(batch=N)``
+                   of plain massless (``mass_kg``) jumpers on circular orbits
+                   about the same ``GravityCenter``: one dt state, one shared
+                   dt, advanced over the same windows as the craft, so craft
+                   and targets agree at every frame boundary (lockstep).
+                   They do not attract the craft (the plan is two-body).
     the plan       ``orbital_plan.hohmann_plan`` (or, through the one
-                   ``planner=`` switch, the collocation planner when
-                   ``orbital_collocation`` exists), PHASED by the laws below
-                   so the craft meets the target, not just its radius
+                   ``planner=`` switch, the collocation planner), PHASED by
+                   the laws below so the craft meets the target, not just
+                   its radius
     the flight     ``orbital_tracker.fly``, called once per frame over the
-                   frame's window (its own per-round read/decide/throttle/
-                   advance loop)
+                   frame's window (its own per-round read/decide/allocate/
+                   advance loop), with the tracker's own
+                   ``hohmann_replanner`` injected so its ON/OFF-PLAN switch
+                   and re-plan count are live (read back from the
+                   ``FlightReport``)
     the viewer     ``turret_demo.py``'s pattern: a pygame OPENGL window, a
                    plan-view Surface drawn through ``gl_text.TextLayer``,
                    and a headless ``--frames`` mode (hidden window +
@@ -50,17 +60,20 @@ craft by ``phi_0`` now:
 Valid while ``r_1 != r_2`` (``PHASING_SCALE``): co-orbital targets have no
 synodic period and no Hohmann transfer.
 
-Plumes.  ``fly`` leaves the throttles at zero when it returns, so the
-plumes read the actuation seam's own accounting instead: the thrust-cost
-piece's per-thruster impulse ``thruster{k}_impulse`` over the frame, whose
-increase divided by ``window * max_thrust_k`` is the frame-average clamped
-throttle that actually fired.
+Drawing.  Only the craft's own readings: ``thruster_geometry()`` (each
+mount relative to the CURRENT centre of mass, its exhaust at the CURRENT
+gimbal state, its delivered throttle), ``centre_of_mass()``,
+``tank_propellant_kg()``, ``gimbal_states()`` and the machine's prism.
+The live plumes are the delivered throttles at the frame's end; the
+group readout also shows what each group fired over the frame, from the
+thrust-cost piece's per-thruster impulse (``dI_k / (window * T_k)``).
 """
 from __future__ import annotations
 
 import functools
 import math
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -70,29 +83,29 @@ import sympy as sp
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from honorary_engine_equation_catalogue import LawScale, equation_piece
-from orbital_actuation import CraftDesign, six_axis_jumper
+from machine_package import measure_prism
+from orbital_craft_machine import CraftMachine, MachineCraft, orbital_craft
 from orbital_jumper import GravityCenter, OrbitalJumper
 from orbital_plan import KEPLER_LAWS, hohmann_plan, reference
-from orbital_tracker import TrackingGains, fly
+from orbital_tracker import (TrackingGains, fly, hohmann_replanner,
+                             tracker_mode)
 
 MU_EARTH = 3.986004418e14
 R_EARTH = 6.371e6
 CRAFT_RADIUS_M = 7.0e6
-#: The game craft: the six-axis jumper with bipropellant thrusters
-#: (``orbital_actuation.THRUSTER_KINDS``, I_sp 310 s) and declared
-#: propellant; fuel remaining is the dt state's own ``propellant_mass``.
-CRAFT_MASS_KG = 5000.0        # wet
-CRAFT_PROPELLANT_KG = 4000.0  # ~4.9 km/s of delta-v at I_sp 310 s
-CRAFT_THRUSTER_KIND = "bipropellant"
-THRUSTER_N = 1.0e5            # per thruster (2 g wet, 10 g dry)
+#: Stations are plain thrusterless jumpers (``mass_kg``); the mass only
+#: names the lanes (they do not attract the craft).
 TARGET_MASS_KG = 1.0e3
-#: Stations are crafts whose six-axis RCS is held at zero throttle: the
-#: same compiled pieces as the craft.  (A thrusterless ``mass_kg`` jumper
-#: would be the plainer declaration, but since step 7 its t0 actuation
-#: piece does not compile -- see the step-6 CONTINUATION note.)
-STATION_DESIGN = six_axis_jumper(1.0e3, TARGET_MASS_KG)
-ROUND_S = 10.0
+#: The machine craft's round and gains: the configuration
+#: ``tests/test_orbital_tracker.py::test_machine_craft_transfer_arrives_
+#: with_gimballed_burns`` flies (2 s rounds; attitude PD at 0.2 rad/s,
+#: w_a * round = 0.4).
+ROUND_S = 2.0
+MACHINE_GAINS = TrackingGains(attitude_frequency_rad_s=0.2)
 LENGTH_SCALE_M = 5.0e4
+#: The thruster groups by declared ``Thruster.role``, in display order.
+THRUSTER_GROUPS = (("main", "main"), ("brake", "retro"),
+                   ("navigation", "RCS"))
 #: The stations' controller dx (CFL dt <= 0.5 dx / v).  The stations are
 #: the truth the craft must meet and nothing corrects them, so they run a
 #: finer CFL bound than the tracked craft.
@@ -258,7 +271,8 @@ class OrbitalGame:
     def __init__(self, *, mu: float = MU_EARTH,
                  craft_radius_m: float = CRAFT_RADIUS_M,
                  craft_angle_rad: float = 0.0,
-                 targets=DEFAULT_TARGETS, design: CraftDesign | None = None,
+                 targets=DEFAULT_TARGETS,
+                 machine: CraftMachine | None = None,
                  gains: TrackingGains | None = None,
                  round_s: float = ROUND_S,
                  length_scale_m: float = LENGTH_SCALE_M,
@@ -270,34 +284,37 @@ class OrbitalGame:
         self.mu = float(mu)
         self.planner_name = planner
         self.planner = PLANNERS[planner]()
-        self.gains = TrackingGains() if gains is None else gains
+        # the tracker's own full-trip re-planner (its ON/OFF-PLAN switch);
+        # the collocation planner's re-planner needs a problem object
+        # (orbital_collocation.collocation_replanner): not wired here
+        self.replanner = hohmann_replanner if planner == "hohmann" else None
+        self.gains = MACHINE_GAINS if gains is None else gains
         self.round_s = float(round_s)
         center = GravityCenter((0.0, 0.0, 0.0), self.mu)
-        design = (six_axis_jumper(THRUSTER_N, CRAFT_MASS_KG,
-                                  kind=CRAFT_THRUSTER_KIND,
-                                  propellant_kg=CRAFT_PROPELLANT_KG)
-                  if design is None else design)
+        machine = orbital_craft() if machine is None else machine
         position, velocity = _circular_state(self.mu, craft_radius_m,
                                              craft_angle_rad)
-        self.craft = OrbitalJumper(
-            [center], design=design, position_m=position,
-            velocity_m_s=velocity, length_scale_m=length_scale_m,
-            window_s=self.round_s)
+        self.craft = MachineCraft(
+            [center], machine, position_m=position, velocity_m_s=velocity,
+            length_scale_m=length_scale_m, window_s=self.round_s)
+        self.loaded_tank_kg = self.craft.tank_propellant_kg()
+        self.loaded_centre_of_mass = self.craft.centre_of_mass()
         self.specs = tuple(targets)
-        self.targets = []
-        for spec in self.specs:
-            position, velocity = _circular_state(self.mu, spec.radius_m,
-                                                 spec.angle_rad)
-            self.targets.append(OrbitalJumper(
-                [center], design=STATION_DESIGN, position_m=position,
-                velocity_m_s=velocity,
-                length_scale_m=station_length_scale_m,
-                window_s=self.round_s))
+        states = [_circular_state(self.mu, spec.radius_m, spec.angle_rad)
+                  for spec in self.specs]
+        # ONE dt state: every station is a lane of one batched jumper
+        self.stations = OrbitalJumper(
+            [center], mass_kg=TARGET_MASS_KG,
+            position_m=np.asarray([p for p, _v in states], dtype=float),
+            velocity_m_s=np.asarray([v for _p, v in states], dtype=float),
+            length_scale_m=station_length_scale_m,
+            window_s=self.round_s, batch=len(self.specs))
         self.max_thrust = np.asarray(
-            [t.max_thrust_n for t in design.thrusters], dtype=float)
+            [t.max_thrust_n for t in machine.thrusters], dtype=float)
         self.order: TransferOrder | None = None
+        self.report = None          # the last frame's FlightReport
         self.rendezvous: list[Rendezvous] = []
-        self.plume_throttles = np.zeros(design.thruster_count)
+        self.plume_throttles = np.zeros(machine.thruster_count)
         self.plan_deviation_m: float | None = None
         self.path: list[tuple[float, float]] = []
         self._record_path()
@@ -309,22 +326,46 @@ class OrbitalGame:
 
     @property
     def propellant_kg(self) -> float:
-        """Propellant left in the craft (the dt state's column)."""
-        return self.craft.propellant_kg
+        """Propellant left in the craft's tanks (the dt state's columns)."""
+        return float(sum(self.craft.tank_propellant_kg().values()))
 
     @property
     def propellant_fraction(self) -> float:
-        loaded = self.craft.design.propellant_kg
-        return 1.0 if loaded <= 0.0 else self.craft.propellant_kg / loaded
+        loaded = float(sum(self.loaded_tank_kg.values()))
+        return 1.0 if loaded <= 0.0 else self.propellant_kg / loaded
+
+    def station_states(self):
+        """``(N, 3)`` positions and velocities of every station lane."""
+        position, velocity = self.stations.r()
+        return (np.asarray(position, dtype=float).reshape(-1, 3),
+                np.asarray(velocity, dtype=float).reshape(-1, 3))
 
     def target_state(self, index: int):
-        return self.targets[index].r()
+        position, velocity = self.station_states()
+        return position[index], velocity[index]
+
+    def flown_plan(self):
+        """The plan the tracker flies now: the order's, or its re-plan."""
+        if self.order is None:
+            return None
+        mode = tracker_mode(self.craft)
+        if mode is not None and mode.origin is self.order.plan:
+            return mode.plan
+        return self.order.plan
+
+    def on_plan(self) -> bool:
+        """The tracker's ON/OFF-PLAN switch (the last FlightReport)."""
+        return True if self.report is None else bool(self.report.on_plan)
+
+    def replans(self) -> int:
+        """Full-trip re-plans since the order (the last FlightReport)."""
+        return 0 if self.report is None else int(self.report.replans)
 
     def arrival_s(self) -> float | None:
         """When the active order's rendezvous is measured."""
         if self.order is None:
             return None
-        return self.order.plan.t_burn2 + ARRIVAL_SETTLE_S
+        return self.flown_plan().t_burn2 + ARRIVAL_SETTLE_S
 
     def busy(self) -> bool:
         """An order is still on its way (its rendezvous is ahead)."""
@@ -334,7 +375,7 @@ class OrbitalGame:
     def phase_name(self) -> str:
         if self.order is None:
             return "coasting"
-        plan, t = self.order.plan, self.time_s
+        plan, t = self.flown_plan(), self.time_s
         if t < plan.t_burn1:
             return "phasing wait"
         if t < plan.t_burn2:
@@ -344,12 +385,46 @@ class OrbitalGame:
         return "on station orbit"
 
     def plan_curve(self, samples: int = 240) -> np.ndarray:
-        """The order's reference from burn 1 to arrival, (samples, 3)."""
+        """The flown plan's reference from burn 1 to arrival, (samples, 3)."""
         if self.order is None:
             return np.zeros((0, 3))
-        plan = self.order.plan
+        plan = self.flown_plan()
         times = np.linspace(plan.t_burn1, plan.t_burn2, samples)
         return reference(plan, times)[0]
+
+    def main_gimbal(self) -> tuple[float, float] | None:
+        """The main engine's tilt off its axis (rad): from the craft's
+        gimbal STATE, and from the tracker's last command
+        (``TrackingCommand.gimbal_rad``; ``nan`` before any command)."""
+        mains = self.craft.craft.thrusters_by_role("main")
+        if not mains:
+            return None
+        k = mains[0]
+        a, b = self.craft.gimbal_states()[k]
+        state = math.acos(min(1.0, math.cos(a) * math.cos(b)))
+        command = math.nan
+        mode = tracker_mode(self.craft)
+        if (mode is not None and mode.last is not None
+                and mode.last.gimbal_rad is not None):
+            ca, cb = np.asarray(mode.last.gimbal_rad, dtype=float)[k]
+            command = math.acos(min(1.0, math.cos(ca) * math.cos(cb)))
+        return state, command
+
+    def thruster_groups(self) -> list[tuple[str, int, int, float, float]]:
+        """Per declared role: (label, thrusters, firing now, largest live
+        delivered throttle, largest throttle fired over the last frame)."""
+        live = np.asarray([g.throttle
+                           for g in self.craft.thruster_geometry()])
+        out = []
+        for role, label in THRUSTER_GROUPS:
+            ks = self.craft.craft.thrusters_by_role(role)
+            if not ks:
+                continue
+            out.append((label, len(ks),
+                        int(np.count_nonzero(live[ks] > 1.0e-3)),
+                        float(live[ks].max()),
+                        float(np.max(self.plume_throttles[ks]))))
+        return out
 
     # ------------------------------------------------------------ orders
     def select(self, index: int) -> TransferOrder:
@@ -358,7 +433,7 @@ class OrbitalGame:
         if self.busy():
             raise RuntimeError("transfer in progress")
         craft_r, _ = self.craft.r()
-        target_r, _ = self.targets[index].r()
+        target_r, _ = self.target_state(index)
         r1 = float(np.linalg.norm(craft_r))
         r2 = float(np.linalg.norm(target_r))
         theta_0 = _polar(craft_r)
@@ -370,6 +445,7 @@ class OrbitalGame:
                             t_burn1=self.time_s + timing.t_wait,
                             phase=timing.phase)
         self.order = TransferOrder(index, self.time_s, plan, timing, phi_0)
+        self.report = None
         return self.order
 
     # ------------------------------------------------------------ frames
@@ -379,14 +455,15 @@ class OrbitalGame:
         the plumes can be seen, else ``base_s``."""
         if self.order is not None:
             t = self.time_s
-            for burn in (self.order.plan.t_burn1, self.order.plan.t_burn2):
+            plan = self.flown_plan()
+            for burn in (plan.t_burn1, plan.t_burn2):
                 if burn - margin_s <= t <= burn + max(margin_s,
                                                       ARRIVAL_SETTLE_S):
                     return burn_s
         return base_s
 
     def step(self, window_s: float) -> float:
-        """Advance craft and targets over one frame window, in lockstep.
+        """Advance craft and stations over one frame window, in lockstep.
         The window is clipped to land on the order's arrival time, where
         the rendezvous is measured.  Returns the window advanced."""
         window = float(window_s)
@@ -397,9 +474,10 @@ class OrbitalGame:
         start = self.time_s
         impulses = self.craft.thruster_impulses_n_s
         if self.order is not None:
-            report = fly(self.craft, self.order.plan, self.gains,
-                         until_s=start + window, round_s=self.round_s)
-            self.plan_deviation_m = report.final_position_error_m
+            self.report = fly(self.craft, self.order.plan, self.gains,
+                              until_s=start + window, round_s=self.round_s,
+                              replanner=self.replanner)
+            self.plan_deviation_m = self.report.final_position_error_m
         else:
             remaining = window
             while remaining > 1.0e-9:
@@ -407,17 +485,13 @@ class OrbitalGame:
                 self.craft.advance(chunk)
                 remaining -= chunk
         advanced = self.craft.time_s - start
-        for target in self.targets:
-            remaining = advanced
-            while remaining > 1.0e-9:
-                chunk = min(self.round_s, remaining)
-                target.advance(chunk)
-                remaining -= chunk
         if advanced > 0.0:
+            # every station lane in one round of the one batched dt state
+            self.stations.advance(advanced)
             fired = self.craft.thruster_impulses_n_s - impulses
             self.plume_throttles = fired / (advanced * self.max_thrust)
         self._record_path()
-        if arrival is not None and self.time_s >= arrival - 1.0e-9:
+        if arrival is not None and self.time_s >= self.arrival_s() - 1.0e-9:
             self._measure_rendezvous()
         return advanced
 
@@ -437,7 +511,7 @@ class OrbitalGame:
 
     def _measure_rendezvous(self):
         craft_r, craft_v = self.craft.r()
-        target_r, target_v = self.targets[self.order.target].r()
+        target_r, target_v = self.target_state(self.order.target)
         self.rendezvous.append(Rendezvous(
             target=self.order.target, time_s=self.time_s,
             distance_m=float(np.linalg.norm(craft_r - target_r)),
@@ -446,47 +520,51 @@ class OrbitalGame:
 
 # ------------------------------------------------- the craft's declared parts
 @dataclass(frozen=True)
-class PartGeometry:
-    """One thruster as the drawing needs it, world-oriented, relative to
-    the craft's centre of mass: its mount point, the direction its exhaust
-    leaves (opposite the force it puts on the craft) and the throttle that
-    fired over the last frame."""
+class CraftDrawing:
+    """The machine craft as the drawing needs it, world-oriented, about a
+    point FIXED in the machine (the centre of its prism), so the centre of
+    mass visibly moves as the tanks drain.
 
-    identity: str
-    mount_m: np.ndarray
-    exhaust: np.ndarray
-    throttle: float
+    ``parts``: ``MachineCraft.thruster_geometry()`` (mount relative to the
+    current centre of mass, exhaust at the current gimbal, delivered
+    throttle); ``centre_of_mass_m``: where the current centre of mass is
+    (add it to a part's mount); ``loaded_centre_of_mass_m``: where it was at
+    the declared fill; ``body``: the prism's 8 corners; ``tanks``:
+    ``(identity, position, fill fraction of capacity)``."""
 
-
-def craft_part_geometry(craft, throttles) -> list[PartGeometry]:
-    """Every thruster from the craft's DECLARED parts: ``Thruster.position_m``
-    and ``Thruster.direction`` (craft frame) carried to the world by the
-    craft's attitude ``R`` (world = R @ craft).  This is the one place the
-    drawing reads part geometry; a machine craft whose thrusters gimbal
-    supplies its current directions here."""
-    attitude = (craft.attitude() if hasattr(craft, "attitude")
-                else np.eye(3))
-    throttles = np.asarray(throttles, dtype=float).reshape(-1)
-    parts = []
-    for k, thruster in enumerate(craft.design.thrusters):
-        force = attitude @ np.asarray(thruster.direction, dtype=float)
-        parts.append(PartGeometry(
-            identity=thruster.identity,
-            mount_m=attitude @ np.asarray(thruster.position_m, dtype=float),
-            exhaust=-force, throttle=float(throttles[k])))
-    return parts
+    parts: tuple
+    centre_of_mass_m: np.ndarray
+    loaded_centre_of_mass_m: np.ndarray
+    body: np.ndarray
+    tanks: tuple
 
 
-def craft_body_corners(craft) -> np.ndarray:
-    """The 8 corners (world-oriented, about the centre of mass) of the
-    declared body box ``CraftDesign.body_size_m``."""
-    size = np.asarray(getattr(craft.design, "body_size_m", (1.0, 1.0, 1.0)),
-                      dtype=float)
-    attitude = (craft.attitude() if hasattr(craft, "attitude")
-                else np.eye(3))
+def craft_drawing(craft: MachineCraft,
+                  loaded_centre_of_mass=None) -> CraftDrawing:
+    """Read the craft's declared geometry and live state (see
+    :class:`CraftDrawing`)."""
+    rotation = craft.attitude()
+    prism = measure_prism(craft.craft.document["nodes"])
+    fixed = np.asarray(prism.centre, dtype=float)
+    centre = craft.centre_of_mass()
+    loaded = centre if loaded_centre_of_mass is None else np.asarray(
+        loaded_centre_of_mass, dtype=float)
+    size = np.asarray(prism.size_m, dtype=float)
     signs = np.asarray([(x, y, z) for x in (-1, 1) for y in (-1, 1)
                         for z in (-1, 1)], dtype=float)
-    return (signs * (0.5 * size)) @ attitude.T
+    contents = craft.tank_propellant_kg()
+    tanks = tuple(
+        (tank.identity,
+         rotation @ (np.asarray(tank.position_m, dtype=float) - fixed),
+         0.0 if tank.capacity_kg <= 0.0
+         else float(contents[tank.identity]) / tank.capacity_kg)
+        for tank in craft.craft.tanks)
+    return CraftDrawing(
+        parts=tuple(craft.thruster_geometry()),
+        centre_of_mass_m=rotation @ (centre - fixed),
+        loaded_centre_of_mass_m=rotation @ (loaded - fixed),
+        body=(signs * (0.5 * size)) @ rotation.T,
+        tanks=tanks)
 
 
 # ================================================================ viewer
@@ -504,7 +582,7 @@ BLUE = (70, 120, 200)
 TARGET_COLOURS = ((120, 190, 240), (220, 150, 230), (240, 210, 120),
                   (150, 230, 200), (240, 140, 120), (180, 180, 250))
 BASE_WARP_S = 60.0
-INSET_SIZE = 250
+INSET_SIZE = 230
 #: Plume length at full throttle, in body extents.
 PLUME_LENGTH_BODY = 1.6
 
@@ -530,10 +608,24 @@ def _hull(points):
     return lower[:-1] + upper[:-1]
 
 
-def _draw_craft(surface, centre_px, metres_to_px, parts, body, frame):
-    """Top view (world x right, y up) of the craft's declared geometry:
-    the body box, each thruster mount, and a plume from each mount along
-    its exhaust direction, scaled by its throttle and flickering."""
+#: Plume length by declared role (fraction of the full plume length).
+PLUME_ROLE_SCALE = {"main": 1.0, "brake": 0.6, "navigation": 0.35}
+#: The centre of mass moves millimetres (~130 mm drained); the inset draws
+#: its shift from the declared fill this many times larger.
+COM_SHIFT_MAGNIFICATION = 10.0
+TANK_COLOURS = ((120, 200, 255), (240, 170, 90), (180, 240, 140))
+
+
+def _draw_craft(surface, centre_px, metres_to_px, drawing: CraftDrawing,
+                frame, detail: bool = True):
+    """Top view (world x right, y up) of the machine craft about a point
+    fixed in it: the prism, each thruster mount, a plume from each mount
+    along its CURRENT exhaust direction (the main engine's tilts with its
+    gimbal) scaled by its delivered throttle; with ``detail`` also the
+    tanks (filled to their contents), the centre of mass (moving as the
+    tanks drain; its shift from the declared fill drawn
+    ``COM_SHIFT_MAGNIFICATION`` times) and where it was at the declared
+    fill."""
     import pygame
     cx, cy = centre_px
 
@@ -541,41 +633,78 @@ def _draw_craft(surface, centre_px, metres_to_px, parts, body, frame):
         return (cx + float(vector[0]) * metres_to_px,
                 cy - float(vector[1]) * metres_to_px)
 
+    body = drawing.body
+    com = drawing.centre_of_mass_m
     extent = max(float(np.max(np.abs(body))) * 2.0, 1.0e-9)
-    for k, part in enumerate(parts):
+    outline = _hull([px(corner) for corner in body])
+    if len(outline) >= 3:
+        pygame.draw.polygon(surface, (150, 158, 170) if detail
+                            else (205, 212, 222), outline)
+        pygame.draw.polygon(surface, (90, 96, 108), outline, 1)
+    if detail:
+        radius = max(3, int(0.09 * extent * metres_to_px))
+        for t, (_identity, position, fill) in enumerate(drawing.tanks):
+            centre = px(position)
+            point = (int(centre[0]), int(centre[1]))
+            pygame.draw.circle(surface, (40, 44, 52), point, radius)
+            inner = int(radius * math.sqrt(min(max(fill, 0.0), 1.0)))
+            if inner > 0:
+                pygame.draw.circle(surface,
+                                   TANK_COLOURS[t % len(TANK_COLOURS)],
+                                   point, inner)
+            pygame.draw.circle(surface, (20, 22, 26), point, radius, 1)
+    for part in drawing.parts:
+        mount = px(com + part.mount_m)
+        pygame.draw.circle(surface, (60, 64, 72) if part.role == "navigation"
+                           else (230, 230, 240),
+                           (int(mount[0]), int(mount[1])),
+                           max(1, int((0.06 if part.role == "navigation"
+                                       else 0.1) * extent * metres_to_px)))
+    for k, part in enumerate(drawing.parts):
         u = min(max(part.throttle, 0.0), 1.0)
         if u <= 1.0e-3:
             continue
+        mount = com + part.mount_m
         flicker = 0.8 + 0.2 * math.sin(frame * 1.9 + 2.3 * k)
-        length = PLUME_LENGTH_BODY * extent * (0.25 + 0.75 * u) * flicker
+        length = (PLUME_LENGTH_BODY * extent * (0.25 + 0.75 * u) * flicker
+                  * PLUME_ROLE_SCALE.get(part.role, 0.5))
         in_plane = np.asarray(part.exhaust[:2], dtype=float)
-        base = px(part.mount_m)
+        base = px(mount)
         if float(np.linalg.norm(in_plane)) < 1.0e-6:   # toward/away from view
             pygame.draw.circle(surface, (255, 170, 60),
                                (int(base[0]), int(base[1])),
                                max(2, int(0.3 * length * metres_to_px)), 2)
             continue
-        tip = px(part.mount_m + part.exhaust * length)
+        tip = px(mount + part.exhaust * length)
         across = np.asarray((-in_plane[1], in_plane[0]))
-        across *= (0.12 + 0.12 * u) * extent * metres_to_px / max(
-            float(np.linalg.norm(across)), 1.0e-12)
+        across *= ((0.12 + 0.12 * u) * extent * metres_to_px
+                   * PLUME_ROLE_SCALE.get(part.role, 0.5)
+                   / max(float(np.linalg.norm(across)), 1.0e-12))
         half = (across[0], -across[1])
         pygame.draw.polygon(surface, (255, 150, 50), [
             (base[0] + half[0], base[1] + half[1]), tip,
             (base[0] - half[0], base[1] - half[1])])
-        core = px(part.mount_m + part.exhaust * 0.55 * length)
+        core = px(mount + part.exhaust * 0.55 * length)
         pygame.draw.polygon(surface, (255, 240, 170), [
             (base[0] + 0.5 * half[0], base[1] + 0.5 * half[1]), core,
             (base[0] - 0.5 * half[0], base[1] - 0.5 * half[1])])
-    outline = _hull([px(corner) for corner in body])
-    if len(outline) >= 3:
-        pygame.draw.polygon(surface, (205, 212, 222), outline)
-        pygame.draw.polygon(surface, (120, 128, 138), outline, 1)
-    for part in parts:
-        mount = px(part.mount_m)
-        pygame.draw.circle(surface, (90, 96, 108),
-                           (int(mount[0]), int(mount[1])),
-                           max(1, int(0.08 * extent * metres_to_px)))
+    if detail:
+        # the shift is millimetres on a metres-sized craft: drawn magnified
+        loaded = px(drawing.loaded_centre_of_mass_m)
+        here = px(drawing.loaded_centre_of_mass_m + COM_SHIFT_MAGNIFICATION
+                  * (com - drawing.loaded_centre_of_mass_m))
+        r = max(4, int(0.05 * extent * metres_to_px))
+        pygame.draw.circle(surface, (120, 128, 138),
+                           (int(loaded[0]), int(loaded[1])), r, 1)
+        pygame.draw.line(surface, (255, 80, 200), loaded, here, 1)
+        # the centre-of-mass symbol: a quartered disc
+        point = (int(here[0]), int(here[1]))
+        pygame.draw.circle(surface, (255, 255, 255), point, r)
+        pygame.draw.rect(surface, (20, 20, 20),
+                         pygame.Rect(point[0] - r, point[1] - r, r, r))
+        pygame.draw.rect(surface, (20, 20, 20),
+                         pygame.Rect(point[0], point[1], r, r))
+        pygame.draw.circle(surface, (255, 80, 200), point, r, 1)
 
 
 def _fmt_time(seconds: float) -> str:
@@ -619,7 +748,7 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
 
     def say(message: str):
         messages.append(message)
-        del messages[:-5]
+        del messages[:-4]
         print(message, flush=True)
 
     def order(index: int):
@@ -641,6 +770,8 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
     plan_points: list = []
     plan_for = None
     reported = 0
+    replans_seen = 0
+    frame_wall_s = 0.0
     while running:
         if not frames:
             clock.tick(30)
@@ -657,13 +788,12 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
                     warp_s = max(warp_s / 2.0, 2.0)
                 elif pygame.K_1 <= event.key <= pygame.K_9:
                     index = event.key - pygame.K_1
-                    if index < len(game.targets):
+                    if index < len(game.specs):
                         order(index)
             elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my = event.pos[0] - PLAN_X, event.pos[1] - PLAN_Y
                 best, best_d = None, 28.0
-                for index, target in enumerate(game.targets):
-                    position, _ = target.r()
+                for index, position in enumerate(game.station_states()[0]):
                     px, py = to_px(position[0], position[1])
                     distance = math.hypot(px - mx, py - my)
                     if distance < best_d:
@@ -671,15 +801,23 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
                 if best is not None:
                     order(best)
 
+        started = time.perf_counter()
         game.step(game.frame_window(warp_s))
+        frame_wall_s = time.perf_counter() - started
         while reported < len(game.rendezvous):
             meet = game.rendezvous[reported]
             say(f"arrived at {game.specs[meet.target].name}: "
                 f"{meet.distance_m / 1000.0:.3f} km, "
                 f"{meet.relative_speed_m_s:.2f} m/s")
             reported += 1
-        if game.order is not plan_for:
-            plan_for = game.order
+        if game.replans() > replans_seen:
+            replans_seen = game.replans()
+            say(f"OFF PLAN: re-plan {replans_seen}")
+        if game.order is None:
+            replans_seen = 0
+        flown = game.flown_plan()
+        if flown is not plan_for:
+            plan_for = flown
             plan_points = [to_px(p[0], p[1]) for p in game.plan_curve()]
 
         # ---- draw the plan view ----
@@ -690,11 +828,11 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
         view.fill((18, 20, 26, 255))
         pygame.draw.circle(view, BLUE, (int(centre), int(centre)),
                            max(3, int(R_EARTH * scale)))
-        for index, (spec, target) in enumerate(zip(game.specs, game.targets)):
+        stations, _ = game.station_states()
+        for index, (spec, position) in enumerate(zip(game.specs, stations)):
             colour = TARGET_COLOURS[index % len(TARGET_COLOURS)]
             pygame.draw.circle(view, (38, 44, 54), (int(centre), int(centre)),
                                int(spec.radius_m * scale), 1)
-            position, _ = target.r()
             px, py = to_px(position[0], position[1])
             chosen = game.order is not None and game.order.target == index
             pygame.draw.circle(view, colour, (int(px), int(py)),
@@ -704,88 +842,110 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
             view.blit(small.render(f"{index + 1} {spec.name}", True, colour),
                       (px + 9, py - 7))
         if len(plan_points) > 1:
-            pygame.draw.lines(view, AMBER, False, plan_points, 1)
+            pygame.draw.lines(view, AMBER if game.on_plan() else RED, False,
+                              plan_points, 1)
         if len(game.path) > 1:
             trail = [to_px(x, y) for x, y in game.path[-3000:]]
             pygame.draw.lines(view, GREEN, False, trail, 2)
         position, _ = game.craft.r()
-        parts = craft_part_geometry(game.craft, game.plume_throttles)
-        body = craft_body_corners(game.craft)
+        drawing = craft_drawing(game.craft, game.loaded_centre_of_mass)
         # on the map the craft is an icon: its declared geometry at a fixed
-        # icon scale (the body's largest extent ~12 px)
-        icon_scale = 12.0 / max(float(np.max(np.abs(body))) * 2.0, 1.0e-9)
-        _draw_craft(view, to_px(position[0], position[1]), icon_scale, parts,
-                    body, frame)
+        # icon scale (the body's largest extent ~14 px)
+        icon_scale = 14.0 / max(float(np.max(np.abs(drawing.body))) * 2.0,
+                                1.0e-9)
+        _draw_craft(view, to_px(position[0], position[1]), icon_scale,
+                    drawing, frame, detail=False)
         text.draw_surface(view, PLAN_X, PLAN_Y, cache_key=("view", frame))
 
         # ---- the panel ----
         rows = [
-            ("ORBITAL GAME", AMBER),
-            (f"t = {_fmt_time(game.time_s)}   warp {game.frame_window(warp_s):.0f} s/frame", INK),
-            (f"planner: {game.planner_name}", INK),
-            (f"status: {game.phase_name()}", INK),
+            ("ORBITAL GAME -- machine craft", AMBER),
+            (f"t = {_fmt_time(game.time_s)}   warp "
+             f"{game.frame_window(warp_s):.0f} s/frame   "
+             f"wall {frame_wall_s:5.2f} s", INK),
+            (f"planner: {game.planner_name}   status: {game.phase_name()}",
+             INK),
         ]
         if game.order is not None:
-            plan = game.order.plan
+            plan = game.flown_plan()
             spec = game.specs[game.order.target]
             rows += [
+                (f"tracker: {'ON PLAN' if game.on_plan() else 'OFF PLAN'}"
+                 f"   re-plans {game.replans()}",
+                 GREEN if game.on_plan() else RED),
                 (f"target: {spec.name}", INK),
-                (f"burn 1 in {_fmt_time(plan.t_burn1 - game.time_s)}"
-                 if game.time_s < plan.t_burn1 else "burn 1 done", INK),
-                (f"arrive in {_fmt_time(plan.t_burn2 - game.time_s)}"
-                 if game.time_s < plan.t_burn2 else "arrived", INK),
+                ((f"burn 1 in {_fmt_time(plan.t_burn1 - game.time_s)}"
+                  if game.time_s < plan.t_burn1 else "burn 1 done")
+                 + "   " +
+                 (f"arrive in {_fmt_time(plan.t_burn2 - game.time_s)}"
+                  if game.time_s < plan.t_burn2 else "arrived"), INK),
                 (f"plan dv {plan.dv1:+.1f} / {plan.dv2:+.1f} m/s", INK),
             ]
         if game.plan_deviation_m is not None:
             rows.append((f"plan deviation {game.plan_deviation_m:9.1f} m",
                          GREEN))
-        rows.append((f"propellant {game.propellant_kg:8.1f} kg  "
-                     f"({100.0 * game.propellant_fraction:5.1f}%)   "
-                     f"mass {game.craft.mass_kg:8.1f} kg",
-                     RED if game.propellant_fraction < 0.1 else INK))
         if game.rendezvous:
             meet = game.rendezvous[-1]
-            rows.append((f"last rendezvous {meet.distance_m / 1000.0:.3f} km "
-                         f"@ {meet.relative_speed_m_s:.2f} m/s", AMBER))
-        rows.append(("", INK))
-        rows.append(("thrusters (fired throttle):", DIM))
-        y = 24
+            rows.append((f"last rendezvous {meet.distance_m:.1f} m "
+                         f"@ {meet.relative_speed_m_s:.3f} m/s", AMBER))
+        rows.append((f"propellant {game.propellant_kg:7.1f} kg "
+                     f"({100.0 * game.propellant_fraction:5.1f}%)  mass "
+                     f"{game.craft.mass_kg:7.1f} kg",
+                     RED if game.propellant_fraction < 0.1 else INK))
+        contents = game.craft.tank_propellant_kg()
+        for t, tank in enumerate(game.craft.craft.tanks):
+            left = contents[tank.identity]
+            loaded = game.loaded_tank_kg[tank.identity]
+            share = 0.0 if loaded <= 0.0 else left / loaded
+            rows.append((f"  {tank.identity:<15} {tank.fluid:<10} "
+                         f"{left:7.2f} kg ({100.0 * share:5.1f}%)",
+                         TANK_COLOURS[t % len(TANK_COLOURS)]))
+        gimbal = game.main_gimbal()
+        if gimbal is not None:
+            state, command = gimbal
+            commanded = ("--" if math.isnan(command)
+                         else f"{math.degrees(command):5.2f}")
+            rows.append((f"main gimbal {math.degrees(state):5.2f} deg "
+                         f"(command {commanded} deg)", INK))
+        shift = game.craft.centre_of_mass() - game.loaded_centre_of_mass
+        rows.append((f"centre of mass moved {1000.0 * np.linalg.norm(shift):6.1f}"
+                     f" mm since loading", (255, 120, 210)))
+        rows.append(("thruster groups (live / fired this frame):", DIM))
+        for label, count, lit, live, fired in game.thruster_groups():
+            rows.append((f"  {label:<6} {lit:2d}/{count:<2d} "
+                         f"{'FIRING' if lit else '  off '}  live {live:4.2f}"
+                         f"  frame {fired:4.2f}",
+                         AMBER if lit else DIM))
+        y = 20
         for row, colour in rows:
             text.draw(row, PANEL_X, y, colour)
-            y += 20
-        bars = pygame.Surface((370, 20 * game.craft.design.thruster_count),
-                              pygame.SRCALPHA)
-        for k, thruster in enumerate(game.craft.design.thrusters):
-            u = min(max(float(game.plume_throttles[k]), 0.0), 1.0)
-            bars.blit(small.render(f"{thruster.identity:>3}", True, INK),
-                      (0, 20 * k + 3))
-            pygame.draw.rect(bars, (40, 44, 52), pygame.Rect(36, 20 * k + 3,
-                                                             300, 12))
-            pygame.draw.rect(bars, (255, 160, 60),
-                             pygame.Rect(36, 20 * k + 3, int(300 * u), 12))
-        text.draw_surface(bars, PANEL_X, y, cache_key=("bars", frame))
-        y += bars.get_height() + 12
+            y += 19
+        y += 4
         inset = pygame.Surface((INSET_SIZE, INSET_SIZE), pygame.SRCALPHA)
         inset.fill((22, 25, 31, 255))
-        reach = max(float(np.max(np.abs(body))),
-                    max((float(np.linalg.norm(part.mount_m)) for part in parts),
-                        default=0.0))
-        inset_scale = 0.5 * INSET_SIZE / (reach * (1.0 + PLUME_LENGTH_BODY))
+        reach = max(float(np.max(np.abs(drawing.body))),
+                    max((float(np.linalg.norm(drawing.centre_of_mass_m
+                                              + part.mount_m))
+                         for part in drawing.parts), default=0.0))
+        inset_scale = 0.5 * INSET_SIZE / (reach * (1.0 + 0.6 * PLUME_LENGTH_BODY))
         _draw_craft(inset, (INSET_SIZE / 2, INSET_SIZE / 2), inset_scale,
-                    parts, body, frame)
-        inset.blit(small.render("craft (top view, declared parts)", True, DIM),
-                   (6, 4))
+                    drawing, frame)
+        inset.blit(small.render(
+            f"top view; CoM shift x{COM_SHIFT_MAGNIFICATION:.0f}", True, DIM),
+            (6, 4))
         text.draw_surface(inset, PANEL_X, y, cache_key=("inset", frame))
-        y += INSET_SIZE + 12
-        for row in ("click a station (or 1-9) to go there",
-                    "+/- time warp    ESC quit", "", *messages):
-            text.draw(row, PANEL_X, y, DIM if not row.startswith(("->", "arr"))
-                      else AMBER)
-            y += 20
+        y += INSET_SIZE + 8
+        for row in ("click a station (or 1-9) to go there; +/- warp; ESC",
+                    *messages):
+            text.draw(row, PANEL_X, y, DIM if not row.startswith(
+                ("->", "arr", "OFF")) else AMBER)
+            y += 19
         text.end_frame()
 
         if frames:
-            lit = bool(np.any(game.plume_throttles > 0.05))
+            # a main or retro engine lit (live or over the frame)
+            lit = any(max(live, fired) > 0.05 for label, _n, _lit, live, fired
+                      in game.thruster_groups() if label != "RCS")
             burn_shot = burn_shots and lit and frame - last_burn_shot >= 8
             if burn_shot:
                 last_burn_shot = frame
@@ -796,6 +956,8 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
                     WINDOW[1], WINDOW[0], 3)[::-1]
                 surface = pygame.image.frombuffer(
                     np.ascontiguousarray(image).tobytes(), WINDOW, "RGB")
+                Path(f"{out_prefix}_{captured:02d}.png").parent.mkdir(
+                    parents=True, exist_ok=True)
                 pygame.image.save(surface, f"{out_prefix}_{captured:02d}.png")
                 captured += 1
                 if captured >= frames:
