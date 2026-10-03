@@ -897,8 +897,11 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
     thruster's two actuator angles ``(a, b)``.  Cost (the tracker's form):
 
         J = W_F |F(x) - F*|^2 / (2 T_max^2) + W_tau |tau(x) - tau*|^2
-            / (2 tau_max^2) + fuel_weight sum_k T_k u_k / T_max
+            / (2 tau_max^2) + fuel_weight sum_k q_k u_k / q_max
 
+    with ``q_k`` thruster k's propellant flow at full throttle,
+    ``T_k / (I_sp g_0)``, and ``q_max`` that of the strongest burner
+    (decision 7: the price is the propellant consumption rate)
     with ``F = R sum_k T_k u_k d_k(a_k, b_k)`` and ``tau = sum_k (r_k - c)
     x T_k u_k d_k``.  Constraints, all exact:
 
@@ -947,6 +950,18 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
     flow = np.asarray([t.max_thrust_n
                        * t.thruster_kind.propellant_per_impulse_kg_n_s
                        for t in thrusters], dtype=float)
+    # Decision 7 prices the propellant consumption RATE: a thruster costs
+    # its TS1.2 flow per unit throttle, |F| / (I_sp g_0), relative to the
+    # flow of the strongest propellant-burning thruster at full throttle
+    # (so ``fuel_weight`` is still a dimensionless fraction of the largest
+    # burner).  A reactionless thruster burns nothing and costs nothing; a
+    # craft with no propellant at all is priced per newton, as before.
+    burners = [k for k in range(count) if flow[k] > 0.0]
+    if burners:
+        reference = flow[max(burners, key=lambda k: thrust[k])]
+        fuel_price = fuel_weight * flow / reference
+    else:
+        fuel_price = fuel_weight * thrust / force_scale
 
     low = np.empty(count)
     high = np.empty(count)
@@ -1010,34 +1025,48 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                 ang[k] = x[n_u + 2 * i:n_u + 2 * i + 2]
             return u, ang
 
-        price = np.asarray([fuel_weight * thrust[k] / force_scale
-                            for k in on])
+        price = np.asarray([fuel_price[k] for k in on])
+
+        # The wrench is linear in the throttles: column i of ``columns`` is
+        # thruster ``on[i]``'s weighted (world force, craft torque) per unit
+        # throttle.  Fixed thrusters' columns are constants; a gimballed
+        # thruster's column is rebuilt from its angles each evaluation.
+        columns = np.zeros((6, n_u))
+        for i, k in enumerate(on):
+            f = thrust[k] * np.asarray(thrusters[k].direction, dtype=float)
+            columns[:3, i] = wf * (rotation @ f)
+            columns[3:, i] = wt * np.cross(arms[k], f)
+        target = np.concatenate([wf * target_f, wt * target_t])
+        slot_of = {k: i for i, k in enumerate(on)}
+        frames = [thrusters[k].gimbal_frame() for k in g_on]
 
         def fun(x):
-            u, ang = unpack(x)
-            force = np.zeros(3)
-            torque = np.zeros(3)
+            u = x[:n_u]
             jac = np.zeros((6, n_u + n_g))
-            for i, k in enumerate(on):
-                f = thrust[k] * thrusters[k].direction_at(*ang[k])
-                force += u[k] * f
-                torque += u[k] * np.cross(arms[k], f)
-                jac[:3, i] = wf * (rotation @ f)
-                jac[3:, i] = wt * np.cross(arms[k], f)
+            jac[:, :n_u] = columns
             for i, k in enumerate(g_on):
-                n, e1, e2 = thrusters[k].gimbal_frame()
-                a, b = ang[k]
-                da = (-math.sin(a) * math.cos(b) * n
-                      - math.sin(a) * math.sin(b) * e1 - math.cos(a) * e2)
-                db = (-math.cos(a) * math.sin(b) * n
-                      + math.cos(a) * math.cos(b) * e1)
-                for j, dd in enumerate((da, db)):
-                    f = thrust[k] * u[k] * dd
-                    jac[:3, n_u + 2 * i + j] = wf * (rotation @ f)
-                    jac[3:, n_u + 2 * i + j] = wt * np.cross(arms[k], f)
-            residual = np.concatenate([wf * (rotation @ force - target_f),
-                                       wt * (torque - target_t)])
-            value = 0.5 * float(residual @ residual) + float(price @ x[:n_u])
+                n, e1, e2 = frames[i]
+                a, b = x[n_u + 2 * i], x[n_u + 2 * i + 1]
+                ca, sa, cb, sb = math.cos(a), math.sin(a), math.cos(b),                     math.sin(b)
+                d = ca * cb * n + ca * sb * e1 - sa * e2
+                da = -sa * cb * n - sa * sb * e1 - ca * e2
+                db = -ca * sb * n + ca * cb * e1
+                column = slot_of[k]
+                scale = thrust[k]
+                for j, dd in ((None, d), (0, da), (1, db)):
+                    f = scale * dd if j is None else scale * u[column] * dd
+                    r = arms[k]
+                    block = np.concatenate([
+                        wf * (rotation @ f),
+                        wt * np.asarray((r[1] * f[2] - r[2] * f[1],
+                                         r[2] * f[0] - r[0] * f[2],
+                                         r[0] * f[1] - r[1] * f[0]))])
+                    if j is None:
+                        jac[:, column] = block
+                    else:
+                        jac[:, n_u + 2 * i + j] = block
+            residual = jac[:, :n_u] @ u - target
+            value = 0.5 * float(residual @ residual) + float(price @ u)
             grad = jac.T @ residual
             grad[:n_u] += price
             return value, grad

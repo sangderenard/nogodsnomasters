@@ -422,3 +422,55 @@ def test_interleaved_states_each_run_their_own_program():
                   velocity_m_s=velocities[0], **common)
     batched.advance()
     assert batched.mass_kg == pytest.approx(masses, rel=0.0)
+
+
+def test_dt_grows_back_once_a_spin_stops():
+    # every orbital piece declares BIND; with no gravity center nothing
+    # publishes an exchange, so after the despin only the CFL proposal and
+    # the attitude dt_limit bound dt -- and it grows back to the window
+    design = CraftDesign((
+        Thruster("rcs+y", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), 1.0),
+        Thruster("rcs-y", (0.0, -1.0, 0.0), (1.0, 0.0, 0.0), 1.0),
+        Thruster("anti+y", (0.0, 1.0, 0.0), (1.0, 0.0, 0.0), 1.0),
+        Thruster("anti-y", (0.0, -1.0, 0.0), (-1.0, 0.0, 0.0), 1.0),
+    ), mass_kg=100.0, body_size_m=(2.0, 1.0, 0.5))
+    jumper = _resting(design, 10.0)
+    counts = []
+    for throttles, rounds in (((1, 1, 0, 0), 3), ((0, 0, 1, 1), 3),
+                              ((0, 0, 0, 0), 3)):
+        jumper.throttle(throttles)
+        for _ in range(rounds):
+            before = jumper.substeps
+            jumper.advance()
+            counts.append(jumper.substeps - before)
+    print(f"\nsubsteps per 10 s round, spin/despin/coast: {counts}; "
+          f"w_z {jumper.angular_velocity()[2]:.3e}")
+    assert jumper.angular_velocity()[2] == pytest.approx(0.0, abs=1e-12)
+    assert max(counts[1:6]) > 50          # the spin bounded dt
+    assert counts[-2:] == [1, 1]          # and it is gone
+
+
+def test_clipped_rounds_coast_one_orbit_with_the_mean_step_kick():
+    # 5 s rounds against a 3.3 s CFL step: every round ends on a clipped
+    # substep.  Measured: before the kick weight (dt alone) |r - R| 18965 m,
+    # |v_r| 20.3 m/s, energy 7.3e-6; with (dt_prev + dt) / 2: 101.7 m,
+    # 0.055 m/s, 2.1e-10.
+    speed = math.sqrt(MU_EARTH / R_ORBIT)
+    period = 2.0 * math.pi * math.sqrt(R_ORBIT**3 / MU_EARTH)
+    jumper = OrbitalJumper(
+        [GravityCenter((0.0, 0.0, 0.0), MU_EARTH)], mass_kg=1000.0,
+        position_m=(R_ORBIT, 0.0, 0.0), velocity_m_s=(0.0, speed, 0.0),
+        length_scale_m=5.0e4, window_s=5.0)
+    energy_0 = 0.5 * speed**2 - MU_EARTH / R_ORBIT
+    worst_r = worst_vr = worst_e = 0.0
+    while jumper.time_s < period:
+        jumper.advance()
+        position, velocity = jumper.r()
+        r = float(np.linalg.norm(position))
+        worst_r = max(worst_r, abs(r - R_ORBIT))
+        worst_vr = max(worst_vr, abs(float(position @ velocity)) / r)
+        worst_e = max(worst_e, abs(0.5 * float(velocity @ velocity)
+                                   - MU_EARTH / r - energy_0) / abs(energy_0))
+    print(f"\n|r - R| {worst_r:.1f} m, |v_r| {worst_vr:.4f} m/s, energy "
+          f"{worst_e:.2e}, substeps {jumper.substeps}")
+    assert worst_r < 200.0 and worst_vr < 0.1 and worst_e < 1.0e-9

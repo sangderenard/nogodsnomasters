@@ -113,6 +113,9 @@ from orbital_actuation import (
 from orbital_jumper import (
     ATTITUDE_STEP_RAD,
     OrbitalJumper,
+    declare_binding,
+    exchange_publication,
+    leapfrog_momentum,
     orbital_jumper_dt_pieces,
     thrust_cost_integrand,
     variable_mass_momentum_rate,
@@ -578,9 +581,22 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
                       dt * tank_symbols(t)["flow"]) for t in range(tanks)]
     remaining = sum(draws, sp.Integer(0))
     rates = euler_rate_tensor_rhs()
-    momentum = equation_piece(f"orbital_machine_momentum_k{tanks}", (
-        *(eq(f"momentum_{a}_next", sp.Symbol(f"momentum_{a}")
-             + dt * variable_mass_momentum_rate(a)) for a in AXES),
+    # the jumper's momentum law: kick by the mean of the adjacent steps,
+    # publish translational kinetic energy and |F . v|
+    leapfrog = {a: leapfrog_momentum(a) for a in AXES}
+    momentum_next = {a: leapfrog[a][0] for a in AXES}
+    mass_new = sp.Symbol("dry_mass") + remaining
+    momentum = equation_piece(
+        f"orbital_machine_momentum_k{tanks}_c{center_count}", (
+        *(eq(f"momentum_{a}_next", momentum_next[a]) for a in AXES),
+        *(eq(f"momentum_carry_{a}_next", leapfrog[a][1]) for a in AXES),
+        eq("dt_prev_next", dt),
+        *exchange_publication(
+            center_count,
+            sum(momentum_next[a]**2 for a in AXES) / (2 * mass_new),
+            sp.Abs(sum((sp.Symbol(f"force_{a}")
+                        - sp.Symbol(f"applied_force_{a}"))
+                       * momentum_next[a] for a in AXES)) / mass_new),
         *(eq(f"tank{t}_propellant_next", draws[t]) for t in range(tanks)),
         eq("propellant_mass_next", remaining),
         eq("mass_next", sp.Symbol("dry_mass") + remaining),
@@ -600,8 +616,8 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
     cost = equation_piece(f"orbital_machine_thrust_cost_{tag}", (
         *impulses, eq("fuel_impulse_next", fuel + dt * total_rate),
     ), batch=batch)
-    pieces = (props, inverse, slew, supply, actuation, gravity, momentum,
-              position, cost)
+    pieces = declare_binding((props, inverse, slew, supply, actuation,
+                              gravity, momentum, position, cost))
     labels = ("mass properties", "inverse inertia", "slew",
               "propellant supply", "actuation",
               "N4.1 gravity", "N7.2/N1.6 momentum", "N1.1/N1.3 position",

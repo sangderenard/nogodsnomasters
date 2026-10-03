@@ -93,6 +93,7 @@ from llvm_dt_system import advance_round, instantiate_system, piece_leaf
 from src.common.dt_system.dt import SuperstepPlan
 from src.common.dt_system.dt_controller import STController, Targets
 from src.common.dt_system.dt_graph import ControllerNode, RoundNode
+from src.common.dt_system.time_contracts import BIND
 from src.transmogrifier.orbital_transfer import OrbitalTransfer
 
 from orbital_actuation import (
@@ -274,6 +275,79 @@ def attitude_dt_limit_rhs():
     return ATTITUDE_STEP_MAX / rate
 
 
+#: The previous substep's dt: the momentum piece's own state column, so the
+#: variable-step kick can weight by the two adjacent steps.
+DT_PREV = sp.Symbol("dt_prev")
+
+
+def leapfrog_momentum(axis: str):
+    """``(p_next, carry_next)`` along ``axis``: variable-step symplectic
+    Euler read as leapfrog, the momentum column holding the half-step value.
+
+    Two kinds of force, kicked as what they are:
+
+    * gravity, ``force - applied_force`` (N4.1 at the node ``x_n``): kicked
+      at the node by the mean of the adjacent steps, ``kick_weight()``;
+    * the interval rate -- the applied force and N7.2's outflow share,
+      ``applied - flow p / m``, constant over the substep that computed
+      it: half of its impulse is kicked in this step and half carried
+      (``momentum_carry_*``) into the next kick, so a constant force
+      integrates exactly and a force that starts at a round boundary is not
+      kicked over the step before it.
+
+    ``r()`` completes the step's kick the same way: the carry plus half a
+    step of gravity at the new position."""
+    momentum = sp.Symbol(f"momentum_{axis}")
+    applied = sp.Symbol(f"applied_force_{axis}")
+    gravity = sp.Symbol(f"force_{axis}") - applied
+    interval = variable_mass_momentum_rate(axis) - gravity
+    carry = sp.Symbol(f"momentum_carry_{axis}")
+    half_impulse = interval * DT / 2
+    return (momentum + carry + kick_weight() * gravity + half_impulse,
+            half_impulse)
+
+
+def kick_weight():
+    """Variable-step symplectic Euler read as leapfrog: the momentum is the
+    half-step value, and the kick at node ``x_n`` spans half of the step
+    before it and half of the step after, ``(dt_{n-1} + dt_n) / 2``.  With
+    ``dt_prev = 0`` the first kick is the half kick ``dt_0 / 2`` that takes
+    the initial momentum to the first half step."""
+    return (DT_PREV + DT) / 2
+
+
+def exchange_publication(center_count: int, energy, power) -> tuple:
+    """The momentum piece's ``energy_j``/``power_w`` (the dt system's
+    exchange time): the kinetic energy and the power of its exchange with
+    the gravitational store.  Published only when there is a store to
+    exchange with (``center_count > 0``): with no center nothing exchanges
+    by law, and a published zero power would read as the controller's
+    "no exchange observed: hold" for ever.
+
+    NOT published: thrust power ``|F . v|`` and the rotation's
+    ``|tau . omega|`` against ``omega . I omega / 2``.  Both are interval
+    forces on a store they fill from zero, so their exchange time is ``t/2``
+    from rest and goes to zero as a braking burn or a despin brings the
+    speed through zero: measured, a despin to rest pinned dt to 9.5e-7 s and
+    the round could not land.  The rotation's own bound is the attitude
+    piece's ``dt_limit``."""
+    if center_count == 0:
+        return ()
+    return (sp.Eq(sp.Symbol("energy_j"), energy, evaluate=False),
+            sp.Eq(sp.Symbol("power_w"), power, evaluate=False))
+
+
+def declare_binding(pieces):
+    """Every orbital piece declares ``BIND`` (``llvm_dt_system.RoundPiece``'s
+    precedent): its exchange time bounds the step when it publishes one, and
+    a piece that exchanges nothing this step binds nobody instead of reading
+    as ``HOLD``'s "do not grow".  The all-quiet case is still held, by the
+    controller's own rule on the amalgamated power (``power_w <= 0``)."""
+    for piece in pieces:
+        piece.contract = BIND
+    return pieces
+
+
 def orbital_jumper_dt_pieces(center_count: int, thruster_count: int = 0,
                              batch: int = 1):
     """Manifest supply -> actuation -> N4.1 -> N7.2/N1.6 -> N1.1/N1.3
@@ -327,10 +401,30 @@ def orbital_jumper_dt_pieces(center_count: int, thruster_count: int = 0,
     # rounding (P - dt * (P / (dt D)) * D = -1e-16) removed
     propellant_next = PROPELLANT_MASS - sp.Min(PROPELLANT_MASS,
                                                dt * PROPELLANT_FLOW)
-    momentum_piece = equation_piece("orbital_craft_momentum", (
-        *(sp.Eq(sp.Symbol(f"momentum_{axis}_next"),
-                momentum[axis] + dt * variable_mass_momentum_rate(axis),
+    # the kick by the mean of the adjacent steps (``kick_weight``); the
+    # published energy and power are the translational kinetic energy and
+    # the power of the total force at the new velocity, ``|F . v|``
+    leapfrog = {axis: leapfrog_momentum(axis) for axis in AXES}
+    momentum_next = {axis: leapfrog[axis][0] for axis in AXES}
+    mass_new = sp.Symbol("dry_mass") + propellant_next
+    kinetic = sum(momentum_next[a]**2 for a in AXES) / (2 * mass_new)
+    # the exchange between the kinetic and the gravitational store: the
+    # power of gravity (force minus the applied force) at the new velocity.
+    # The applied (thrust) force is an interval force integrated exactly
+    # by the carry; |F_thrust . v| over |p|^2/2m is the exchange time t/2 of
+    # a burn from rest and goes to zero as a braking burn brings v through
+    # zero (measured: a round could not land), so it is not published.
+    force_power = sp.Abs(sum((sp.Symbol(f"force_{a}")
+                              - sp.Symbol(f"applied_force_{a}"))
+                             * momentum_next[a] for a in AXES)) / mass_new
+    momentum_piece = equation_piece(
+        f"orbital_craft_momentum_c{center_count}", (
+        *(sp.Eq(sp.Symbol(f"momentum_{axis}_next"), momentum_next[axis],
                 evaluate=False) for axis in AXES),
+        *(sp.Eq(sp.Symbol(f"momentum_carry_{axis}_next"), leapfrog[axis][1],
+                evaluate=False) for axis in AXES),
+        sp.Eq(sp.Symbol("dt_prev_next"), dt, evaluate=False),
+        *exchange_publication(center_count, kinetic, force_power),
         sp.Eq(sp.Symbol("propellant_mass_next"), propellant_next,
               evaluate=False),
         sp.Eq(sp.Symbol("mass_next"), sp.Symbol("dry_mass") + propellant_next,
@@ -379,8 +473,8 @@ def orbital_jumper_dt_pieces(center_count: int, thruster_count: int = 0,
             sp.Eq(sp.Symbol("fuel_impulse_next"), fuel + dt * total_rate,
                   evaluate=False),
         ), batch=batch)
-    return (supply, actuation, gravity, momentum_piece, position_piece,
-            cost_piece)
+    return declare_binding((supply, actuation, gravity, momentum_piece,
+                            position_piece, cost_piece))
 
 
 def _attitude_array(attitude) -> np.ndarray:
@@ -480,15 +574,9 @@ class OrbitalJumper:
         if rate > 0.0:
             dt_init = min(dt_init, self.attitude_step_rad / rate)
         # Symplectic Euler as leapfrog: the momentum column is the HALF-STEP
-        # momentum (kick by dt * F(x_n), then drift by the new velocity),
-        # so it starts half a first substep behind the initial state (see
-        # _half_step_kick and r()).
+        # momentum; it starts at m v0 with ``dt_prev = 0``, so the first
+        # kick (``kick_weight``) is the half kick to the first half step.
         self.piece_labels = tuple(labels)
-        self._dt_first = dt_init
-        kick = self._half_step_kick(columns, 0.5 * dt_init)
-        for index, axis in enumerate(AXES):
-            columns[f"momentum_{axis}"] = (columns[f"momentum_{axis}"]
-                                           - kick[:, index])
         self.dt_graph = RoundNode(
             plan=SuperstepPlan(round_max=self.window_s, dt_init=dt_init),
             controller=ControllerNode(
@@ -541,6 +629,7 @@ class OrbitalJumper:
                    "propellant_supply": np.ones(lanes),
                    "attitude_step_max": np.full(lanes,
                                                 self.attitude_step_rad),
+                   "dt_prev": np.zeros(lanes),
                    "fuel_impulse": np.zeros(lanes)}
         if self._lane_mass_kg is None:
             # the design's own dry mass, not the difference recomputed
@@ -552,6 +641,7 @@ class OrbitalJumper:
             columns[f"applied_force_{axis}"] = np.zeros(lanes)
             columns[f"raw_force_{axis}"] = np.zeros(lanes)
             columns[f"torque_{axis}"] = np.zeros(lanes)
+            columns[f"momentum_carry_{axis}"] = np.zeros(lanes)
             columns[f"angular_velocity_{axis}"] = omega[:, index].copy()
             columns[f"inertia_{axis}"] = np.full(
                 lanes, float(self.inertia_kg_m2[index]))
@@ -622,35 +712,31 @@ class OrbitalJumper:
                                     dtype=float)[:self.batch]
                          for axis in AXES], axis=1)
 
-    def _half_step_kick(self, columns, half_dt) -> np.ndarray:
-        """``(batch, 3)``: ``half_dt * F_grav(x)``, the momentum the
-        integrator's own kick adds over half a substep at the positions in
-        ``columns``.  Gravity only: an applied force is constant over every
-        substep, and the left-sum kick of a constant force is exact, so it
-        has no half-step lag (with no centers this is zero)."""
-        if not self.centers:
-            return np.zeros((self.batch, 3))
-        return np.asarray(half_dt, dtype=float).reshape(-1, 1)             * self._gravity_force(columns)
-
     def r(self) -> tuple[np.ndarray, np.ndarray]:
         """Current position (m) and velocity (m/s), at the SAME instant.
 
-        The integrator is symplectic Euler read as leapfrog: the step
-        kicks the momentum by ``dt * F(x_n)`` and drifts the position with
-        the new velocity, so the stored momentum is the half-step value
-        ``p_{n+1/2}`` while the position is ``x_{n+1}`` (and the initial
-        momentum is seeded half a first substep back).  The velocity at
-        ``x``'s instant is the second half kick, ``(p_{n+1/2} + dt/2
-        F_grav(x_{n+1})) / m`` (N1.1), with the last substep's ``dt`` and the
-        compiled N4.1 piece's force at the current position."""
-        mass = self._scalar("mass")
-        names = {name: self._span(name) for name in
-                 self.pieces[self.piece_labels.index("N4.1 gravity")]
-                 .argument_names if not name.startswith("applied_force_")}
-        half_dt = 0.5 * (self._dt_first if self.time_s == 0.0 else
-                         np.asarray(self._span("dt"), float)[:self.batch])
-        momentum = self._lanes(self._vector("momentum"), 3)             + self._half_step_kick(names, half_dt)
-        velocity = momentum / np.asarray(self._lanes(mass))[:, None]
+        The integrator is variable-step symplectic Euler read as leapfrog:
+        the momentum column is the half-step value ``p_{n+1/2}`` (each kick
+        weighted by the mean of the adjacent steps, ``kick_weight``) while
+        the position is ``x_{n+1}``.  The velocity at ``x``'s instant is the
+        second half of the last step's kick (``leapfrog_momentum``),
+        ``(p_{n+1/2} + carry + dt_n/2 F_grav(x_{n+1})) / m`` (N1.1):
+        ``dt_n`` is the ``dt_prev`` column the momentum piece wrote, the
+        carry the other half of its applied-force impulse, ``F_grav`` the
+        compiled N4.1 piece at the current position.  Before the first step
+        both are zero and this is the initial velocity."""
+        mass = np.asarray(self._lanes(self._scalar("mass")))
+        half_dt = 0.5 * self._lanes(self._scalar("dt_prev"))
+        momentum = (self._lanes(self._vector("momentum"), 3)
+                    + self._lanes(self._vector("momentum_carry"), 3))
+        if self.centers:
+            gravity = self.pieces[self.piece_labels.index("N4.1 gravity")]
+            columns = {name: self._span(name)
+                       for name in gravity.argument_names
+                       if not name.startswith("applied_force_")}
+            momentum = momentum + half_dt[:, None] * self._gravity_force(
+                columns)
+        velocity = momentum / mass[:, None]
         if self.batch == 1:
             return self._vector("position"), velocity[0]
         return self._vector("position"), velocity
@@ -696,6 +782,15 @@ class OrbitalJumper:
     def angular_velocity(self) -> np.ndarray:
         """The craft-frame angular velocity ``omega_B`` (rad/s) now."""
         return self._vector("angular_velocity")
+
+    #: Declared: this craft has no allocation of its own; a driver commands
+    #: it with ``throttle(u)`` (``MachineCraft`` declares True).
+    applies_allocation = False
+
+    def inertia_tensor(self) -> np.ndarray:
+        """The inertia tensor (craft axes, about the centre of mass): the
+        principal moments the ``inertia_*`` columns hold, as a matrix."""
+        return np.diag(self._inertia_kg_m2())
 
     def actuation_matrix(self) -> np.ndarray:
         """``R @ B_craft`` at the attitude now (world frame)."""

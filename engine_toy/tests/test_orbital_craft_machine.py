@@ -358,3 +358,22 @@ def test_the_allocate_seam_applies_its_commands_and_the_craft_delivers_them():
     # the torque about the centre of mass the round moved (measured
     # 4e-7 N m; the untrimmed engine would make ~120 N m)
     assert np.linalg.norm(torque) < 1.0e-3
+
+
+def test_fuel_is_priced_by_propellant_flow_not_by_newtons():
+    from orbital_actuation import Thruster
+    # two identical 100 N thrusters on one line through the centre of mass,
+    # bipropellant (310 s) and monopropellant (230 s): per newton they are
+    # the same, per kilogram of propellant the bipropellant is cheaper
+    pair = (Thruster("biprop", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), 100.0,
+                     kind="bipropellant"),
+            Thruster("monoprop", (0.0, 0.0, 0.0), (1.0, 0.0, 0.0), 100.0,
+                     kind="monopropellant"))
+    allocation = allocate_wrench(pair, (80.0, 0.0, 0.0), np.zeros(3),
+                                 centre_of_mass_m=np.zeros(3),
+                                 fuel_weight=1.0e-3)
+    print(f"\nbiprop {allocation.throttles[0]:.6f}, monoprop "
+          f"{allocation.throttles[1]:.6f}")
+    # 0.799: the price itself trades a 1e-3 miss (fuel_weight 1e-3)
+    assert allocation.throttles[0] == pytest.approx(0.8, abs=2e-3)
+    assert allocation.throttles[1] == pytest.approx(0.0, abs=1e-6)
