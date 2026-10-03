@@ -819,6 +819,255 @@ def machine_thruster_columns(thrusters, tank_index: dict) -> dict:
     return columns
 
 
+# ------------------------------------------- the actuators' own step bound
+#: The column holding the craft's declared impulse step (N s): the most
+#: impulse one substep may misplace by sampling an actuator state that is
+#: still moving (:func:`actuator_dt_limit_rhs`).
+IMPULSE_STEP_MAX = sp.Symbol("impulse_step_max")
+
+
+def _sampling_bound(force, travel, rate):
+    """The longest step that misplaces at most ``impulse_step_max`` of
+    impulse while a state moves ``travel`` at ``rate`` and scales a force
+    ``force`` per unit of state.
+
+    The slew laws are exact for the STATE, but every later law reads the
+    state at the end of the substep and holds it over the whole substep, so
+    a ramp the step covers is delivered as if it were already done.  A step
+    ``dt`` inside a ramp misplaces ``force * rate * dt^2 / 2``; stepping
+    over the whole remaining ramp at once misplaces ``force * travel^2 /
+    (2 rate)``.  The bound is ``sqrt(2 J / (force * rate))`` while the
+    remaining ramp would misplace more than ``J``; otherwise the whole
+    remaining ramp may be one step, and the bound lifts as ``J / error``
+    (continuous at ``error = J``, where it is exactly the ramp's own
+    duration ``travel / rate``; +inf, the dt system's "no bound", once
+    nothing moves)."""
+    error = force * travel**2 / (2 * rate)
+    return (sp.sqrt(2 * IMPULSE_STEP_MAX / (force * rate))
+            * sp.Max(sp.Integer(1), IMPULSE_STEP_MAX / error))
+
+
+def actuator_dt_limit_rhs(thrusters):
+    """The slew piece's ``dt_limit``: the least :func:`_sampling_bound`
+    over every thruster's throttle state (its spool, force ``max_thrust``)
+    and every gimbal (its slew, the lateral force ``max_thrust * state``
+    per radian), each on the travel LEFT after this substep's slew.  A
+    pending command the step has not reached yet is the next step's ramp."""
+    bounds = []
+    for index, thruster in enumerate(thrusters):
+        s = machine_thruster_symbols(index)
+        state = throttle_state_rhs(index)
+        command = sp.Min(sp.Max(s["throttle"], s["throttle_min"]),
+                         s["throttle_max"])
+        bounds.append(_sampling_bound(s["max_thrust"],
+                                      sp.Abs(command - state),
+                                      s["throttle_slew"]))
+        if thruster.gimballed:
+            travel = sp.Max(*[
+                sp.Abs(sp.Max(-s["cone"], sp.Min(
+                    s["cone"], s[f"gimbal_{actuator}_command"]))
+                    - gimbal_state_rhs(index, actuator))
+                for actuator in ("a", "b")])
+            bounds.append(_sampling_bound(s["max_thrust"] * state, travel,
+                                          s["gimbal_slew"]))
+    return sp.Min(*bounds) if len(bounds) > 1 else bounds[0]
+
+
+# ======================================================================
+# Reaction wheels: electric flywheels on the craft's own axes
+# ======================================================================
+# A wheel is a rotor DECLARED on its body (operating_states: rotor_axis,
+# rotor_rated_rpm, rotor_inertia_kg_m2, balance, runs_in) driven by a
+# permanent-magnet motor the body also declares (motor_max_torque_n_m,
+# motor_torque_constant_n_m_a, motor_winding_resistance_ohm).  Its state is
+# the wheel's ABSOLUTE axial angular momentum h (N m s): the motor torque
+# tau_m acts on it directly, dh/dt = tau_m (eq_N1_6 about the rotor's own
+# symmetry axis, where the w x I w term vanishes; the bearings carry the
+# transverse reaction), and -tau_m a acts on the craft.  The craft then
+# carries its inertia WITHOUT the rotors' axial spin, I' = I - sum I_w a a^T,
+# and the attitude law is eq_N1_6 on the total angular momentum
+#
+#     I' dw/dt = tau_ext - sum tau_m a - w x (I' w + sum h a)
+#
+# so the motor torque is an exact exchange between the two stores and
+# H = I' w + sum h a changes only by tau_ext (in the inertial frame).
+# The motor sees the RELATIVE speed W = h / I_w - a . w.
+#
+# Saturation is a law: the delivered torque is the command held to the
+# motor's torque limit and to what keeps W inside [-W_max, W_max] over the
+# step -- the exact step average of a torque that stops at the limit (the
+# propellant supply's form).  Nothing branches in a stepper.
+#
+# Power (the simple motor law): eq_F9_4's Lorentz law F = Bl i, rotary
+# (tau = K_t i), and eq_F9_5's motional back-EMF v = Bl dx/dt, rotary
+# (v = K_t W), give the winding current and EMF; the electrical power is
+# v i plus the copper loss i^2 R (eq_F8_11, one winding):
+#
+#     P = tau W + R tau^2 / K_t^2
+#
+# (negative when braking returns more than the copper loss: regeneration).
+
+
+@dataclass(frozen=True)
+class ReactionWheel:
+    """One wheel, as its node declares it (:mod:`orbital_craft_machine`).
+
+    ``max_speed_rad_s`` is the rotor's rated speed (relative to the craft);
+    ``dump_fraction``: above that fraction of it the allocation dumps the
+    excess momentum (desaturation) with time constant ``dump_time_s``, the
+    RCS supplying the torque that holds the craft while it does."""
+
+    identity: str
+    axis: tuple[float, float, float]
+    rotor_inertia_kg_m2: float
+    max_speed_rad_s: float
+    max_torque_n_m: float
+    torque_constant_n_m_a: float
+    winding_resistance_ohm: float
+    dump_fraction: float = 0.8
+    dump_time_s: float = 20.0
+    mass_kg: float = 0.0
+    position_m: tuple[float, float, float] = (0.0, 0.0, 0.0)
+
+    def __post_init__(self):
+        axis = np.asarray(self.axis, dtype=float).reshape(3)
+        if not math.isclose(float(np.linalg.norm(axis)), 1.0, rel_tol=0.0,
+                            abs_tol=1.0e-12):
+            raise ValueError(f"wheel {self.identity!r}: axis is not a unit "
+                             "vector")
+        for name in ("rotor_inertia_kg_m2", "max_speed_rad_s",
+                     "max_torque_n_m", "torque_constant_n_m_a",
+                     "dump_time_s"):
+            if not getattr(self, name) > 0.0:
+                raise ValueError(f"wheel {self.identity!r}: {name} must be "
+                                 "positive")
+        if self.winding_resistance_ohm < 0.0:
+            raise ValueError(f"wheel {self.identity!r}: negative resistance")
+        if not 0.0 < self.dump_fraction <= 1.0:
+            raise ValueError(f"wheel {self.identity!r}: dump_fraction is "
+                             "inside (0, 1]")
+
+    @property
+    def max_momentum_n_m_s(self) -> float:
+        return self.rotor_inertia_kg_m2 * self.max_speed_rad_s
+
+    def electrical_power_w(self, torque_n_m, speed_rad_s):
+        """The motor law (module comment), on the host."""
+        current = np.asarray(torque_n_m, float) / self.torque_constant_n_m_a
+        emf = self.torque_constant_n_m_a * np.asarray(speed_rad_s, float)
+        return emf * current + current**2 * self.winding_resistance_ohm
+
+
+def wheel_symbols(index: int) -> dict:
+    prefix = f"wheel{index}"
+    return {
+        "momentum": sp.Symbol(f"{prefix}_momentum"),
+        "command": sp.Symbol(f"{prefix}_torque_command"),
+        "inertia": sp.Symbol(f"{prefix}_rotor_inertia"),
+        "max_speed": sp.Symbol(f"{prefix}_max_speed"),
+        "max_torque": sp.Symbol(f"{prefix}_max_torque"),
+        "torque_constant": sp.Symbol(f"{prefix}_torque_constant"),
+        "resistance": sp.Symbol(f"{prefix}_winding_resistance"),
+        "axis": {axis: sp.Symbol(f"{prefix}_axis_{axis}") for axis in AXES},
+    }
+
+
+def _craft_rate_along(axis_symbols) -> sp.Expr:
+    return sum((axis_symbols[a] * sp.Symbol(f"angular_velocity_{a}")
+                for a in AXES), sp.Integer(0))
+
+
+def wheel_relative_speed(index: int, momentum=None):
+    """``W = h / I_w - a . w``: the rotor's speed relative to the craft."""
+    s = wheel_symbols(index)
+    h = s["momentum"] if momentum is None else momentum
+    return h / s["inertia"] - _craft_rate_along(s["axis"])
+
+
+def wheel_torque_rhs(index: int):
+    """The motor torque the wheel delivers this step: the command held to
+    the speed band (the torque that reaches +/-W_max exactly at the step's
+    end) and to the motor's torque limit."""
+    s = wheel_symbols(index)
+    base = s["inertia"] * _craft_rate_along(s["axis"])
+    upper = (base + s["inertia"] * s["max_speed"] - s["momentum"]) / DT
+    lower = (base - s["inertia"] * s["max_speed"] - s["momentum"]) / DT
+    banded = sp.Max(lower, sp.Min(upper, s["command"]))
+    return sp.Max(-s["max_torque"], sp.Min(s["max_torque"], banded))
+
+
+def wheel_rate_rhs(index: int, torque):
+    """``eq_N1_6`` for the rotor about its own symmetry axis: ``d h / dt =
+    tau_m`` (the w x I w term has no axial component for an axisymmetric
+    rotor; checked to be the catalogue's I^-1 (tau - w x I w) shape)."""
+    t = honorary.t
+    (rate,) = sp.solve(honorary.eq_N1_6,
+                       sp.Derivative(honorary.omega_B(t), t))
+    crosses = [term for term in rate.atoms(sp.Function)
+               if term.func == honorary.cross]
+    if len(crosses) != 1:
+        raise RuntimeError("eq_N1_6 no longer has one w x I w term")
+    inertia = wheel_symbols(index)["inertia"]
+    # the axial momentum rate: I_w * (axial angular acceleration)
+    return inertia * rate.xreplace({crosses[0]: sp.Integer(0),
+                                    honorary.tau_B(t): torque,
+                                    honorary.I_B(t): inertia})
+
+
+def wheel_power_rhs(index: int, torque, speed):
+    """The motor law: eq_F9_4 rotary for the current, eq_F9_5 rotary for
+    the back-EMF, eq_F8_11 (one winding) for the copper loss."""
+    s = wheel_symbols(index)
+    by_name = {sym.name: sym for law in (honorary.eq_F9_4, honorary.eq_F9_5,
+                                         honorary.eq_F8_11)
+               for sym in law.free_symbols}
+    bl, i_vc = by_name["Bl"], by_name["i_{vc}"]
+    # eq_F9_4 (F = Bl i) solved for the winding current, rotary
+    (current,) = sp.solve(honorary.eq_F9_4, i_vc)
+    current = current.xreplace({honorary.eq_F9_4.lhs: torque,
+                                bl: s["torque_constant"]})
+    # eq_F9_5 (v = Bl dx/dt), rotary: the back-EMF at the rotor's speed
+    (derivative,) = honorary.eq_F9_5.rhs.atoms(sp.Derivative)
+    emf = honorary.eq_F9_5.rhs.xreplace({derivative: speed,
+                                         bl: s["torque_constant"]})
+    # eq_F8_11, one winding (I_2 = 0): the copper loss
+    loss = honorary.eq_F8_11.rhs.xreplace({
+        by_name["I_1"]: current, by_name["R_1"]: s["resistance"],
+        by_name["I_2"]: sp.Integer(0)})
+    if loss.free_symbols - current.free_symbols - {s["resistance"]}:
+        raise RuntimeError("eq_F8_11 left an unspelled winding symbol")
+    return emf * current + loss
+
+
+def wheel_columns(wheels) -> dict:
+    """The wheels' columns (one lane): every declared number, zero
+    momentum and zero command."""
+    columns = {}
+    for index, wheel in enumerate(wheels):
+        prefix = f"wheel{index}"
+        values = {"momentum": 0.0, "torque_command": 0.0,
+                  "rotor_inertia": wheel.rotor_inertia_kg_m2,
+                  "max_speed": wheel.max_speed_rad_s,
+                  "max_torque": wheel.max_torque_n_m,
+                  "torque_constant": wheel.torque_constant_n_m_a,
+                  "winding_resistance": wheel.winding_resistance_ohm}
+        for slot, axis in enumerate(AXES):
+            values[f"axis_{axis}"] = float(wheel.axis[slot])
+        for name, value in values.items():
+            columns[f"{prefix}_{name}"] = np.full(1, float(value))
+    return columns
+
+
+def wheel_spin_inertia(wheels) -> np.ndarray:
+    """``sum I_w a a^T``: the rotors' axial inertia, carried by the wheel
+    momenta rather than by the craft's tensor."""
+    out = np.zeros((3, 3))
+    for wheel in wheels:
+        a = np.asarray(wheel.axis, dtype=float)
+        out += wheel.rotor_inertia_kg_m2 * np.outer(a, a)
+    return out
+
+
 # ------------------------------------------------- host-side machine wrench
 def delivered_throttles(thrusters, throttles) -> np.ndarray:
     """The deadband applied to throttle states (or commands)."""
@@ -864,6 +1113,10 @@ class Allocation:
     torque_shortfall_n_m: np.ndarray
     cost: float
     branches: int
+    #: the reaction wheels' motor torque COMMANDS (N m, on each rotor;
+    #: the craft feels ``-tau a``); empty for a craft without wheels
+    wheel_torque_n_m: np.ndarray = dataclasses.field(
+        default_factory=lambda: np.zeros(0))
 
     @property
     def wrench(self) -> tuple[np.ndarray, np.ndarray]:
@@ -895,9 +1148,28 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                     tank_propellant_kg: dict | None = None,
                     round_s: float | None = None, force_weight: float = 1.0,
                     torque_weight: float = 1.0, fuel_weight: float = 1.0e-4,
-                    max_branches: int = 64) -> Allocation:
+                    max_branches: int = 64, wheels=(),
+                    wheel_momentum_n_m_s=None, angular_velocity_rad_s=None,
+                    power_weight: float = 1.0e-6) -> Allocation:
     """The commands that best achieve a wrench: ``force_n`` (world) and
     ``torque_n_m`` (craft frame, about ``centre_of_mass_m``).
+
+    REACTION WHEELS FIRST.  With ``wheels`` (:class:`ReactionWheel`), their
+    absolute momenta ``wheel_momentum_n_m_s`` and the craft rate
+    ``angular_velocity_rad_s``, the torque is the wheels' before it is any
+    thruster's: they burn no propellant, and their electrical cost (the
+    copper loss, ``power_weight`` of the largest wheel's at full torque) is
+    priced far below any propellant.  The request is read the way a driver
+    that knows only the craft writes it, ``I w' = tau - w x I w``; the
+    stored wheel momentum adds ``- w x sum h a``, so the actuators are asked
+    for ``tau + w x sum h a``, and the achieved torque is reported back in
+    the request's own terms.  Each motor torque is held to its limit and to
+    what keeps the wheel's speed inside its band over ``round_s``; a wheel
+    above ``dump_fraction`` of its speed adds the dump torque ``-I_w excess
+    / dump_time_s`` (desaturation).  The thrusters are then allocated
+    (below) for the force and for the torque the wheels did not give: what
+    saturation leaves, and the reaction of a dump, which the RCS couples
+    carry.
 
     A craft whose thrusters declare ROLES is allocated by them:
 
@@ -917,6 +1189,94 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
 
     A design without declared roles is the single problem below.
     """
+    common = dict(centre_of_mass_m=centre_of_mass_m, attitude=attitude,
+                  throttle_state=throttle_state, gimbal_state=gimbal_state,
+                  tank_propellant_kg=tank_propellant_kg, round_s=round_s,
+                  force_weight=force_weight, torque_weight=torque_weight,
+                  fuel_weight=fuel_weight, max_branches=max_branches)
+    wheels = tuple(wheels)
+    if not wheels:
+        return _allocate_thrusters(thrusters, force_n, torque_n_m, **common)
+    request = np.asarray(torque_n_m, dtype=float).reshape(3)
+    omega = (np.zeros(3) if angular_velocity_rad_s is None
+             else np.asarray(angular_velocity_rad_s, float).reshape(3))
+    momentum = (np.zeros(len(wheels)) if wheel_momentum_n_m_s is None
+                else np.asarray(wheel_momentum_n_m_s, float).reshape(
+                    len(wheels)))
+    torque, gyroscopic = wheel_allocation(
+        wheels, request, momentum, omega, round_s=round_s,
+        power_weight=power_weight)
+    axes = np.stack([np.asarray(w.axis, float) for w in wheels], axis=1)
+    # the actuators owe tau + w x (A h); the wheels give -A tau_m of it
+    remainder = request + gyroscopic + axes @ torque
+    thrust = _allocate_thrusters(thrusters, force_n, remainder, **common)
+    achieved = thrust.torque_n_m - axes @ torque - gyroscopic
+    return dataclasses.replace(thrust, torque_n_m=achieved,
+                               torque_shortfall_n_m=request - achieved,
+                               wheel_torque_n_m=torque)
+
+
+def wheel_allocation(wheels, request, momentum, omega, *, round_s=None,
+                     power_weight: float = 1.0e-6):
+    """``(motor torques, w x sum h a)``: the wheels' share of the craft
+    torque ``request`` (:func:`allocate_wrench`'s convention) by bounded
+    least squares (scipy ``lsq_linear``) over each motor's box -- its torque
+    limit and, over ``round_s``, its speed band -- with the dump torque of
+    any wheel above its dump fraction added on top (the share is solved
+    inside what the box leaves after the dump)."""
+    from scipy.optimize import lsq_linear
+
+    axes = np.stack([np.asarray(w.axis, float) for w in wheels], axis=1)
+    inertia = np.asarray([w.rotor_inertia_kg_m2 for w in wheels])
+    top = np.asarray([w.max_speed_rad_s for w in wheels])
+    limit = np.asarray([w.max_torque_n_m for w in wheels])
+    gyroscopic = np.cross(omega, axes @ momentum)
+    speed = momentum / inertia - axes.T @ omega
+    low, high = -limit, limit.copy()
+    if round_s is not None:
+        h = float(round_s)
+        low = np.maximum(low, inertia * (-top - speed) / h)
+        high = np.minimum(high, inertia * (top - speed) / h)
+        high = np.maximum(high, low)
+    band = np.asarray([w.dump_fraction for w in wheels]) * top
+    excess = speed - np.clip(speed, -band, band)
+    dump = np.clip(-inertia * excess
+                   / np.asarray([w.dump_time_s for w in wheels]), low, high)
+    # the share: -A tau = request + w x A h, priced by the copper loss
+    target = request + gyroscopic
+    scale = float(limit.max())
+    copper = np.asarray([w.winding_resistance_ohm
+                         / w.torque_constant_n_m_a**2 for w in wheels])
+    reference = float((copper * limit**2).max()) or 1.0
+    rows = np.vstack([-axes / scale,
+                      np.diag(np.sqrt(2.0 * power_weight * copper
+                                      / reference))])
+    rhs = np.concatenate([target / scale, np.zeros(len(wheels))])
+    lower, upper = low - dump, high - dump
+    open_ = upper > lower
+    share = np.zeros(len(wheels))
+    if np.any(open_):
+        # a wheel whose box has closed (pinned at a band edge) is held there
+        fixed = ~open_
+        result = lsq_linear(rows[:, open_],
+                            rhs - rows[:, fixed] @ lower[fixed],
+                            bounds=(lower[open_], upper[open_]))
+        share[open_] = result.x
+        share[fixed] = lower[fixed]
+    else:
+        share = lower
+    return np.clip(share + dump, low, high), gyroscopic
+
+
+def _allocate_thrusters(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
+                        attitude=None, throttle_state=None, gimbal_state=None,
+                        tank_propellant_kg: dict | None = None,
+                        round_s: float | None = None,
+                        force_weight: float = 1.0, torque_weight: float = 1.0,
+                        fuel_weight: float = 1.0e-4,
+                        max_branches: int = 64) -> Allocation:
+    """:func:`allocate_wrench` over the thrusters alone (its role
+    structure, below)."""
     thrusters = tuple(thrusters)
     roles = {t.role for t in thrusters}
     navigation = [k for k, t in enumerate(thrusters)

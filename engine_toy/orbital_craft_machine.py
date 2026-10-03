@@ -31,6 +31,15 @@ from that one document:
                   thruster it feeds, carrying the propellant circuit and the
                   thruster's ``feed_share`` (its mixture ratio); a
                   thruster's feeds ARE its incident fuel lines
+    wheels        three ``electric-motor`` nodes (``part_role=
+                  "reaction-wheel"``) on orthogonal craft axes, each
+                  declaring its ROTOR in the operating_states vocabulary
+                  (``rotor_axis``, ``rotor_rated_rpm`` = its top speed,
+                  ``rotor_inertia_kg_m2``, balance, ``runs_in``) and its
+                  motor (``motor_max_torque_n_m``,
+                  ``motor_torque_constant_n_m_a``,
+                  ``motor_winding_resistance_ohm``) and momentum dumping
+                  (``momentum_dump_fraction``, ``momentum_dump_time_s``)
 
 Mass properties are THE machine reduction, ``machine_package.
 mass_properties`` (point masses with parallel axis plus each body's own
@@ -54,14 +63,26 @@ reduction at a partial fill.
 Pieces, in causal order (one ``RoundNode``, ``sequential``):
 
     mass properties   centre_of_mass_*, inertia_ab
-    inverse inertia   inverse_inertia_ab (adjugate / det of inertia_ab)
+    inverse inertia   inverse_inertia_ab: the inverse of the craft's tensor
+                      without its rotors' axial spin, I' = I - sum I_w a a^T
+                      (the spin is the wheels' own momentum column)
     slew              thruster throttle states, delivered throttles
                       (deadband) and gimbal actuator states
+                      (publishes ``dt_limit``: the actuators' sampling
+                      bound, ``orbital_actuation.actuator_dt_limit_rhs``)
     supply            tank{t}_supply (step 7's law per tank)
     actuation         applied_force_* (world), torque_* (craft, about the
                       current centre of mass), tank{t}_flow, propellant_flow
+    wheels            wheel{w}_momentum (motor torque held to the motor
+                      limit and the speed band), wheel_torque_*,
+                      wheel_momentum_* (craft frame), wheel_energy (the
+                      motor law's electrical energy drawn); publishes
+                      ``dt_limit``, the gyroscopic bound of the stored
+                      momentum (:func:`wheel_gyroscopic_dt_limit_rhs`)
     N4.1 gravity      the jumper's piece
-    momentum          N7.2; tank draws; mass; N1.6 with the full tensor
+    momentum          N7.2; tank draws; mass; N1.6 on the TOTAL angular
+                      momentum (craft + wheels) with the full tensor;
+                      publishes ``dt_limit``, the propellant step bound
     position          the jumper's piece (N1.1, N1.3 Cayley, max_vel,
                       dt_limit)
     thrust cost       per-thruster impulse, fuel_impulse
@@ -82,7 +103,7 @@ from honorary_engine_equation_catalogue import equation_piece
 from machine_package import mass_properties
 from machines import Machine
 from mode_table import _charged_nodes
-from operating_states import OperatingState
+from operating_states import OperatingState, source_of
 from turret_production import ProductionGraph
 from wrench_paths import wrench_paths
 
@@ -93,7 +114,9 @@ from orbital_actuation import (
     PROPELLANT_FLOW,
     THRUSTER_KINDS,
     Allocation,
+    ReactionWheel,
     Thruster,
+    actuator_dt_limit_rhs,
     allocate_wrench,
     attitude_symbols,
     delivered_throttle_rhs,
@@ -109,14 +132,23 @@ from orbital_actuation import (
     tank_symbols,
     throttle_state_rhs,
     thruster_symbols,
+    wheel_columns,
+    wheel_power_rhs,
+    wheel_rate_rhs,
+    wheel_relative_speed,
+    wheel_spin_inertia,
+    wheel_symbols,
+    wheel_torque_rhs,
 )
 from orbital_jumper import (
+    ATTITUDE_STEP_MAX,
     ATTITUDE_STEP_RAD,
     OrbitalJumper,
     declare_binding,
     exchange_publication,
     leapfrog_momentum,
     orbital_jumper_dt_pieces,
+    propellant_dt_limit_rhs,
     thrust_cost_integrand,
     variable_mass_momentum_rate,
 )
@@ -126,6 +158,13 @@ TANK_ROLE = "propellant-tank"
 THRUSTER_ROLE = "thruster"
 #: The routed member that carries propellant from a tank to a thruster.
 FEED_LINE = "fuel-line"
+#: The reaction-wheel role, as declared on nodes.
+WHEEL_ROLE = "reaction-wheel"
+#: The craft's declared impulse step (N s): the most impulse one substep may
+#: misplace by sampling a throttle or gimbal state that is still moving
+#: (``orbital_actuation.actuator_dt_limit_rhs``).  10 N s is 0.01 m/s on
+#: this ~1 t craft, an eighth of the tracker's coast velocity band at 7000 km.
+IMPULSE_STEP_N_S = 10.0
 #: The six independent components of a symmetric tensor, in this order.
 PAIRS = ("xx", "yy", "zz", "xy", "xz", "yz")
 
@@ -191,6 +230,28 @@ class CraftMachine:
                 identity=node["identity"],
                 feeds=tuple(feeds.get(node["identity"], ())), **record))
         self.thrusters = tuple(thrusters)
+        wheels = []
+        for node in self.document["nodes"]:
+            if node.get("part_role") != WHEEL_ROLE:
+                continue
+            rotor = source_of(node)
+            if rotor is None:
+                raise ValueError(f"{node['identity']}: a reaction wheel "
+                                 "declares its rotor (rotor_axis, ...)")
+            wheels.append(ReactionWheel(
+                identity=node["identity"], axis=rotor.axis,
+                rotor_inertia_kg_m2=rotor.inertia_kg_m2,
+                max_speed_rad_s=rotor.rated_rpm * 2.0 * math.pi / 60.0,
+                max_torque_n_m=float(node["motor_max_torque_n_m"]),
+                torque_constant_n_m_a=float(
+                    node["motor_torque_constant_n_m_a"]),
+                winding_resistance_ohm=float(
+                    node["motor_winding_resistance_ohm"]),
+                dump_fraction=float(node["momentum_dump_fraction"]),
+                dump_time_s=float(node["momentum_dump_time_s"]),
+                mass_kg=rotor.mass_kg,
+                position_m=tuple(float(v) for v in rotor.position)))
+        self.wheels = tuple(wheels)
         self.nodes = nodes
 
     # ---------------------------------------------------- the design view
@@ -265,6 +326,13 @@ class CraftMachine:
                               + float(p @ p) * np.eye(3) - np.outer(p, p))})
         return {"dry_mass": mass, "dry_moment": mass * centre,
                 "dry_second": second, "tanks": tanks}
+
+    def spin_free_inertia(self, tank_kg: dict | None = None) -> np.ndarray:
+        """The tensor the attitude law carries: the reduction's without
+        the wheels' axial rotor inertia, ``I' = I - sum I_w a a^T`` (the
+        rotors' spin is their own momentum)."""
+        return (np.asarray(self.mass_properties(tank_kg).inertia_tensor_kg_m2,
+                           dtype=float) - wheel_spin_inertia(self.wheels))
 
     def principal_inertia(self, tank_kg: dict | None = None) -> np.ndarray:
         """The diagonal of the reduction's tensor (for readers that only
@@ -361,6 +429,40 @@ def orbital_craft(*, identity: str = "orbital-craft") -> CraftMachine:
     for i, node in enumerate((fore[2], mid[2], mid[1])):
         _member(g, f"bay.equipment.strut.{i}", "bay.equipment", node,
                 radius=0.018)
+
+    # ---- attitude control: three reaction wheels on the craft axes ----
+    # Large-wheel class: 0.2 kg m^2 rotor at 6000 rpm (125.7 N m s), 1 N m
+    # motor (the Hubble RWA's 0.82 N m is the precedent for the torque),
+    # 12 kg each with motor and housing.  Three orthogonal wheels, not a
+    # four-wheel pyramid: the craft has three torque axes to hold and no
+    # fault to survive in this model, and three orthogonal wheels make the
+    # allocation an exact per-axis box (a pyramid's fourth wheel adds a
+    # null space whose spin must then be chosen, and buys only fault
+    # tolerance and ~15 % more envelope on the diagonals).  They sit in the
+    # (+y, -z) quadrant of the hull, across from the equipment bay (-y) and
+    # the hydrazine tank (+z).
+    g.assembly = "attitude-control"
+    for label, axis, at, holds in (
+            ("x", (1.0, 0.0, 0.0), (-0.30, 0.45, -0.45),
+             (mid[0], mid[3], aft[0])),
+            ("y", (0.0, 1.0, 0.0), (0.20, 0.45, -0.45),
+             (mid[0], mid[3], fore[3])),
+            ("z", (0.0, 0.0, 1.0), (0.70, 0.45, -0.45),
+             (fore[0], fore[3], mid[0]))):
+        ident = f"wheel.{label}"
+        g.node(ident, at, "electric-motor", mass_kg=12.0,
+               material="aluminium-plate", shape="drum", drum_axis=axis,
+               drum_radius_m=0.19, drum_length_m=0.12,
+               half_extent_m=tuple(0.06 if a else 0.19 for a in axis),
+               part_role=WHEEL_ROLE,
+               rotor_axis=axis, rotor_rated_rpm=6000.0,
+               rotor_inertia_kg_m2=0.2, rotor_mass_kg=5.5,
+               balance_grade_mm_s=0.4, runs_in=("*",),
+               motor_max_torque_n_m=1.0, motor_torque_constant_n_m_a=0.04,
+               motor_winding_resistance_ohm=0.25,
+               momentum_dump_fraction=0.7, momentum_dump_time_s=20.0)
+        for i, node in enumerate(holds):
+            _member(g, f"{ident}.strut.{i}", ident, node, radius=0.016)
 
     biprop = (("tank.mmh", 1.0 / 2.65), ("tank.nto", 1.65 / 2.65))
     thrusters = []          # (node identity, feeds)
@@ -484,12 +586,24 @@ def mass_property_rhs(tank_count: int) -> dict:
     return out
 
 
-def inverse_inertia_rhs() -> dict:
-    """``{column: rhs}``: ``I^-1`` (adjugate over determinant) of the
-    tensor the mass-properties piece published this substep.  Its own
-    piece: a piece reads its inputs, so it must find this substep's tensor
-    already in the ``inertia_*`` columns."""
+def spin_free_tensor(wheel_count: int = 0) -> sp.Matrix:
+    """``I' = I - sum_w I_w a_w a_w^T`` on the ``inertia_*`` columns and
+    each wheel's ``rotor_inertia``/``axis`` columns."""
     inertia = _tensor("inertia")
+    for w in range(wheel_count):
+        s = wheel_symbols(w)
+        a = sp.Matrix([s["axis"][axis] for axis in AXES])
+        inertia = inertia - s["inertia"] * a * a.T
+    return inertia
+
+
+def inverse_inertia_rhs(wheel_count: int = 0) -> dict:
+    """``{column: rhs}``: ``I'^-1`` (adjugate over determinant) of the
+    tensor the mass-properties piece published this substep, without the
+    rotors' axial spin (:func:`spin_free_tensor`).  Its own piece: a piece
+    reads its inputs, so it must find this substep's tensor already in the
+    ``inertia_*`` columns."""
+    inertia = spin_free_tensor(wheel_count)
     det = inertia.det(method="berkowitz")
     adjugate = inertia.adjugate()
     out = {}
@@ -499,10 +613,16 @@ def inverse_inertia_rhs() -> dict:
     return out
 
 
-def euler_rate_tensor_rhs() -> dict:
-    """``eq_N1_6`` with the full tensor: ``d omega/dt = I^-1 (tau - omega x
-    I omega)``, ``I^-1`` from the ``inverse_inertia_*`` columns.  The
-    catalogue's scalar form is checked to be exactly that shape first."""
+def euler_rate_tensor_rhs(wheel_count: int = 0) -> dict:
+    """``eq_N1_6`` with the full tensor on the TOTAL angular momentum:
+    ``d omega/dt = I'^-1 (tau - tau_w - omega x (I' omega + h_w))``, with
+    ``I'`` the craft without its rotors' axial spin, ``I'^-1`` from the
+    ``inverse_inertia_*`` columns, ``tau_w = sum tau_m a`` the motor
+    torques' sum (``wheel_torque_*``; the craft feels its reaction) and
+    ``h_w = sum h a`` the wheels' momenta (``wheel_momentum_*``).  The
+    catalogue's scalar form is checked to be exactly I^-1 (tau - w x I w)
+    first; the wheels enter as torque and as stored momentum in that same
+    shape.  No wheels: the craft alone."""
     t = honorary.t
     (rate,) = sp.solve(honorary.eq_N1_6,
                        sp.Derivative(honorary.omega_B(t), t))
@@ -517,10 +637,63 @@ def euler_rate_tensor_rhs() -> dict:
         raise RuntimeError("eq_N1_6 is no longer I^-1 (tau - w x I w)")
     omega = sp.Matrix([sp.Symbol(f"angular_velocity_{a}") for a in AXES])
     torque = sp.Matrix([sp.Symbol(f"torque_{a}") for a in AXES])
-    inertia = _tensor("inertia")
-    gyroscopic = omega.cross(inertia * omega)
+    inertia = spin_free_tensor(wheel_count)
+    momentum = inertia * omega
+    if wheel_count:
+        torque = torque - sp.Matrix([sp.Symbol(f"wheel_torque_{a}")
+                                     for a in AXES])
+        momentum = momentum + sp.Matrix([sp.Symbol(f"wheel_momentum_{a}")
+                                         for a in AXES])
+    gyroscopic = omega.cross(momentum)
     rates = _tensor("inverse_inertia") * (torque - gyroscopic)
     return {a: rates[i] for i, a in enumerate(AXES)}
+
+
+def wheel_gyroscopic_dt_limit_rhs(momentum) -> sp.Expr:
+    """The wheels' stability bound on the step: ``attitude_step_max /
+    (|h_w| ||I'^-1||_F)``.  Stored momentum makes the attitude law
+    ``I' w' = ... - w x h_w``, a rotation of ``w`` at up to ``|h_w| /
+    I'_min`` rad/s whatever the craft's own rate (the nutation of a craft
+    carrying a spinning wheel); explicit Euler steps that oscillator with
+    gain ``sqrt(1 + (lambda dt)^2)`` per step, so the step is held to the
+    same declared phase per step as the rotation's own bound
+    (``orbital_jumper.attitude_dt_limit_rhs``), with the Frobenius norm of
+    ``I'^-1`` (an upper bound on its largest eigenvalue).  +inf with the
+    wheels at rest."""
+    norm2 = sum(sp.Symbol(f"inverse_inertia_{pair}")**2
+                * (1 if pair[0] == pair[1] else 2) for pair in PAIRS)
+    stored = sp.sqrt(sum(component**2 for component in momentum))
+    return ATTITUDE_STEP_MAX / (stored * sp.sqrt(norm2))
+
+
+def wheel_piece_equations(wheel_count: int) -> tuple:
+    """The wheel piece (module docstring), ``{column: rhs}`` pairs plus
+    its ``dt_limit``."""
+    torques = [wheel_torque_rhs(w) for w in range(wheel_count)]
+    momenta = [wheel_symbols(w)["momentum"] + DT * wheel_rate_rhs(
+        w, torques[w]) for w in range(wheel_count)]
+    power = sp.Integer(0)
+    for w in range(wheel_count):
+        # the rotor's speed is linear over the step (constant motor
+        # torque): its mean is the mid-step speed
+        speed = (wheel_relative_speed(w)
+                 + wheel_relative_speed(w, momenta[w])) / 2
+        power += wheel_power_rhs(w, torques[w], speed)
+    out = [(f"wheel{w}_momentum_next", momenta[w])
+           for w in range(wheel_count)]
+    axes = [wheel_symbols(w)["axis"] for w in range(wheel_count)]
+    stored = []
+    for a in AXES:
+        out.append((f"wheel_torque_{a}_next", sum(
+            (axes[w][a] * torques[w] for w in range(wheel_count)),
+            sp.Integer(0))))
+        total = sum((axes[w][a] * momenta[w] for w in range(wheel_count)),
+                    sp.Integer(0))
+        stored.append(total)
+        out.append((f"wheel_momentum_{a}_next", total))
+    out.append(("wheel_energy_next", sp.Symbol("wheel_energy") + DT * power))
+    out.append(("dt_limit", wheel_gyroscopic_dt_limit_rhs(stored)))
+    return tuple(out)
 
 
 def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
@@ -528,6 +701,7 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
     """The nine pieces (module docstring), in causal order, with labels."""
     thrusters, tank_index = craft.thrusters, craft.tank_index
     n, tanks = craft.thruster_count, len(craft.tanks)
+    wheels = len(craft.wheels)
     gimballed = [k for k, t in enumerate(thrusters) if t.gimballed]
     tag = (f"{craft.identity.replace('-', '_')}_t{n}_k{tanks}"
            f"_g{len(gimballed)}")
@@ -538,9 +712,12 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
     props = equation_piece(f"orbital_machine_mass_properties_{tag}", tuple(
         eq(f"{name}_next", rhs)
         for name, rhs in mass_property_rhs(tanks).items()), batch=batch)
-    inverse = equation_piece("orbital_machine_inverse_inertia", tuple(
-        eq(f"{name}_next", rhs)
-        for name, rhs in inverse_inertia_rhs().items()), batch=batch)
+    inverse = equation_piece(
+        "orbital_machine_inverse_inertia"
+        + (f"_w{wheels}" if wheels else ""), tuple(
+            eq(f"{name}_next", rhs)
+            for name, rhs in inverse_inertia_rhs(wheels).items()),
+        batch=batch)
     slew_equations = [eq(f"thruster{k}_throttle_state_next",
                          throttle_state_rhs(k)) for k in range(n)]
     slew_equations += [eq(f"thruster{k}_delivered_next",
@@ -549,6 +726,7 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
         for actuator in ("a", "b"):
             slew_equations.append(eq(f"thruster{k}_gimbal_{actuator}_next",
                                      gimbal_state_rhs(k, actuator)))
+    slew_equations.append(eq("dt_limit", actuator_dt_limit_rhs(thrusters)))
     slew = equation_piece(f"orbital_machine_slew_{tag}",
                           tuple(slew_equations), batch=batch)
     supplies = [tank_supply_rhs(t, thrusters, tank_index)
@@ -572,6 +750,10 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
         eq("propellant_flow_next", sum(flows, sp.Integer(0))),
     ), batch=batch)
 
+    spin = (equation_piece(f"orbital_machine_wheels_w{wheels}", tuple(
+        eq(name, rhs) for name, rhs in wheel_piece_equations(wheels)),
+        batch=batch) if wheels else None)
+
     jumper = orbital_jumper_dt_pieces(center_count, 0, batch=batch)
     gravity, position = jumper[2], jumper[4]
 
@@ -580,14 +762,15 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
              - sp.Min(tank_symbols(t)["propellant"],
                       dt * tank_symbols(t)["flow"]) for t in range(tanks)]
     remaining = sum(draws, sp.Integer(0))
-    rates = euler_rate_tensor_rhs()
+    rates = euler_rate_tensor_rhs(wheels)
     # the jumper's momentum law: kick by the mean of the adjacent steps,
     # publish translational kinetic energy and |F . v|
     leapfrog = {a: leapfrog_momentum(a) for a in AXES}
     momentum_next = {a: leapfrog[a][0] for a in AXES}
     mass_new = sp.Symbol("dry_mass") + remaining
     momentum = equation_piece(
-        f"orbital_machine_momentum_k{tanks}_c{center_count}", (
+        f"orbital_machine_momentum_k{tanks}"
+        + (f"_w{wheels}" if wheels else "") + f"_c{center_count}", (
         *(eq(f"momentum_{a}_next", momentum_next[a]) for a in AXES),
         *(eq(f"momentum_carry_{a}_next", leapfrog[a][1]) for a in AXES),
         eq("dt_prev_next", dt),
@@ -597,6 +780,7 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
             sp.Abs(sum((sp.Symbol(f"force_{a}")
                         - sp.Symbol(f"applied_force_{a}"))
                        * momentum_next[a] for a in AXES)) / mass_new),
+        eq("dt_limit", propellant_dt_limit_rhs(mass_new)),
         *(eq(f"tank{t}_propellant_next", draws[t]) for t in range(tanks)),
         eq("propellant_mass_next", remaining),
         eq("mass_next", sp.Symbol("dry_mass") + remaining),
@@ -616,13 +800,15 @@ def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
     cost = equation_piece(f"orbital_machine_thrust_cost_{tag}", (
         *impulses, eq("fuel_impulse_next", fuel + dt * total_rate),
     ), batch=batch)
-    pieces = declare_binding((props, inverse, slew, supply, actuation,
-                              gravity, momentum, position, cost))
+    pieces = (props, inverse, slew, supply, actuation, *(
+        (spin,) if spin is not None else ()), gravity, momentum, position,
+        cost)
     labels = ("mass properties", "inverse inertia", "slew",
-              "propellant supply", "actuation",
+              "propellant supply", "actuation", *(
+                  ("wheels",) if spin is not None else ()),
               "N4.1 gravity", "N7.2/N1.6 momentum", "N1.1/N1.3 position",
               "thrust cost")
-    return pieces, labels
+    return declare_binding(pieces), labels
 
 
 def craft_machine_columns(craft: CraftMachine) -> dict:
@@ -648,7 +834,13 @@ def craft_machine_columns(craft: CraftMachine) -> dict:
             columns[f"tank{t}_unit_second_{pair}"] = entry["unit_second"][i, j]
     rigid = craft.mass_properties()
     tensor = np.asarray(rigid.inertia_tensor_kg_m2, dtype=float)
-    inverse = np.linalg.inv(tensor)
+    inverse = np.linalg.inv(craft.spin_free_inertia())
+    columns["impulse_step_max"] = IMPULSE_STEP_N_S
+    if craft.wheels:
+        columns["wheel_energy"] = 0.0
+        for a in AXES:
+            columns[f"wheel_torque_{a}"] = 0.0
+            columns[f"wheel_momentum_{a}"] = 0.0
     for i, a in enumerate(AXES):
         columns[f"centre_of_mass_{a}"] = rigid.center_of_gravity[i]
     for pair in PAIRS:
@@ -657,6 +849,7 @@ def craft_machine_columns(craft: CraftMachine) -> dict:
         columns[f"inverse_inertia_{pair}"] = inverse[i, j]
     out = {name: np.full(1, float(value)) for name, value in columns.items()}
     out.update(machine_thruster_columns(craft.thrusters, craft.tank_index))
+    out.update(wheel_columns(craft.wheels))
     return out
 
 
@@ -746,6 +939,66 @@ class MachineCraft(OrbitalJumper):
         and the inherited property raised AttributeError."""
         return sum((self._scalar(f"tank{t}_propellant")
                     for t in range(len(self.craft.tanks))), 0.0)
+
+    # ------------------------------------------------------- the wheels
+    def wheel_momenta(self) -> np.ndarray:
+        """Each wheel's absolute axial angular momentum (N m s)."""
+        return np.asarray([self._scalar(f"wheel{w}_momentum")
+                           for w in range(len(self.craft.wheels))])
+
+    def wheel_speeds(self) -> np.ndarray:
+        """Each rotor's speed relative to the craft (rad/s), ``h / I_w -
+        a . w``: what its motor and its speed limit see."""
+        omega = self.angular_velocity()
+        return np.asarray([
+            h / wheel.rotor_inertia_kg_m2
+            - float(np.asarray(wheel.axis) @ omega)
+            for h, wheel in zip(self.wheel_momenta(), self.craft.wheels)])
+
+    def wheel_commands(self) -> np.ndarray:
+        """The motor torque commands (N m) the next round applies."""
+        return np.asarray([self._scalar(f"wheel{w}_torque_command")
+                           for w in range(len(self.craft.wheels))])
+
+    def wheel_torque(self, torques) -> None:
+        """Set each wheel's motor torque COMMAND (N m, on the rotor; the
+        craft feels its reaction).  The wheel piece holds it to the motor's
+        limit and the speed band (saturation is the law's)."""
+        torques = np.asarray(torques, dtype=float).reshape(
+            len(self.craft.wheels))
+        for w, value in enumerate(torques):
+            self._write_lanes(f"wheel{w}_torque_command", value)
+
+    @property
+    def wheel_energy_j(self) -> float:
+        """The electrical energy the wheel motors have drawn (J; the motor
+        law, net of regeneration)."""
+        return (self._scalar("wheel_energy") if self.craft.wheels else 0.0)
+
+    def spin_free_inertia(self) -> np.ndarray:
+        """``I' = I - sum I_w a a^T`` at the tensor the last substep used:
+        what the attitude law carries besides the wheels' momenta."""
+        return self.inertia_tensor() - wheel_spin_inertia(self.craft.wheels)
+
+    def angular_momentum(self) -> np.ndarray:
+        """The craft's TOTAL angular momentum about its centre of mass,
+        world frame: ``R (I' w + sum h a)``.  Thrusters change it; the
+        wheels only move it between their rotors and the craft."""
+        stored = np.zeros(3)
+        for h, wheel in zip(self.wheel_momenta(), self.craft.wheels):
+            stored += h * np.asarray(wheel.axis, dtype=float)
+        return self.attitude() @ (self.spin_free_inertia()
+                                  @ self.angular_velocity() + stored)
+
+    @property
+    def propellant_supply(self):
+        """The fraction of the demand the last substep delivered: the
+        minimum of the ``tank{t}_supply`` columns the thrusters read (the
+        same ``Min`` the supply piece publishes as ``propellant_supply``,
+        which no machine piece reads, so the dt system keeps no such
+        column); ``1`` with no tanks."""
+        return min((self._scalar(f"tank{t}_supply")
+                    for t in range(len(self.craft.tanks))), default=1.0)
 
     def centre_of_mass(self) -> np.ndarray:
         """The centre of mass (machine frame) the last substep used."""
@@ -844,11 +1097,42 @@ class MachineCraft(OrbitalJumper):
             throttle_state=self.throttle_states(),
             gimbal_state=self.gimbal_states(),
             tank_propellant_kg=self.tank_propellant_kg(),
-            round_s=self.window_s if round_s is None else round_s, **weights)
+            round_s=self.window_s if round_s is None else round_s,
+            wheels=self.craft.wheels,
+            wheel_momentum_n_m_s=self.wheel_momenta(),
+            angular_velocity_rad_s=self.angular_velocity(), **weights)
         if apply:
             self.throttle(allocation.throttles)
             self.gimbal(allocation.gimbal_rad)
+            if self.craft.wheels:
+                self.wheel_torque(allocation.wheel_torque_n_m)
         return allocation
+
+    # ------------------------------------------------------------ the round
+    def actuator_dt_limit(self) -> float:
+        """The slew piece's own ``dt_limit`` for the commands now standing:
+        the COMPILED slew piece, called on the host at ``dt = 0`` (the
+        states where they are, the travel to the new commands still ahead).
+        Every later substep is bounded by the piece's publication; this is
+        the first one's (``advance`` hands it to the controller)."""
+        piece = self.pieces[self.piece_labels.index("slew")]
+        arguments = [np.zeros(self.batch) if name == "dt"
+                     else np.ascontiguousarray(np.asarray(
+                         self._span(name), dtype=np.float64))
+                     for name in piece.argument_names]
+        outputs = dict(zip(piece.output_names, piece(*arguments)))
+        return float(np.min(np.asarray(outputs["dt_limit"], dtype=float)))
+
+    def advance(self, window_s: float | None = None):
+        """One round.  A command written since the last round starts a ramp
+        the controller's continuation knows nothing of: its first attempt
+        is pinned by the controller's own pre-trial bound,
+        ``dt_limit_hint`` (``dt_controller.run_superstep``), set to the
+        slew piece's ``dt_limit`` for those commands (+inf: no pin)."""
+        limit = self.actuator_dt_limit()
+        self.dt_state.dt_limit_hint = (limit if math.isfinite(limit)
+                                       and limit > 0.0 else None)
+        return super().advance(window_s)
 
 
 def _host_wrench(craft, throttle_states, gimbal_states, centre, attitude):
@@ -858,6 +1142,8 @@ def _host_wrench(craft, throttle_states, gimbal_states, centre, attitude):
 
 
 __all__ = ["CraftMachine", "MachineCraft", "PropellantTank",
+           "IMPULSE_STEP_N_S", "WHEEL_ROLE", "spin_free_tensor",
+           "wheel_gyroscopic_dt_limit_rhs", "wheel_piece_equations",
            "ThrusterGeometry", "craft_machine_columns",
            "craft_machine_dt_pieces", "euler_rate_tensor_rhs",
            "mass_property_rhs", "orbital_craft", "THRUSTER_KINDS",

@@ -282,6 +282,11 @@ class Burn:
     duration_s: float
     thrust_n: float = math.inf
     fired: bool = False
+    #: ``"main"`` (the pointing thruster's full thrust, cut at the round
+    #: that ends on the predicted cutoff) -> ``"residual"`` (what is left
+    #: below the main engine's minimum throttle, by the small thrusters)
+    stage: str = "main"
+    residual_rounds: int = 0
 
 
 @dataclass
@@ -304,6 +309,20 @@ class TrackingMode:
     last: TrackingCommand | None = None
     last_round_s: float = 0.0
     origin: object = None
+    #: The round grid: rounds end at ``anchor_s + k * round_s`` (the time of
+    #: the mode's first flight) or at a plan event (a burn's start, its
+    #: predicted cutoff) -- never at a caller's frame boundary.  A round a
+    #: caller's ``until_s`` cuts is finished by the next ``fly`` with the
+    #: SAME command (``round_end_s``, ``round_command``).
+    anchor_s: float | None = None
+    round_start_s: float | None = None
+    round_end_s: float | None = None
+    round_command: TrackingCommand | None = None
+    round_cut: bool = False
+    #: The dt system's continuation step (``advance``'s ``dt_next``): the
+    #: substeps the slew-law prediction of a cutoff assumes.
+    dt_next_s: float | None = None
+    last_eps: float = 0.0
 
 
 #: The mode ``fly`` keeps per craft when the caller passes none (a game that
@@ -876,28 +895,233 @@ def _arm_burn(mode: TrackingMode, design, gains, t, attitude, velocity,
     return None
 
 
-def _burn_command(burn: Burn, design, gains, t, h, position, velocity, mass,
-                  attitude, angular_velocity, plan, actuation):
-    r_ref, v_ref = plan_reference(plan, t)
+# ------------------------------------------------------- rounds and cutoff
+def _time_tol(t: float) -> float:
+    return 1.0e-9 * max(1.0, abs(float(t)))
+
+
+def _grid_end(anchor_s: float, t: float, round_s: float) -> float:
+    """The first round-grid point (``anchor_s + k round_s``) after ``t``."""
+    end = anchor_s + (math.floor((t - anchor_s) / round_s) + 1) * round_s
+    while end - t <= _time_tol(t):
+        end += round_s
+    return end
+
+
+def _substeps(length_s: float, dt_next_s: float | None) -> list:
+    """The substeps the dt system takes over a round of ``length_s``: its
+    continuation step, the last one clipped to land."""
+    if dt_next_s is None or not dt_next_s > 0.0 or dt_next_s >= length_s:
+        return [length_s]
+    count = int(math.floor(length_s / dt_next_s))
+    out = [dt_next_s] * count
+    rest = length_s - count * dt_next_s
+    if rest > _time_tol(length_s):
+        out.append(rest)
+    return out
+
+
+def _slew_impulses(thrusters, state, segments) -> tuple:
+    """The slew and delivered-throttle laws (``orbital_actuation.
+    throttle_state_rhs``, ``delivered_throttle_rhs``) on the host: each
+    substep the state moves toward the clamped command by at most
+    ``throttle_slew_per_s * dt`` and the thruster delivers its NEW state,
+    or nothing below its deadband.  ``segments`` is ``((command,
+    substeps), ...)``.  Returns ``(impulse per thruster N s, final
+    state)``."""
+    thrust = np.asarray([t.max_thrust_n for t in thrusters], float)
+    low = np.asarray([t.throttle_min for t in thrusters], float)
+    high = np.asarray([t.throttle_max for t in thrusters], float)
+    rate = np.asarray([t.throttle_slew_per_s for t in thrusters], float)
+    band = np.asarray([t.deadband for t in thrusters], float)
+    s = np.asarray(state, dtype=float).copy()
+    impulse = np.zeros(len(thrusters))
+    for command, steps in segments:
+        target = np.clip(np.asarray(command, float), low, high)
+        for dt in steps:
+            reach = rate * dt
+            s = s + np.clip(target - s, -reach, reach)
+            impulse += thrust * np.where(s >= band, s, 0.0) * dt
+    return impulse, s
+
+
+def _thrust_lines(craft, gimbal_rad=None) -> np.ndarray:
+    """(n, 3) world unit thrust directions now (or at ``gimbal_rad``)."""
+    thrusters = craft.design.thrusters
+    attitude = _seam(craft, "attitude")
+    R = np.eye(3) if attitude is None else np.asarray(attitude, float)
+    if gimbal_rad is None:
+        states = _seam(craft, "gimbal_states")
+        gimbal_rad = (np.zeros((len(thrusters), 2)) if states is None
+                      else np.asarray(states, float))
+    gimbal_rad = np.asarray(gimbal_rad, float).reshape(len(thrusters), 2)
+    return np.stack([R @ t.direction_at(*g)
+                     for t, g in zip(thrusters, gimbal_rad)]) if len(
+        thrusters) else np.zeros((0, 3))
+
+
+def _throttle_states(craft, fallback) -> np.ndarray:
+    """The throttle STATE columns (a slewing craft), else the command
+    (a fixed design's throttle is its state)."""
+    states = _seam(craft, "throttle_states")
+    return np.asarray(fallback if states is None else states, dtype=float)
+
+
+def _per_impulse(thrusters) -> np.ndarray:
+    return np.asarray([t.thruster_kind.propellant_per_impulse_kg_n_s
+                       for t in thrusters], float)
+
+
+def _delta_v_along(craft, allocation, direction, mass, length_s, mode,
+                   round_s) -> Callable[[float], float]:
+    """``dv(tau)``: the velocity along ``direction`` the craft gains when
+    ``allocation`` is commanded for ``tau`` s and every thruster is then
+    commanded off -- the cut round by the slew law, then its spool-down
+    TAIL over the rounds the grid places after the cut, at the dt system's
+    continuation substeps."""
+    thrusters = craft.design.thrusters
+    command = np.asarray(allocation.throttles, float)
+    state0 = _throttle_states(craft, command)
+    gimbal = getattr(allocation, "gimbal_rad", None)
+    project = _thrust_lines(craft, gimbal) @ np.asarray(direction, float)
+    per_impulse = _per_impulse(thrusters)
+    off = np.zeros(len(thrusters))
+    t0 = float(craft.time_s)
+
+    def dv(tau: float) -> float:
+        if tau <= 0.0:
+            segments = []
+        else:
+            segments = [(command, _substeps(tau, mode.dt_next_s))]
+        cut = t0 + tau
+        first = _grid_end(mode.anchor_s, cut, round_s) - cut
+        segments += [(off, _substeps(first, mode.dt_next_s))]
+        segments += [(off, _substeps(round_s, mode.dt_next_s))] * 2
+        impulse, _s = _slew_impulses(thrusters, state0, segments)
+        mean_mass = mass - 0.5 * float(impulse @ per_impulse)
+        return float(impulse @ project) / mean_mass
+    return dv
+
+
+def _cutoff(dv, remaining: float, length_s: float, tol: float):
+    """``(tau, overshoot)``: the shortest ``tau <= length_s`` whose
+    delivery (tail included) reaches ``remaining`` (bisection: the
+    delivery never falls as the cut moves later), or ``None`` when the
+    whole round does not reach it."""
+    if dv(length_s) < remaining - tol:
+        return None, 0.0
+    low, high = 0.0, length_s
+    if dv(0.0) >= remaining - tol:
+        return 0.0, dv(0.0) - remaining
+    for _ in range(60):
+        mid = 0.5 * (low + high)
+        if dv(mid) >= remaining:
+            high = mid
+        else:
+            low = mid
+        if high - low <= 1.0e-9 * length_s:
+            break
+    return high, dv(high) - remaining
+
+
+def _residual_force(design, burn: Burn) -> float:
+    """The force the residual stage asks for: under half the smallest force
+    a deadbanded thruster can deliver once lit (``deadband * T``), so the
+    allocation leaves every such thruster dark and the small thrusters
+    (RCS) take it; a design without deadbands asks for the burn's own
+    thrust."""
+    least = min((t.deadband * t.max_thrust_n for t in design.thrusters
+                 if t.deadband > 0.0), default=math.inf)
+    return min(burn.thrust_n, 0.45 * least)
+
+
+def _burn_round(burn: Burn, craft, gains, mode, t, length_s, round_s,
+                position, velocity, mass, attitude, angular_velocity,
+                actuation):
+    """One burn round from ``t``: ``(command, round length, cut)``.
+
+    Lit, the round asks for the burn's full thrust along its direction and
+    ENDS at the predicted cutoff when that falls inside it: the cut time
+    solves ``dv(tau) = remaining`` with ``dv`` the slew law's delivery,
+    spool-down tail included (:func:`_delta_v_along`).  When the main
+    engine cannot deliver that little (its deadband: the delivery jumps
+    past the remaining), or once it is cut, the residual stage asks the
+    small thrusters (:func:`_residual_force`) for what is left, again in a
+    round that ends when it is delivered."""
+    design = craft.design
+    r_ref, v_ref = plan_reference(mode.plan, t)
     e_r, e_v = position - r_ref, velocity - v_ref
-    aim = burn.direction * max(t.max_thrust_n for t in design.thrusters)
-    # the attitude turns onto the burn; fire once there and due
+    aim = burn.direction * max(th.max_thrust_n for th in design.thrusters)
     _none, tau, angle = _request(design, gains, attitude, angular_velocity,
                                  aim, actuation, point="never")
-    # start within burn_alignment_rad; once lit, keep burning while within
-    # burn_release_rad (an interrupted burn costs more than a cosine loss)
     gate = gains.burn_release_rad if burn.fired else gains.burn_alignment_rad
     aligned = (actuation.pointing(attitude) is None or attitude is None
                or angle <= gate)
+    tol = _burn_tolerance(design, gains, mass, round_s)
+    actuation.round_s = length_s
+    if not (t >= burn.start_s - _time_tol(t) and aligned):
+        allocation = actuation.allocate(Wrench(np.zeros(3), tau))
+        return (_command(allocation, tau, angle, e_r, e_v, np.zeros(3),
+                         np.zeros(3), "burn"), length_s, False)
+
+    def attempt(force, remaining, direction):
+        actuation.round_s = length_s
+        allocation = actuation.allocate(Wrench(force, tau))
+        dv = _delta_v_along(craft, allocation, direction, mass, length_s,
+                            mode, round_s)
+        cut, over = _cutoff(dv, remaining, length_s, tol)
+        return allocation, cut, over
+
     force = np.zeros(3)
-    if t >= burn.start_s - 1.0e-9 and aligned:
-        # exactly along the burn (a saturated request would leave the
-        # least squares a sideways part to spend propellant on)
-        force = burn.direction * min(burn.thrust_n,
-                                     mass * burn.remaining_m_s / h)
-    allocation = actuation.allocate(Wrench(force, tau))
-    return _command(allocation, tau, angle, e_r, e_v, force, np.zeros(3),
-                    "burn")
+    cut = None
+    if burn.stage == "main":
+        force = burn.direction * burn.thrust_n
+        allocation, cut, over = attempt(force, burn.remaining_m_s,
+                                        burn.direction)
+        if cut is not None and over > tol:
+            # the main engine cannot deliver that little (its deadband)
+            burn.stage = "residual"
+    if burn.stage == "residual":
+        sign = 1.0 if burn.remaining_m_s >= 0.0 else -1.0
+        direction = sign * burn.direction
+        force = direction * _residual_force(design, burn)
+        allocation, cut, over = attempt(force, abs(burn.remaining_m_s),
+                                        direction)
+    if cut is None:
+        return (_command(allocation, tau, angle, e_r, e_v, force,
+                         np.zeros(3), "burn"), length_s, False)
+    if cut < length_s - _time_tol(t):
+        if cut <= _time_tol(t):
+            # already delivered (the tail does it): nothing more to ask
+            allocation = actuation.allocate(Wrench(np.zeros(3), tau))
+            force = np.zeros(3)
+            return (_command(allocation, tau, angle, e_r, e_v, force,
+                             np.zeros(3), "burn"), length_s, True)
+        actuation.round_s = cut
+        allocation = actuation.allocate(Wrench(force, tau))
+        length_s = cut
+    return (_command(allocation, tau, angle, e_r, e_v, force, np.zeros(3),
+                     "burn"), length_s, True)
+
+
+def _burn_tolerance(design, gains, mass, round_s) -> float:
+    """The velocity a burn may leave: the allocation's fuel deadband force
+    (``fuel_weight * T_max``) over a round."""
+    return (gains.fuel_weight * max(t.max_thrust_n for t in design.thrusters)
+            * round_s / mass)
+
+
+def _outstanding_tail(craft, burn: Burn, mass, mode, round_s) -> float:
+    """The spool-down delivery still to come along the burn from the
+    present throttle states (every thruster commanded off)."""
+    thrusters = craft.design.thrusters
+    off = np.zeros(len(thrusters))
+
+    class _Off:
+        throttles = off
+        gimbal_rad = None
+    return _delta_v_along(craft, _Off, burn.direction, mass, 0.0, mode,
+                          round_s)(0.0)
 
 
 # --------------------------------------------------------------- the loop
@@ -950,7 +1174,16 @@ def fly(craft, plan, gains: TrackingGains, *, until_s: float,
     (:func:`tracker_mode`) is used while ``plan`` is the plan it was made
     from, else a fresh one; the report's ``plan``, ``on_plan`` and ``phase`` are the
     state at the end.  ``record``, when given, receives ``(t, command)``
-    for every round."""
+    for every round.
+
+    Rounds are the controller's: they end on the grid ``anchor + k
+    round_s`` (the mode's first flight) or at a plan event -- a burn's
+    start, a burn's predicted cutoff -- never because of ``until_s``.  The
+    flight still stops at ``until_s``; a round it cuts keeps its command
+    and is finished by the next call, so ``fly(t0 -> t2)`` and ``fly(t0 ->
+    t1); fly(t1 -> t2)`` decide the same rounds (the dt system's substep
+    partition alone differs).  ``rounds`` and ``throttle_history`` count
+    the ``advance`` calls."""
     if not round_s > 0.0:
         raise ValueError("round_s must be positive")
     if mode is None:
@@ -963,98 +1196,65 @@ def fly(craft, plan, gains: TrackingGains, *, until_s: float,
     rounds, worst, worst_eps, worst_short = 0, 0.0, 0.0, 0.0
     history = []
     last_throttles = np.zeros(craft.design.thruster_count)
-    while craft.time_s < until_s - 1.0e-9 * max(1.0, abs(until_s)):
+    if mode.anchor_s is None:
+        mode.anchor_s = float(craft.time_s)
+    impulses = _seam(craft, "thruster_impulses_n_s")
+    while craft.time_s < until_s - _time_tol(until_s):
         t = craft.time_s
-        position, velocity = craft.r()
-        mass = craft.mass_kg
-        attitude = _seam(craft, "attitude")
-        rate = _seam(craft, "angular_velocity")
-        lag = 0.0
-        if mode.last is not None and mode.last.phase == "trim":
-            lag = (float(np.linalg.norm(mode.last.force_shortfall_n))
-                   * mode.last_round_s / mass)
-        r_ref, v_ref = plan_reference(mode.plan, t)
-        eps = tracking_error(position, velocity, r_ref, v_ref,
-                             shortfall_m_s=lag)
-        if replanner is not None:
-            if mode.on_plan and eps > gains.off_plan_threshold:
-                mode.plan = replanner(mode.plan, t, position, velocity)
-                mode.on_plan = False
-                mode.replans += 1
-                mode.events.append((t, "off", eps))
-                mode.burn, mode.flown, mode.last = None, set(), None
-                r_ref, v_ref = plan_reference(mode.plan, t)
-            elif not mode.on_plan and eps < gains.on_plan_threshold:
-                mode.on_plan = True
-                mode.events.append((t, "on", eps))
-        window = min(round_s, until_s - t)
-        actuation.round_s = window
-        if mode.burn is None:
-            mode.burn = _arm_burn(mode, craft.design, gains, t, attitude,
-                                  velocity, mass, round_s, actuation)
-        if mode.burn is not None:
-            command = _burn_command(mode.burn, craft.design, gains, t, window,
-                                    position, velocity, mass, attitude, rate,
-                                    mode.plan, actuation)
-        else:
-            e_r = np.linalg.norm(position - r_ref) / np.linalg.norm(r_ref)
-            e_v = np.linalg.norm(velocity - v_ref)
-            v_band = gains.coast_velocity_deadband * np.linalg.norm(v_ref)
-            p_band = gains.coast_position_deadband
-            if mode.phase != "trim" and (e_r > p_band or e_v > v_band):
-                mode.phase = "trim"
-            elif mode.phase == "trim" and (e_r < 0.5 * p_band
-                                           and e_v < 0.5 * v_band):
-                mode.phase = "coast"
-            if mode.phase == "trim":
-                carry = (mode.last.force_shortfall_n
-                         if mode.last is not None and mode.last.phase == "trim"
-                         else None)
-                command = tracking_command(
-                    mode.plan, craft.design, gains, t, position, velocity,
-                    mass, attitude=attitude, angular_velocity_rad_s=rate,
-                    carry_n=carry, actuation=actuation)
-            else:
-                allocation, tau, angle = _coast(craft, gains, attitude,
-                                                rate, actuation)
-                command = _command(allocation, tau, angle, position - r_ref,
-                                   velocity - v_ref, np.zeros(3),
-                                   np.zeros(3), "coast")
-        worst = max(worst, float(np.linalg.norm(command.position_error_m)))
-        worst_eps = max(worst_eps, eps)
-        if command.phase == "trim":
-            worst_short = max(worst_short,
-                              float(np.linalg.norm(command.force_shortfall_n)))
-        if record is not None:
-            record.append((t, command))
-        if not craft.applies_allocation:   # the machine applied its own
+        if (mode.round_end_s is not None and mode.round_command is not None
+                and mode.round_start_s - _time_tol(t) <= t
+                < mode.round_end_s - _time_tol(t)):
+            # a round the caller's frame cut: finish it with its command
+            command = mode.round_command
             craft.throttle(command.throttles)
-        craft.advance(window)
+            if command.gimbal_rad is not None and callable(
+                    getattr(craft, "gimbal", None)):
+                craft.gimbal(command.gimbal_rad)
+        else:
+            command = _decide_round(craft, mode, gains, actuation, t,
+                                    round_s, replanner)
+            if not craft.applies_allocation:   # the machine applied its own
+                craft.throttle(command.throttles)
+            worst = max(worst, float(np.linalg.norm(
+                command.position_error_m)))
+            worst_eps = max(worst_eps, mode.last_eps)
+            if command.phase == "trim":
+                worst_short = max(worst_short, float(np.linalg.norm(
+                    command.force_shortfall_n)))
+            if record is not None:
+                record.append((t, command))
+        end = mode.round_end_s
+        window = (end - t if end <= until_s + _time_tol(until_s)
+                  else until_s - t)
+        lines0 = _thrust_lines(craft) if impulses is not None else None
+        mass0 = craft.mass_kg
+        _advanced, dt_next, _telemetry = craft.advance(window)
+        mode.dt_next_s = float(dt_next)
         last_throttles = command.throttles
         history.append((t, window, command.throttles))
-        if command.phase == "burn":
-            burn = mode.burn
-            mean_mass = 0.5 * (mass + craft.mass_kg)
-            delivered = (float(command.achieved_force_n @ burn.direction)
-                         * window / mean_mass)
-            if delivered > 0.0:
+        rounds += 1
+        burn = mode.burn
+        if command.phase == "burn" and burn is not None:
+            # the velocity delivered along the burn, read from the thrust
+            # the craft integrated (per-thruster impulse on its thrust line)
+            mean_mass = 0.5 * (mass0 + craft.mass_kg)
+            if impulses is not None:
+                now = _seam(craft, "thruster_impulses_n_s")
+                lines = lines0 + _thrust_lines(craft)
+                lines /= np.maximum(np.linalg.norm(lines, axis=1,
+                                                   keepdims=True), 1e-300)
+                delivered = float((now - impulses) @ (lines
+                                                      @ burn.direction)
+                                  ) / mean_mass
+            else:
+                delivered = (float(command.achieved_force_n @ burn.direction)
+                             * window / mean_mass)
+            if delivered > 0.0 and burn.stage == "main":
                 burn.fired = True
             burn.remaining_m_s -= delivered
-            # done once what is left is inside the allocation's fuel
-            # deadband (the trims take it from there)
-            deadband = gains.fuel_weight * max(
-                t.max_thrust_n for t in craft.design.thrusters)
-            if burn.fired and (burn.remaining_m_s * craft.mass_kg / window
-                               <= 1.5 * deadband):
-                mode.flown.add(burn.impulse.time_s)
-                mode.burns.append((burn.impulse.time_s, burn.start_s,
-                                   t + window, burn.remaining_m_s))
-                mode.burn = None
-                mode.phase = "trim"
-        else:
-            mode.phase = command.phase
-        mode.last, mode.last_round_s = command, window
-        rounds += 1
+        impulses = _seam(craft, "thruster_impulses_n_s")
+        if craft.time_s >= mode.round_end_s - _time_tol(craft.time_s):
+            _finish_round(craft, mode, command)
     if mode.burn is not None:
         mode.phase = "burn"
     craft.throttle(np.zeros(craft.design.thruster_count))
@@ -1074,3 +1274,105 @@ def fly(craft, plan, gains: TrackingGains, *, until_s: float,
         max_force_shortfall_n=worst_short,
         throttles=np.asarray(last_throttles, dtype=float),
         throttle_history=tuple(history))
+
+
+def _finish_round(craft, mode: TrackingMode, command) -> None:
+    """A scheduled round has landed: a burn whose main stage was cut moves
+    to its residual stage; the phase and the carried command update."""
+    burn = mode.burn
+    if command.phase == "burn" and burn is not None:
+        if mode.round_cut:
+            if burn.stage == "residual":
+                burn.residual_rounds += 1
+            burn.stage = "residual"
+    else:
+        mode.phase = command.phase
+    mode.last = command
+    mode.last_round_s = mode.round_end_s - mode.round_start_s
+    mode.round_command = None
+
+
+def _close_burn(mode: TrackingMode, t, remaining) -> None:
+    burn = mode.burn
+    mode.flown.add(burn.impulse.time_s)
+    mode.burns.append((burn.impulse.time_s, burn.start_s, t, remaining))
+    mode.burn = None
+    mode.phase = "trim"
+
+
+def _decide_round(craft, mode: TrackingMode, gains, actuation, t, round_s,
+                  replanner):
+    """Read the seam at a round's start, switch, and decide the round:
+    burn / trim / coast, and its end -- the next grid point, a burn's
+    start, or a burn's predicted cutoff (``mode.round_end_s``)."""
+    position, velocity = craft.r()
+    mass = craft.mass_kg
+    attitude = _seam(craft, "attitude")
+    rate = _seam(craft, "angular_velocity")
+    lag = 0.0
+    if mode.last is not None and mode.last.phase == "trim":
+        lag = (float(np.linalg.norm(mode.last.force_shortfall_n))
+               * mode.last_round_s / mass)
+    r_ref, v_ref = plan_reference(mode.plan, t)
+    eps = tracking_error(position, velocity, r_ref, v_ref,
+                         shortfall_m_s=lag)
+    mode.last_eps = eps
+    if replanner is not None:
+        if mode.on_plan and eps > gains.off_plan_threshold:
+            mode.plan = replanner(mode.plan, t, position, velocity)
+            mode.on_plan = False
+            mode.replans += 1
+            mode.events.append((t, "off", eps))
+            mode.burn, mode.flown, mode.last = None, set(), None
+            r_ref, v_ref = plan_reference(mode.plan, t)
+        elif not mode.on_plan and eps < gains.on_plan_threshold:
+            mode.on_plan = True
+            mode.events.append((t, "on", eps))
+    length = _grid_end(mode.anchor_s, t, round_s) - t
+    actuation.round_s = length
+    burn = mode.burn
+    if burn is not None and burn.stage == "residual":
+        # close once what is left is what the spool-down still delivers
+        tail = _outstanding_tail(craft, burn, mass, mode, round_s)
+        left = burn.remaining_m_s - tail
+        tol = _burn_tolerance(craft.design, gains, mass, round_s)
+        if abs(left) <= tol or burn.residual_rounds >= 8:
+            _close_burn(mode, t, left)
+    if mode.burn is None:
+        mode.burn = _arm_burn(mode, craft.design, gains, t, attitude,
+                              velocity, mass, round_s, actuation)
+    cut = False
+    if mode.burn is not None:
+        burn = mode.burn
+        if t < burn.start_s - _time_tol(t):
+            length = min(length, burn.start_s - t)
+        command, length, cut = _burn_round(
+            burn, craft, gains, mode, t, length, round_s, position,
+            velocity, mass, attitude, rate, actuation)
+    else:
+        e_r = np.linalg.norm(position - r_ref) / np.linalg.norm(r_ref)
+        e_v = np.linalg.norm(velocity - v_ref)
+        v_band = gains.coast_velocity_deadband * np.linalg.norm(v_ref)
+        p_band = gains.coast_position_deadband
+        if mode.phase != "trim" and (e_r > p_band or e_v > v_band):
+            mode.phase = "trim"
+        elif mode.phase == "trim" and (e_r < 0.5 * p_band
+                                       and e_v < 0.5 * v_band):
+            mode.phase = "coast"
+        if mode.phase == "trim":
+            carry = (mode.last.force_shortfall_n
+                     if mode.last is not None and mode.last.phase == "trim"
+                     else None)
+            command = tracking_command(
+                mode.plan, craft.design, gains, t, position, velocity,
+                mass, attitude=attitude, angular_velocity_rad_s=rate,
+                carry_n=carry, actuation=actuation)
+        else:
+            allocation, tau, angle = _coast(craft, gains, attitude,
+                                            rate, actuation)
+            command = _command(allocation, tau, angle, position - r_ref,
+                               velocity - v_ref, np.zeros(3),
+                               np.zeros(3), "coast")
+    mode.round_start_s, mode.round_end_s = t, t + length
+    mode.round_command, mode.round_cut = command, cut
+    return command

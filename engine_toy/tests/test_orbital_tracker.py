@@ -382,3 +382,56 @@ def test_machine_craft_transfer_arrives_with_gimballed_burns():
     # measured 1.3785 (2026-10-03); the allocation saturates the RCS while
     # the main engine fires (see the step-5 continuation)
     assert biprop / ideal < 1.45
+
+
+# ------------------------------- burns end on their cutoff; frames don't cut
+def test_burn_cutoff_and_frame_boundaries_on_the_machine_craft():
+    # Burn 1 of 7000 -> 8000 km (t_burn1 100 s), flown once in one call and
+    # once in 7.3 s frames (off the 2 s round grid: frames cut the slew-up,
+    # the burn rounds and the cutoff).  The rounds are the controller's:
+    # the same rounds are decided both ways (same burn record, same
+    # commands), and the trajectories agree to the dt system's integration
+    # (the only difference is its substep partition at the frame cuts).
+    from orbital_craft_machine import MachineCraft, orbital_craft
+
+    gains = TrackingGains(attitude_frequency_rad_s=0.2)
+    plan = hohmann_plan(MU_EARTH, R_LEO, R_HIGH, t_burn1=100.0)
+    until = 220.0
+    flights = {}
+    for label, frame in (("one call", None), ("7.3 s frames", 7.3)):
+        r0, v0 = reference(plan, 0.0)
+        craft = MachineCraft([GravityCenter((0.0, 0.0, 0.0), MU_EARTH)],
+                             orbital_craft(), position_m=r0, velocity_m_s=v0,
+                             length_scale_m=5.0e4, window_s=ROUND)
+        mode, record = TrackingMode(plan), []
+        t = until if frame is None else 0.0
+        while craft.time_s < until - 1e-9:
+            t = until if frame is None else min(until, t + frame)
+            fly(craft, plan, gains, until_s=t, round_s=ROUND, mode=mode,
+                record=record)
+        position, velocity = craft.r()
+        flights[label] = (mode, record, position, velocity, craft.mass_kg)
+    (mode, record, r1, v1, m1), (cut_mode, cut_record, r2, v2, m2) = (
+        flights.values())
+    burn_rounds = [(t, c) for t, c in record if c.phase == "burn"]
+    lit = [(t, c) for t, c in burn_rounds if c.throttles[0] > 0.0]
+    print(f"\nburns {mode.burns} vs {cut_mode.burns}; decided rounds "
+          f"{len(record)} vs {len(cut_record)}; |dr| "
+          f"{np.linalg.norm(r1 - r2):.3e} m, |dv| "
+          f"{np.linalg.norm(v1 - v2):.3e} m/s, dm {m1 - m2:.3e} kg; "
+          f"last lit rounds {[(round(t, 4), c.throttles[0]) for t, c in lit[-3:]]}")
+    # burn 1 closed on its plan: what is left is inside the burn tolerance
+    # (fuel deadband over a round), not the main engine's 3.5 m/s round
+    (t_b, _start, _end, left), = mode.burns
+    assert t_b == plan.t_burn1
+    assert abs(left) < 0.01
+    # the cut round ends off the 2 s grid: the burn's cutoff placed it
+    assert any(abs(t / ROUND - round(t / ROUND)) > 1e-6 for t, _c in lit)
+    # the same rounds, decided the same way
+    assert [t for t, _c in record] == pytest.approx(
+        [t for t, _c in cut_record], abs=1e-6)
+    (t_b2, s2, e2, left2), = cut_mode.burns
+    assert (s2, e2) == pytest.approx(mode.burns[0][1:3], abs=1e-6)
+    assert abs(left2) < 0.01
+    assert np.linalg.norm(r1 - r2) < 1.0
+    assert np.linalg.norm(v1 - v2) < 0.01

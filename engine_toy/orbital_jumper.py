@@ -275,6 +275,23 @@ def attitude_dt_limit_rhs():
     return ATTITUDE_STEP_MAX / rate
 
 
+#: The momentum piece's declared step bound on the variable mass: the most
+#: propellant one substep may draw, as a fraction of the craft's mass.  The
+#: mass balance and N7.2 are integrated against the step's END mass, so a
+#: burn integrates TS2.1's ``c ln(m0/m1)`` as the right sum of ``c dm/m``,
+#: over-delivering ``c (dm/m)^2 / 2`` per step: ``dm/m <= 1e-3`` holds that
+#: to 0.05 % of the step's delta-v.
+PROPELLANT_STEP_FRACTION = 1.0e-3
+PROPELLANT_STEP_MAX = sp.Symbol("propellant_step_fraction")
+
+
+def propellant_dt_limit_rhs(mass_new, flow=PROPELLANT_FLOW):
+    """The momentum piece's ``dt_limit``: ``propellant_step_fraction *
+    mass / propellant_flow`` at this substep's flow (+inf, the dt system's
+    "no bound", while nothing burns)."""
+    return PROPELLANT_STEP_MAX * mass_new / flow
+
+
 #: The previous substep's dt: the momentum piece's own state column, so the
 #: variable-step kick can weight by the two adjacent steps.
 DT_PREV = sp.Symbol("dt_prev")
@@ -425,6 +442,8 @@ def orbital_jumper_dt_pieces(center_count: int, thruster_count: int = 0,
                 evaluate=False) for axis in AXES),
         sp.Eq(sp.Symbol("dt_prev_next"), dt, evaluate=False),
         *exchange_publication(center_count, kinetic, force_power),
+        sp.Eq(sp.Symbol("dt_limit"), propellant_dt_limit_rhs(mass_new),
+              evaluate=False),
         sp.Eq(sp.Symbol("propellant_mass_next"), propellant_next,
               evaluate=False),
         sp.Eq(sp.Symbol("mass_next"), sp.Symbol("dry_mass") + propellant_next,
@@ -629,6 +648,8 @@ class OrbitalJumper:
                    "propellant_supply": np.ones(lanes),
                    "attitude_step_max": np.full(lanes,
                                                 self.attitude_step_rad),
+                   "propellant_step_fraction": np.full(
+                       lanes, PROPELLANT_STEP_FRACTION),
                    "dt_prev": np.zeros(lanes),
                    "fuel_impulse": np.zeros(lanes)}
         if self._lane_mass_kg is None:
