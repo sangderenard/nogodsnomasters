@@ -667,6 +667,71 @@ def delivered_throttle_rhs(index: int):
                         (sp.Integer(0), True))
 
 
+def delivered_throttle_area_rhs(index: int):
+    """Exact time integral of the authored bounded ramp and its deadband.
+
+    ``throttle_state_rhs`` gives the ramp endpoint for an elapsed ``DT``.
+    Its moving interval lasts ``abs(end - start) / rate``; any remaining
+    time holds the endpoint. On the moving interval, integrating the
+    delivered throttle is integrating ``u du / rate`` above the deadband.
+    The factored difference of squares avoids cancellation for a short
+    interval. This observable has no integration substeps or dt proposal.
+
+    Rate is positive by ``Thruster``'s contract, with infinity denoting an
+    instantaneous actuator. A zero duration delivers zero and leaves the
+    state unchanged, including that instantaneous case.
+    """
+    s = machine_thruster_symbols(index)
+    start = s["state"]
+    end = throttle_state_rhs(index)
+    low = sp.Max(sp.Min(start, end), s["deadband"])
+    high = sp.Max(start, end, s["deadband"])
+    moving_area = (high - low) * (high + low) / (2 * s["throttle_slew"])
+    moving_time = sp.Abs(end - start) / s["throttle_slew"]
+    area = moving_area + (DT - moving_time) * delivered_throttle_rhs(index)
+    return sp.Piecewise((area, DT > 0), (sp.Integer(0), True))
+
+
+def throttle_delivery(thrusters, states, commands, elapsed_s: float) -> tuple:
+    """Native ``(delivered throttle-seconds, endpoint states)`` for a command.
+
+    This is an unfed actuator observable: tank availability and the changing
+    thrust direction belong to the craft's actual integrated impulse. It is
+    suitable for pricing a requested command interval without recreating the
+    dt controller's internal partition.
+    """
+    count = len(thrusters)
+    duration = float(elapsed_s)
+    if not math.isfinite(duration) or duration < 0.0:
+        raise ValueError("actuator duration must be finite and nonnegative")
+    states = np.asarray(states, dtype=float).reshape(count)
+    commands = np.asarray(commands, dtype=float).reshape(count)
+    if count == 0 or duration == 0.0:
+        return np.zeros(count), states.copy()
+    # A batch lane is one thruster, using the same authored scalar law for
+    # every lane. equation_piece owns compilation, caching and book receipts.
+    s = machine_thruster_symbols(0)
+    piece = honorary.equation_piece("orbital_actuator_delivery", (
+        sp.Eq(sp.Symbol("throttle_area"), delivered_throttle_area_rhs(0),
+              evaluate=False),
+        sp.Eq(sp.Symbol("throttle_state_at_end"), throttle_state_rhs(0),
+              evaluate=False),
+    ), batch=count)
+    values = {
+        str(s["state"]): states,
+        str(s["throttle"]): commands,
+        str(s["throttle_min"]): np.asarray([t.throttle_min for t in thrusters]),
+        str(s["throttle_max"]): np.asarray([t.throttle_max for t in thrusters]),
+        str(s["throttle_slew"]): np.asarray([t.throttle_slew_per_s for t in thrusters]),
+        str(s["deadband"]): np.asarray([t.deadband for t in thrusters]),
+        str(DT): np.full(count, duration),
+    }
+    outputs = dict(zip(piece.output_names, piece(*(
+        values[name] for name in piece.argument_names))))
+    return (np.asarray(outputs["throttle_area"]).reshape(count),
+            np.asarray(outputs["throttle_state_at_end"]).reshape(count))
+
+
 def delivered_throttle(index: int):
     """The delivered-throttle column (``delivered_throttle_rhs``)."""
     return machine_thruster_symbols(index)["delivered"]
