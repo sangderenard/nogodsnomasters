@@ -4472,6 +4472,103 @@ _LLVM_LAW_CACHE_DIR = _Path(__file__).resolve().parent / "artifacts" / "llvm_pie
 _LLVM_PIECE_CACHE_SCHEMA = "honorary-llvm-piece-v2"
 _PIECE_MEMORY_CACHE: dict[tuple[str, int, str], object] = {}
 
+
+class _PieceLock:
+    """An OS file lock on ``<piece>.lock``: one builder per piece across
+    processes (msvcrt byte lock on Windows, flock elsewhere).  Waits up to
+    ``timeout`` seconds (``ENGINE_TOY_PIECE_LOCK_TIMEOUT``, default 3600 --
+    a build can take minutes) and then raises ``TimeoutError`` naming the
+    lock and the pid recorded by its holder."""
+
+    def __init__(self, path, timeout=None):
+        self.path = _Path(path)
+        self.timeout = float(timeout if timeout is not None else _os.environ.get(
+            "ENGINE_TOY_PIECE_LOCK_TIMEOUT", "3600"))
+        self.handle = None
+
+    def _try(self, handle) -> bool:
+        try:
+            if _os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except OSError:
+            return False
+
+    def __enter__(self):
+        import time
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        handle = open(self.path, "a+b")
+        deadline = time.monotonic() + self.timeout
+        while not self._try(handle):
+            if time.monotonic() >= deadline:
+                handle.close()
+                try:
+                    with open(self.path, "rb") as reader:
+                        reader.seek(16)
+                        holder = reader.read(64).decode("ascii", "replace").strip()
+                except OSError:
+                    holder = "?"
+                raise TimeoutError(
+                    f"piece lock {self.path} still held after {self.timeout:.0f} s "
+                    f"(holder: {holder or 'unknown'}); another process is building "
+                    "this piece or died holding it")
+            time.sleep(0.25)
+        # The holder's pid sits past the locked byte so a waiter can read it.
+        handle.seek(16)
+        handle.truncate()
+        handle.write(f"pid {_os.getpid()}".encode("ascii"))
+        handle.flush()
+        self.handle = handle
+        return self
+
+    def __exit__(self, *exc):
+        handle, self.handle = self.handle, None
+        try:
+            if _os.name == "nt":
+                import msvcrt
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+        return False
+
+
+def _publish_piece_build(root, piece_id, build_dir, piece, piece_path):
+    """Make a finished build the cached piece without touching what is there
+    until the new one has loaded.  The build directory is renamed to an
+    immutable, content-addressed version directory ``v-<sha256(dll)[:16]>``
+    (a loaded DLL is never overwritten: a new build is a new name); the
+    piece, re-pointed there, is written to a temporary index, loaded back
+    and its DLL loaded, and only then ``os.replace``d over the index."""
+    import shutil
+    from src.compiler.native_law_kernels import LLVMPiece
+
+    library = _Path(piece.artifact.library_path)
+    digest = _hashlib.sha256(library.read_bytes()).hexdigest()[:16]
+    version_dir = root / f"v-{digest}"
+    if version_dir.is_dir():
+        shutil.rmtree(build_dir, ignore_errors=True)  # identical bytes already published
+    else:
+        _os.replace(build_dir, version_dir)
+    piece.artifact.library_path = version_dir / library.name
+    temporary = piece_path.with_suffix(f".{_os.getpid()}.tmp")
+    piece.save(temporary)
+    try:
+        LLVMPiece.load(temporary).artifact.entry()
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
+    _os.replace(temporary, piece_path)
+    return piece
+
 # Coordinates and operator placeholders declared once at the top of this
 # module -- scaffolding, never a physical field a piece should read or own.
 _STRUCTURAL_NAMES = frozenset({
@@ -4490,7 +4587,7 @@ def _llvm_piece_cache_key(law_id: str, batch: int, equations) -> str:
 
 
 def equation_piece(piece_id: str, equations, *, batch: int = 1,
-                   cache_dir=None):
+                   cache_dir=None, serve_stale=None):
     """Compile one already-discretized equation set as one real LLVM piece.
 
     This is the multi-equation form of :func:`law_piece`.  It exists for a
@@ -4498,6 +4595,13 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
     catalogue's continuous laws.  It performs no numerical work itself: the
     sanctioned symbolic compiler and ``piece_from_law`` still own the entire
     SymPy -> AbstractTensor -> LLVM route.
+
+    The cache key is the equations; the compiler that built a cached piece
+    is RECORDED on it (``LLVMPiece.compiler``) and on one book row
+    (``<piece_id>.book.log`` beside it).  A cached piece whose compiler
+    sources changed since is stale by name (``piece_staleness``) and is
+    rebuilt; ``serve_stale=True`` (or ``ENGINE_TOY_PIECE_SERVE_STALE=1``)
+    serves it instead, posting a staleness row naming the changed modules.
     """
     equations = tuple(equations)
     if not equations or not all(isinstance(equation, Equality)
@@ -4515,25 +4619,65 @@ def equation_piece(piece_id: str, equations, *, batch: int = 1,
     if memory_key in _PIECE_MEMORY_CACHE:
         return _PIECE_MEMORY_CACHE[memory_key]
 
-    from src.compiler.native_law_kernels import LLVMPiece
+    from src.compiler.native_law_kernels import (
+        LLVMPiece, piece_staleness, post_piece_book)
     from src.compiler.native_package import piece_from_law
     from src.compiler.symbolic_equation_compiler import compile_sympy_equations
 
     root = (_Path(cache_dir) if cache_dir is not None
             else _LLVM_LAW_CACHE_DIR) / piece_id / f"b{batch}" / key
     piece_path = root / f"{piece_id}.piece"
+    stale = stale_record = None
     if piece_path.is_file():
         piece = LLVMPiece.load(piece_path)
-        _PIECE_MEMORY_CACHE[memory_key] = piece
-        return piece
+        changed = piece_staleness(piece)
+        if not changed:
+            _PIECE_MEMORY_CACHE[memory_key] = piece
+            return piece
+        if serve_stale is None:
+            serve_stale = _os.environ.get(
+                "ENGINE_TOY_PIECE_SERVE_STALE", "").strip() == "1"
+        if serve_stale:
+            post_piece_book(root, piece_id, batch, key, stale=changed,
+                            stale_record=piece.compiler, decision="served")
+            print(f"[equation_piece] {piece_id} b{batch}: serving a STALE piece; "
+                  f"compiler changed in {list(changed[:8])}"
+                  f"{' ...' if len(changed) > 8 else ''}", flush=True)
+            _PIECE_MEMORY_CACHE[memory_key] = piece
+            return piece
+        stale, stale_record = changed, piece.compiler
+        print(f"[equation_piece] {piece_id} b{batch}: stale, rebuilding; "
+              f"compiler changed in {list(changed[:8])}"
+              f"{' ...' if len(changed) > 8 else ''}", flush=True)
 
-    compilation = compile_sympy_equations(list(equations), name=piece_id)
     root.mkdir(parents=True, exist_ok=True)
-    piece = piece_from_law(
-        compilation, piece_id, batch, directory=root, optimization="O2")
-    temporary = piece_path.with_suffix(f".{_os.getpid()}.tmp")
-    piece.save(temporary)
-    _os.replace(temporary, piece_path)
+    with _PieceLock(root / f"{piece_id}.lock"):
+        # Another process may have published while this one waited.
+        if piece_path.is_file():
+            current = LLVMPiece.load(piece_path)
+            if not piece_staleness(current):
+                _PIECE_MEMORY_CACHE[memory_key] = current
+                return current
+        import uuid
+        build_dir = root / f".build-{_os.getpid()}-{uuid.uuid4().hex[:8]}"
+        build_dir.mkdir()
+        try:
+            compilation = compile_sympy_equations(list(equations), name=piece_id)
+            piece = piece_from_law(
+                compilation, piece_id, batch, directory=build_dir,
+                optimization="O2")
+            piece = _publish_piece_build(root, piece_id, build_dir, piece, piece_path)
+        except BaseException as error:
+            import shutil
+            shutil.rmtree(build_dir, ignore_errors=True)
+            if stale is not None:
+                # The stale piece stays the cached one; the failure is a row.
+                post_piece_book(root, piece_id, batch, key, stale=stale,
+                                stale_record=stale_record,
+                                decision=f"rebuild_failed: {type(error).__name__}")
+            raise
+        post_piece_book(root, piece_id, batch, key, built=piece, stale=stale,
+                        stale_record=stale_record)
     _PIECE_MEMORY_CACHE[memory_key] = piece
     return piece
 
