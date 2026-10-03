@@ -66,9 +66,15 @@ Method, once per round of length ``h`` (throttles held for the round):
    ``v_ref - v`` after ``t_b`` (a re-plan's burn 1 is due now); its duration from the rocket
    equation (TS2.1 at the thrusters' effective exhaust velocity:
    ``m c (1 - exp(-|dv|/c)) / F``) sets the start ``t_b - duration/2``.
-   A craft with a pointing axis is armed ``slew_lead`` early and turns the
-   axis onto the burn direction; it fires only when within
-   ``burn_alignment_rad``.  The burn is closed on DELIVERED velocity
+   A craft with a pointing axis is armed early by the attitude PD's own
+   settling time from its present angle off the burn and turns the
+   axis onto the burn direction; it lights only within
+   ``burn_alignment_rad`` and, once lit, burns on within
+   ``burn_release_rad``.  The pointed axis is the line the burn thrust
+   actually takes: a craft with its own allocation is asked for thrust
+   along its strongest thruster's axis with no torque, and the achieved
+   force's direction is pointed (a gimballed engine whose line misses the
+   centre of mass leans off the axis to cancel the moment).  The burn is closed on DELIVERED velocity
    (achieved force over mass, every round), not on time, so mass loss and
    alignment are paid for exactly.  The PD is off during a burn.
 4. Trims (the PD only trims).  Between burns the computed-acceleration PD
@@ -77,17 +83,14 @@ Method, once per round of length ``h`` (throttles held for the round):
 
    fires only outside a coast deadband: trimming starts when
    ``|e_r| > p_band`` or ``|e_v| > v_band`` and stops when both are below
-   half of theirs.  ``v_band = max(coast_velocity_deadband * |v_ref|,
-   |g(r)| dt)`` is sized against the integrator's known reading stagger:
-   ``r()``'s symplectic-Euler velocity is half a substep off its position,
-   ``|v_read - v(t)| ~ g dt / 2`` (13 m/s at LEO with 3.3 s substeps) --
-   not a real error, and fighting it costs fuel.  ``dt`` is the dt
-   system's continuation step that ``advance`` returns (the round ``h``
-   until one is seen; ``dt <= h``).  The PD answers that stagger with a
-   position offset up to ``2 (g dt / 2) / w``, so ``p_band = max(
-   coast_position_deadband * |r_ref|, |g| dt / w)``.  (Measured: wider
-   bands turn coasting into a trim limit cycle -- see the step-5
-   continuation.)  A trim request carries last round's shortfall forward,
+   half of theirs, with ``p_band = coast_position_deadband * |r_ref|`` and
+   ``v_band = coast_velocity_deadband * |v_ref|``.  ``r()`` reads
+   position and velocity at the same instant, so every error it shows is
+   real; the defaults (1e-6, 1e-5: 7 m and 0.075 m/s at 7000 km) sit at
+   the integrator's own coast error (6.9 m per orbit on the jumper).
+   Measured on the main+RCS transfer: wider bands cost MORE (1e-5/1e-4:
+   1.126 x ideal against 1.044 x) -- a late trim is a large one, and each
+   costs a slew; see the step-5 continuation.  A trim request carries last round's shortfall forward,
    ``F_des = F_pd + c``, ``c = F_des' - F_achieved'`` clipped to
    ``|c| <= |F_pd|`` (no windup), and the request is clipped to what the
    craft can push that way once pointed.  Inside the deadband the craft coasts
@@ -110,9 +113,12 @@ Method, once per round of length ``h`` (throttles held for the round):
    throttles.  The stand-in minimises
 
        J(u) = |B u - F_des|^2 / (2 T_max^2) + |T u - tau_des|^2 / (2 tau_max^2)
-            + fuel_weight * sum_k T_k u_k / T_max
+            + fuel_weight * sum_k p_k u_k
 
-   over the declared throttle box by L-BFGS-B (``scipy.optimize``).
+   over the declared throttle box by L-BFGS-B (``scipy.optimize``), with
+   ``p_k`` the propellant mass flow ``T_k / (I_sp,k g_0)`` scaled so the
+   most efficient kind's strongest thruster costs 1 (:func:`fuel_price`;
+   the craft's allocator prices fuel the same way).
 """
 from __future__ import annotations
 
@@ -153,11 +159,13 @@ class TrackingGains:
     request, the held attitude may leave before the tracker turns the
     pointing axis onto the request.  ``coast_position_deadband`` /
     ``coast_velocity_deadband``: errors (over orbit radius / orbital speed)
-    the PD leaves alone (the velocity band is never below ``|g| dt``, twice
-    the integrator's reading stagger).  ``burn_alignment_rad``: how close
-    the pointing axis must be to a burn's direction before it fires.
+    the PD leaves alone.  ``burn_alignment_rad``: how close
+    the pointing axis must be to a burn's direction before it fires;
+    ``burn_release_rad``: how far it may stray once lit before the burn
+    pauses (1 - cos 0.2 = 2 % cosine loss).
     ``slew_lead_s``: how long before a burn's start the craft turns onto
-    it (``None``: six attitude time constants, ``6 / w_a``).
+    it (``None``: the attitude PD's settling time from the present angle,
+    :meth:`slew_lead`).
     ``off_plan_threshold`` / ``on_plan_threshold``: the hysteresis band on
     the scale-free tracking error (upper, lower)."""
 
@@ -167,9 +175,10 @@ class TrackingGains:
     attitude_frequency_rad_s: float = 0.05
     attitude_damping_ratio: float = 1.0
     pointing_tolerance: float = 0.1
-    coast_position_deadband: float = 4.0e-6
-    coast_velocity_deadband: float = 0.0
+    coast_position_deadband: float = 1.0e-6
+    coast_velocity_deadband: float = 1.0e-5
     burn_alignment_rad: float = 0.05
+    burn_release_rad: float = 0.2
     slew_lead_s: float | None = None
     off_plan_threshold: float = 0.05
     on_plan_threshold: float = 0.01
@@ -183,14 +192,31 @@ class TrackingGains:
                 and self.coast_position_deadband >= 0.0
                 and self.coast_velocity_deadband >= 0.0
                 and self.burn_alignment_rad > 0.0
+                and self.burn_release_rad >= self.burn_alignment_rad
                 and (self.slew_lead_s is None or self.slew_lead_s >= 0.0)
                 and 0.0 < self.on_plan_threshold < self.off_plan_threshold):
             raise ValueError(f"invalid tracking gains {self}")
 
-    @property
-    def slew_lead(self) -> float:
-        return (6.0 / self.attitude_frequency_rad_s if self.slew_lead_s is None
-                else self.slew_lead_s)
+    def slew_lead(self, angle_rad: float, round_s: float) -> float:
+        """How long before a burn's start to turn onto it from
+        ``angle_rad`` off: ``slew_lead_s`` when declared, else the attitude
+        PD's own settling time to ``burn_alignment_rad`` -- the envelope
+        ``(1 + z w t) exp(-z w t) = alignment / angle`` of its
+        critically-damped response, solved for ``t`` -- plus two rounds
+        (the throttles are held a round; the alignment is read a round
+        late)."""
+        if self.slew_lead_s is not None:
+            return self.slew_lead_s
+        ratio = self.burn_alignment_rad / max(angle_rad, 1.0e-12)
+        x = 0.0
+        if ratio < 1.0:                    # Newton on (1+x)e^-x = ratio
+            x = 1.0
+            for _ in range(60):
+                f = (1.0 + x) * math.exp(-x) - ratio
+                x -= f / (-x * math.exp(-x))
+                x = max(x, 1.0e-9)
+        rate = self.attitude_frequency_rad_s * self.attitude_damping_ratio
+        return x / rate + 2.0 * round_s
 
 
 @dataclass(frozen=True)
@@ -221,7 +247,8 @@ class PlannedImpulse:
 @dataclass(frozen=True)
 class TrackingCommand:
     """One round's decision: the request, the craft's answer, the errors.
-    ``phase`` is ``"trim"``, ``"coast"`` or ``"burn"``."""
+    ``phase`` is ``"trim"``, ``"coast"`` or ``"burn"``; ``gimbal_rad`` the
+    gimbal commands when the craft's own allocation answers with them."""
 
     throttles: np.ndarray
     position_error_m: np.ndarray
@@ -234,6 +261,7 @@ class TrackingCommand:
     achieved_torque_n_m: np.ndarray = field(
         default_factory=lambda: np.zeros(3))
     attitude_error_rad: float = 0.0
+    gimbal_rad: np.ndarray | None = None
     phase: str = "trim"
 
     @property
@@ -276,7 +304,6 @@ class TrackingMode:
     last: TrackingCommand | None = None
     last_round_s: float = 0.0
     origin: object = None
-    substep_s: float | None = None
 
 
 #: The mode ``fly`` keeps per craft when the caller passes none (a game that
@@ -419,14 +446,21 @@ def rotation_between(a, d) -> np.ndarray:
 
 def attitude_torque_demand(design: CraftDesign, gains: TrackingGains,
                            attitude, angular_velocity_rad_s, force_demand_n,
-                           *, point: bool = True):
-    """Step 4 of the method: ``(tau_des (craft frame), angle error)``;
-    ``point=False`` holds the attitude (rate damping only)."""
+                           *, point: bool = True, inertia=None,
+                           axis=None):
+    """Step 5 of the method: ``(tau_des (craft frame), angle error)``;
+    ``point=False`` holds the attitude (rate damping only).  ``inertia``
+    is the craft's full 3x3 tensor about its centre of mass (the machine
+    craft has products of inertia); default the design's principal
+    moments.  ``axis`` is the craft-frame thrust line to point (default
+    :func:`pointing_axis`)."""
     R = np.asarray(attitude, dtype=float).reshape(3, 3)
     w = np.asarray(angular_velocity_rad_s, dtype=float).reshape(3)
-    inertia = principal_inertia(design)
+    inertia = (np.diag(principal_inertia(design)) if inertia is None
+               else np.asarray(inertia, dtype=float).reshape(3, 3))
     desired = R
-    axis = pointing_axis(design)
+    if axis is None:
+        axis = pointing_axis(design)
     force = np.asarray(force_demand_n, dtype=float).reshape(3)
     magnitude = float(np.linalg.norm(force))
     if point and axis is not None:
@@ -438,8 +472,8 @@ def attitude_torque_demand(design: CraftDesign, gains: TrackingGains,
     angle = float(math.acos(max(-1.0, min(1.0, 0.5 * (np.trace(
         desired.T @ R) - 1.0)))))
     wa, za = gains.attitude_frequency_rad_s, gains.attitude_damping_ratio
-    tau = (inertia * (-wa**2 * error - 2.0 * za * wa * w)
-           + np.cross(w, inertia * w))
+    tau = (inertia @ (-wa**2 * error - 2.0 * za * wa * w)
+           + np.cross(w, inertia @ w))
     return tau, angle
 
 
@@ -467,7 +501,7 @@ def allocate_throttles(design: CraftDesign, force_demand_n,
         targets.append(np.asarray(torque_demand_n_m, dtype=float).reshape(3)
                        / torque_scale)
     A, b = np.vstack(rows), np.concatenate(targets)
-    linear = fuel_weight * thrust / scale
+    linear = fuel_weight * fuel_price(design)
 
     def cost(u):
         miss = A @ u - b
@@ -478,6 +512,22 @@ def allocate_throttles(design: CraftDesign, force_demand_n,
                       bounds=list(zip(low, high)),
                       options={"ftol": 0.0, "gtol": 1.0e-12, "maxiter": 500})
     return np.clip(result.x, low, high)
+
+
+def fuel_price(design: CraftDesign) -> np.ndarray:
+    """Per-thruster fuel price per unit throttle, as the craft prices it:
+    propellant MASS flow, ``T_k / (I_sp,k g_0)`` (TS1.2, TS1.4), scaled so
+    the most efficient kind's strongest thruster costs 1 -- the allocation's
+    deadband stays ``fuel_weight * T_max`` for it.  A design that burns no
+    propellant (the reactionless ``ideal`` kind) is priced by impulse,
+    ``T_k / T_max``."""
+    thrust = np.asarray([t.max_thrust_n for t in design.thrusters], float)
+    per_impulse = np.asarray([t.thruster_kind.propellant_per_impulse_kg_n_s
+                              for t in design.thrusters], float)
+    if not np.any(per_impulse > 0.0):
+        return thrust / float(np.max(thrust))
+    best = float(np.min(per_impulse[per_impulse > 0.0]))
+    return thrust * per_impulse / (float(np.max(thrust)) * best)
 
 
 def least_squares_allocation(design: CraftDesign, attitude,
@@ -522,21 +572,160 @@ class LeastSquaresAllocator:
             throttles=allocation.throttles)
 
 
+class Actuation:
+    """Everything the tracker asks of the craft beyond ``r()`` and
+    ``advance``, in one place.
+
+    ``allocate(wrench)``: the seam -- the craft's own ``allocate`` when it
+    has one (the machine craft: gimbals, cones, feeds, slew limits; it
+    APPLIES its commands, declared by ``applies_allocation``), else the
+    least-squares stand-in at the attitude now (or an explicit callable).
+    ``probe(wrench)``: the same question without commanding anything (the
+    machine's ``apply=False``).  ``inertia()``: the craft's full tensor
+    when it reports one.  ``can_torque``: whether any thruster makes torque
+    -- from the fixed design's ``torque_matrix``, or, for a craft with its
+    own allocation, by probing it with a pure torque.
+    ``capacity(attitude, d)``: the largest force along world ``d`` once
+    pointed, and its exhaust velocity -- by the LP over a fixed design, or
+    by probing the craft's own allocation with the pointing thruster's
+    thrust along it and reading the achieved force (cached per craft-frame direction; the
+    pointing axis makes it one direction)."""
+
+    def __init__(self, design, gains, *, craft=None, allocate=None,
+                 attitude=None, round_s=None):
+        self.design, self.gains, self.craft = design, gains, craft
+        self.round_s = round_s
+        own = None if craft is None else getattr(craft, "allocate", None)
+        self.own = allocate is None and own is not None
+        self.applies = bool(self.own and craft.applies_allocation)
+        if allocate is not None:
+            self._allocate = self._probe = allocate
+        elif self.own:
+            self._allocate = self._own_allocate
+            self._probe = (self._own_probe if self.applies
+                           else self._own_allocate)
+        else:
+            stand_in = (LeastSquaresAllocator(craft, gains.fuel_weight)
+                        .allocate if craft is not None else
+                        _default_allocate(design, attitude, gains))
+            self._allocate = self._probe = stand_in
+        self._capacity = {}
+        self._line = {}
+        self._torque = None
+
+    def _own_allocate(self, wrench):
+        if self.applies and self.round_s is not None:
+            return self.craft.allocate(wrench, round_s=self.round_s)
+        return self.craft.allocate(wrench)
+
+    def _own_probe(self, wrench):
+        return self.craft.allocate(wrench, apply=False)
+
+    def allocate(self, wrench):
+        return self._allocate(wrench)
+
+    def probe(self, wrench):
+        return self._probe(wrench)
+
+    def inertia(self):
+        tensor = (None if self.craft is None
+                  else _seam(self.craft, "inertia_tensor"))
+        return (np.diag(principal_inertia(self.design)) if tensor is None
+                else np.asarray(tensor, dtype=float).reshape(3, 3))
+
+    @property
+    def can_torque(self) -> bool:
+        if self._torque is None:
+            if self.own:
+                arm = max(float(np.linalg.norm(t.position_m))
+                          for t in self.design.thrusters)
+                least = min(t.max_thrust_n for t in self.design.thrusters)
+                probe = self.probe(Wrench(np.zeros(3), np.asarray(
+                    (0.0, 0.0, arm * least))))
+                self._torque = bool(np.linalg.norm(
+                    probe.achieved.torque_n_m) > 0.0)
+            else:
+                self._torque = bool(np.any(torque_matrix(self.design)
+                                           != 0.0))
+        return self._torque
+
+    def capacity(self, attitude, direction):
+        if not self.own:
+            return burn_capacity(self.design, attitude, direction)
+        axis = pointing_axis(self.design)
+        R = np.eye(3) if attitude is None else np.asarray(attitude, float)
+        craft_dir = (np.asarray(axis, float) if axis is not None
+                     else R.T @ np.asarray(direction, dtype=float))
+        key = tuple(np.round(craft_dir, 9))
+        if key not in self._capacity:
+            world = R @ craft_dir
+            # the pointing thruster's own thrust, not the sum: a request
+            # beyond it would also light the attitude thrusters, leaving no
+            # torque authority to hold the burn (measured: the machine
+            # craft's forward RCS joined the main engine and it tumbled)
+            own = max(t.max_thrust_n for t in self.design.thrusters)
+            probe = self.probe(Wrench(own * world, np.zeros(3)))
+            thrust = max(0.0, float(np.asarray(probe.achieved.force_n,
+                                               float) @ world))
+            achieved = np.asarray(probe.achieved.force_n, float)
+            size = float(np.linalg.norm(achieved))
+            self._line[key] = (R.T @ achieved / size if size > 0.0
+                               else craft_dir)
+            u = np.asarray(probe.throttles, dtype=float)
+            flow = float(sum(
+                uk * t.max_thrust_n
+                * t.thruster_kind.propellant_per_impulse_kg_n_s
+                for uk, t in zip(u, self.design.thrusters)))
+            self._capacity[key] = (thrust, math.inf if flow <= 0.0
+                                   else thrust / flow)
+        return self._capacity[key]
+
+    def pointing(self, attitude):
+        """The craft-frame line the burn thrust actually takes: the declared
+        pointing axis for a fixed design; for a craft with its own
+        allocation, the direction of the force it achieves when asked for
+        thrust along that axis with no torque (a gimballed engine whose
+        line misses the centre of mass is turned to cancel the moment, so
+        the thrust leans off the axis) -- pointing THAT line keeps the burn
+        on its direction."""
+        axis = pointing_axis(self.design)
+        if axis is None or not self.own:
+            return axis
+        R = np.eye(3) if attitude is None else np.asarray(attitude, float)
+        self.capacity(attitude, R @ axis)
+        return self._line[tuple(np.round(np.asarray(axis, float), 9))]
+
+
 # ---------------------------------------------------------------- command
 def _request(design, gains, attitude, angular_velocity_rad_s, force,
-             allocate, *, point: str):
+             actuation, *, point: str):
     """Ask the seam for ``force`` with the torque that ``point`` calls for:
     ``"hold"`` (rate damping), ``"auto"`` (hold, then point when the held
-    attitude falls short) or ``"always"``.  Returns
-    ``(allocation, tau, angle)``."""
+    attitude falls short -- decided on a probe, commanded once),
+    ``"always"``, or ``"never"`` (the pointing torque only; nothing is
+    allocated).  Returns ``(allocation, tau, angle)``."""
     force = np.asarray(force, dtype=float).reshape(3)
-    if attitude is None or not np.any(torque_matrix(design) != 0.0):
+    allocate = actuation.allocate
+    if attitude is None or not actuation.can_torque:
+        if point == "never":
+            return None, np.zeros(3), 0.0
         return allocate(Wrench(force, np.zeros(3))), np.zeros(3), 0.0
     rate = (np.zeros(3) if angular_velocity_rad_s is None
             else angular_velocity_rad_s)
+    inertia = actuation.inertia()
+    axis = actuation.pointing(attitude)
     tau, angle = attitude_torque_demand(design, gains, attitude, rate, force,
-                                        point=(point == "always"))
-    allocation = allocate(Wrench(force, tau))
+                                        point=(point != "hold"),
+                                        inertia=inertia, axis=axis)
+    if point == "never":                   # the torque alone, no command
+        return None, tau, angle
+    if point == "auto":                    # held first
+        tau, angle = attitude_torque_demand(design, gains, attitude, rate,
+                                            force, point=False,
+                                            inertia=inertia, axis=axis)
+    # "auto" decides on a probe, then commands once
+    allocation = (actuation.probe if point == "auto" else allocate)(
+        Wrench(force, tau))
     if point == "auto":
         short = np.linalg.norm(force - np.asarray(allocation.achieved.force_n,
                                                   dtype=float))
@@ -544,8 +733,15 @@ def _request(design, gains, attitude, angular_velocity_rad_s, force,
                                            for t in design.thrusters)
         if short > gains.pointing_tolerance * np.linalg.norm(force) + deadband:
             tau, angle = attitude_torque_demand(design, gains, attitude, rate,
-                                                force)
-            allocation = allocate(Wrench(force, tau))
+                                                force, inertia=inertia,
+                                                axis=axis)
+            if angle > gains.burn_release_rad:
+                # too far off to push usefully: turn first, as a burn does
+                # (a force asked for meanwhile competes with the torque and
+                # is spent sideways); the request stays the trim's, so its
+                # shortfall is carried and counted
+                return allocate(Wrench(np.zeros(3), tau)), tau, angle
+        allocation = allocate(Wrench(force, tau))
     return allocation, tau, angle
 
 
@@ -563,16 +759,20 @@ def _command(allocation, tau, angle, e_r, e_v, demand, pd, phase):
         torque_demand_n_m=tau, pd_force_n=pd,
         achieved_force_n=np.asarray(allocation.achieved.force_n, float),
         achieved_torque_n_m=np.asarray(allocation.achieved.torque_n_m, float),
-        attitude_error_rad=angle, phase=phase)
+        attitude_error_rad=angle, phase=phase,
+        gimbal_rad=(None if getattr(allocation, "gimbal_rad", None) is None
+                    else np.asarray(allocation.gimbal_rad, dtype=float)))
 
 
 def tracking_command(plan, design: CraftDesign, gains: TrackingGains,
                      t: float, position_m, velocity_m_s, mass_kg: float, *,
                      attitude=None, angular_velocity_rad_s=None,
-                     carry_n=None, allocate=None) -> TrackingCommand:
+                     carry_n=None, allocate=None,
+                     actuation=None) -> TrackingCommand:
     """A trim (steps 1, 4-6 of the method) at time ``t`` for the craft
     state given.  ``carry_n`` is last round's shortfall; ``allocate`` the
-    seam (default: the stand-in least squares at ``attitude``).  Without
+    seam (default: the stand-in least squares at ``attitude``), or
+    ``actuation`` the whole craft-facing seam (:class:`Actuation`).  Without
     ``attitude`` the craft frame is the world frame and no torque is
     demanded (step 3's craft)."""
     position = np.asarray(position_m, dtype=float).reshape(3)
@@ -592,16 +792,17 @@ def tracking_command(plan, design: CraftDesign, gains: TrackingGains,
     # never ask for more than the craft can push that way once pointed: a
     # saturated request otherwise drowns the torque rows (the stand-in
     # spends its RCS on sideways force instead of turning the engine)
+    if actuation is None:
+        actuation = Actuation(design, gains, allocate=allocate,
+                              attitude=attitude)
     size = float(np.linalg.norm(demand))
     if size > 0.0:
-        capacity, _c = burn_capacity(design, attitude, demand / size)
+        capacity, _c = actuation.capacity(attitude, demand / size)
         if capacity > 0.0 and size > capacity:
             demand = demand * (capacity / size)
-    if allocate is None:
-        allocate = _default_allocate(design, attitude, gains)
     allocation, tau, angle = _request(design, gains, attitude,
                                       angular_velocity_rad_s, demand,
-                                      allocate, point="auto")
+                                      actuation, point="auto")
     return _command(allocation, tau, angle, e_r, e_v, demand, pd, "trim")
 
 
@@ -639,9 +840,11 @@ def burn_capacity(design: CraftDesign, attitude, direction):
 
 
 def _arm_burn(mode: TrackingMode, design, gains, t, attitude, velocity,
-              mass) -> Burn | None:
-    """The next unflown impulse as a burn, once it is due to be armed."""
-    lead = gains.slew_lead if pointing_axis(design) is not None else 0.0
+              mass, round_s, actuation) -> Burn | None:
+    """The next unflown impulse as a burn, once it is due to be armed: its
+    start minus the time the attitude needs to turn onto it from where it
+    points now."""
+    axis = actuation.pointing(attitude)
     for impulse in sorted(plan_impulses(mode.plan), key=lambda i: i.time_s):
         if impulse.time_s in mode.flown:
             continue
@@ -653,7 +856,7 @@ def _arm_burn(mode: TrackingMode, design, gains, t, attitude, velocity,
             dv = dv + np.asarray(impulse.delta_v_m_s, float)
         size = float(np.linalg.norm(dv))
         direction = dv / size if size > 0.0 else dv
-        thrust, exhaust = burn_capacity(design, attitude, direction)
+        thrust, exhaust = actuation.capacity(attitude, direction)
         if size == 0.0 or thrust <= 0.0:
             mode.flown.add(impulse.time_s)
             continue
@@ -661,6 +864,12 @@ def _arm_burn(mode: TrackingMode, design, gains, t, attitude, velocity,
                     mass * exhaust * (1.0 - math.exp(-size / exhaust))
                     / thrust)
         start = impulse.time_s - 0.5 * duration
+        lead = 0.0
+        if axis is not None and attitude is not None:
+            pointing = np.asarray(attitude, float) @ axis
+            angle = math.acos(max(-1.0, min(1.0, float(pointing
+                                                       @ direction))))
+            lead = gains.slew_lead(angle, round_s)
         if t < start - lead:
             return None
         return Burn(impulse, direction, size, start, duration, thrust)
@@ -668,31 +877,55 @@ def _arm_burn(mode: TrackingMode, design, gains, t, attitude, velocity,
 
 
 def _burn_command(burn: Burn, design, gains, t, h, position, velocity, mass,
-                  attitude, angular_velocity, plan, allocate):
+                  attitude, angular_velocity, plan, actuation):
     r_ref, v_ref = plan_reference(plan, t)
     e_r, e_v = position - r_ref, velocity - v_ref
-    if allocate is None:
-        allocate = _default_allocate(design, attitude, gains)
     aim = burn.direction * max(t.max_thrust_n for t in design.thrusters)
     # the attitude turns onto the burn; fire once there and due
-    _alloc, tau, angle = _request(design, gains, attitude, angular_velocity,
-                                  aim, lambda w: Allocation(w, np.zeros(
-                                      design.thruster_count)),
-                                  point="always")
-    aligned = (pointing_axis(design) is None or attitude is None
-               or angle <= gains.burn_alignment_rad)
+    _none, tau, angle = _request(design, gains, attitude, angular_velocity,
+                                 aim, actuation, point="never")
+    # start within burn_alignment_rad; once lit, keep burning while within
+    # burn_release_rad (an interrupted burn costs more than a cosine loss)
+    gate = gains.burn_release_rad if burn.fired else gains.burn_alignment_rad
+    aligned = (actuation.pointing(attitude) is None or attitude is None
+               or angle <= gate)
     force = np.zeros(3)
     if t >= burn.start_s - 1.0e-9 and aligned:
         # exactly along the burn (a saturated request would leave the
         # least squares a sideways part to spend propellant on)
         force = burn.direction * min(burn.thrust_n,
                                      mass * burn.remaining_m_s / h)
-    allocation = allocate(Wrench(force, tau))
+    allocation = actuation.allocate(Wrench(force, tau))
     return _command(allocation, tau, angle, e_r, e_v, force, np.zeros(3),
                     "burn")
 
 
 # --------------------------------------------------------------- the loop
+def _coast(craft, gains, attitude, rate, actuation):
+    """A coast round: no force, the attitude held (rate damping).  A hold
+    torque inside the torque deadband -- the fuel deadband force
+    ``fuel_weight * T_max`` at the longest thruster arm -- is not asked for:
+    the round commands every thruster off without consulting the
+    allocation (what it would answer)."""
+    design = craft.design
+    allocation, tau, angle = _request(design, gains, attitude, rate,
+                                      np.zeros(3), actuation, point="never")
+    arm = max((float(np.linalg.norm(t.position_m)) for t in design.thrusters),
+              default=0.0)
+    deadband = gains.fuel_weight * max((t.max_thrust_n
+                                        for t in design.thrusters),
+                                       default=0.0) * arm
+    if float(np.linalg.norm(tau)) > deadband:
+        allocation, tau, angle = _request(design, gains, attitude, rate,
+                                          np.zeros(3), actuation,
+                                          point="hold")
+        return allocation, tau, angle
+    off = np.zeros(design.thruster_count)
+    if craft.applies_allocation:
+        craft.throttle(off)
+    return Allocation(Wrench(np.zeros(3), np.zeros(3)), off), tau, angle
+
+
 def _seam(craft, name, default=None):
     """An optional seam reading (a step-3 craft has no attitude)."""
     member = getattr(craft, name, None)
@@ -726,8 +959,7 @@ def fly(craft, plan, gains: TrackingGains, *, until_s: float,
             mode = TrackingMode(plan, origin=plan)
             _MODES[craft] = mode
     # THE seam: the craft's own allocation once it has one
-    allocate = getattr(craft, "allocate", None) or LeastSquaresAllocator(
-        craft, gains.fuel_weight).allocate
+    actuation = Actuation(craft.design, gains, craft=craft, round_s=round_s)
     rounds, worst, worst_eps, worst_short = 0, 0.0, 0.0, 0.0
     history = []
     last_throttles = np.zeros(craft.design.thruster_count)
@@ -756,28 +988,19 @@ def fly(craft, plan, gains: TrackingGains, *, until_s: float,
                 mode.on_plan = True
                 mode.events.append((t, "on", eps))
         window = min(round_s, until_s - t)
+        actuation.round_s = window
         if mode.burn is None:
             mode.burn = _arm_burn(mode, craft.design, gains, t, attitude,
-                                  velocity, mass)
+                                  velocity, mass, round_s, actuation)
         if mode.burn is not None:
             command = _burn_command(mode.burn, craft.design, gains, t, window,
                                     position, velocity, mass, attitude, rate,
-                                    mode.plan, allocate)
+                                    mode.plan, actuation)
         else:
             e_r = np.linalg.norm(position - r_ref) / np.linalg.norm(r_ref)
             e_v = np.linalg.norm(velocity - v_ref)
-            substep = min(round_s, mode.substep_s or round_s)
-            g = np.linalg.norm(two_body_acceleration(mode.plan.mu,
-                                                     position[None, :])[0])
-            # r()'s velocity is about g dt / 2 off its position: not an
-            # error to fight
-            v_band = max(gains.coast_velocity_deadband
-                         * np.linalg.norm(v_ref), g * substep)
-            # ... and the PD answers that stagger with a position offset of
-            # up to 2 (g dt / 2) / w
-            p_band = max(gains.coast_position_deadband,
-                         g * substep / gains.natural_frequency_rad_s
-                         / np.linalg.norm(r_ref))
+            v_band = gains.coast_velocity_deadband * np.linalg.norm(v_ref)
+            p_band = gains.coast_position_deadband
             if mode.phase != "trim" and (e_r > p_band or e_v > v_band):
                 mode.phase = "trim"
             elif mode.phase == "trim" and (e_r < 0.5 * p_band
@@ -790,11 +1013,10 @@ def fly(craft, plan, gains: TrackingGains, *, until_s: float,
                 command = tracking_command(
                     mode.plan, craft.design, gains, t, position, velocity,
                     mass, attitude=attitude, angular_velocity_rad_s=rate,
-                    carry_n=carry, allocate=allocate)
+                    carry_n=carry, actuation=actuation)
             else:
-                allocation, tau, angle = _request(
-                    craft.design, gains, attitude, rate, np.zeros(3),
-                    allocate, point="hold")
+                allocation, tau, angle = _coast(craft, gains, attitude,
+                                                rate, actuation)
                 command = _command(allocation, tau, angle, position - r_ref,
                                    velocity - v_ref, np.zeros(3),
                                    np.zeros(3), "coast")
@@ -805,12 +1027,9 @@ def fly(craft, plan, gains: TrackingGains, *, until_s: float,
                               float(np.linalg.norm(command.force_shortfall_n)))
         if record is not None:
             record.append((t, command))
-        craft.throttle(command.throttles)
-        advanced = craft.advance(window)
-        # the dt system's continuation step, when the craft reports it
-        # (``OrbitalJumper.advance`` returns (advanced, dt_next, telemetry))
-        if isinstance(advanced, tuple) and len(advanced) >= 2:
-            mode.substep_s = float(advanced[1])
+        if not craft.applies_allocation:   # the machine applied its own
+            craft.throttle(command.throttles)
+        craft.advance(window)
         last_throttles = command.throttles
         history.append((t, window, command.throttles))
         if command.phase == "burn":

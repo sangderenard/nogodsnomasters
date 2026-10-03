@@ -333,3 +333,52 @@ def test_attitude_dt_limit_keeps_a_spin_per_step_small():
     # each turning 2 atan(dt w / 2) -> 2.1972 rad, 0.13 % short of 2.2
     assert turned[None][1] == 18
     assert turned[None][0] == pytest.approx(2.2, rel=2e-3)
+
+
+# ------------------------------------------- the machine craft (step 8)
+def test_machine_craft_transfer_arrives_with_gimballed_burns():
+    # the engine_toy machine: 4 kN gimballed main, 2 x 400 N retro, 16 x
+    # 22 N hydrazine RCS; its own allocation (cones, slews, deadbands,
+    # feeds) answers the tracker's wrench and applies its commands
+    from orbital_actuation import STANDARD_GRAVITY_M_S2
+    from orbital_craft_machine import MachineCraft, orbital_craft
+
+    gains = TrackingGains(attitude_frequency_rad_s=0.2)
+    plan = hohmann_plan(MU_EARTH, R_LEO, R_HIGH, t_burn1=300.0)
+    r0, v0 = reference(plan, 0.0)
+    craft = MachineCraft([GravityCenter((0.0, 0.0, 0.0), MU_EARTH)],
+                         orbital_craft(), position_m=r0, velocity_m_s=v0,
+                         length_scale_m=5.0e4, window_s=ROUND)
+    assert craft.applies_allocation
+    tanks0, mass0 = craft.tank_propellant_kg(), craft.mass_kg
+    mode, history = TrackingMode(plan), []
+    report = fly(craft, plan, gains, until_s=plan.t_burn2 + 1500.0,
+                 round_s=ROUND, mode=mode, record=history)
+    tanks = craft.tank_propellant_kg()
+    biprop = sum(tanks0[k] - tanks[k] for k in ("tank.mmh", "tank.nto"))
+    hydrazine = tanks0["tank.hydrazine"] - tanks["tank.hydrazine"]
+    exhaust = 310.0 * STANDARD_GRAVITY_M_S2          # the main engine kind
+    ideal = mass0 * (1.0 - math.exp(-plan.ideal_delta_v / exhaust))
+    firing = [c for _t, c in history
+              if c.phase == "burn" and c.throttles[0] > 0.3]
+    gimbal = max(float(np.abs(c.gimbal_rad[0]).max()) for c in firing)
+    rcs = max(float(np.sum(c.throttles[3:])) for c in firing)
+    dr, dv, vr = _on_circle(craft, R_HIGH)
+    print(f"\nmachine craft: burns {[b[:3] for b in mode.burns]}; firing "
+          f"rounds {len(firing)}, worst pointing while firing "
+          f"{max(c.attitude_error_rad for c in firing):.4f} rad, largest "
+          f"main gimbal {gimbal:.4f} rad, RCS throttle sum up to {rcs:.2f}; "
+          f"bipropellant {biprop:.2f} kg = {biprop / ideal:.4f} x TS2.1 "
+          f"ideal {ideal:.2f} kg, hydrazine {hydrazine:.2f} kg; final "
+          f"|r - r_ref| {report.final_position_error_m:.2f} m, |v - v_ref| "
+          f"{report.final_velocity_error_m_s:.4f} m/s; |r| - r2 {dr:.2f} m, "
+          f"|v| - v_circ {dv:.4f}, v_r {vr:.4f}")
+    assert [b[0] for b in mode.burns] == [plan.t_burn1, plan.t_burn2]
+    assert gimbal > 0.0                          # the main engine steers
+    assert rcs > 0.0                             # RCS holds the attitude
+    assert (max(c.attitude_error_rad for c in firing)
+            <= gains.burn_release_rad)
+    _arrived(craft, report)
+    # measured 1.3785 (2026-10-03); the allocation saturates the RCS while
+    # the main engine fires (see the step-5 continuation)
+    assert biprop / ideal < 1.45
