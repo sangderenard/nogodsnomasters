@@ -48,6 +48,7 @@ is refused, not approximated.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 from dataclasses import dataclass
 
@@ -884,6 +885,11 @@ class AchievedWrench:
     torque_n_m: np.ndarray
 
 
+#: The roles that make the craft's FORCE (thrust and its brake); the
+#: ``navigation`` role (RCS) answers the attitude.
+PROPULSIVE_ROLES = ("main", "brake")
+
+
 def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                     attitude=None, throttle_state=None, gimbal_state=None,
                     tank_propellant_kg: dict | None = None,
@@ -892,6 +898,94 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                     max_branches: int = 64) -> Allocation:
     """The commands that best achieve a wrench: ``force_n`` (world) and
     ``torque_n_m`` (craft frame, about ``centre_of_mass_m``).
+
+    A craft whose thrusters declare ROLES is allocated by them:
+
+    * a propulsive set (``main`` OR ``brake``: the brake opposes the main
+      thrust, and lighting both is propellant spent against itself) lights
+      only when the FORCE asks for it -- decided by the same problem over
+      that set with the torque unweighted;
+    * if one lights, the problem is solved over that set and the
+      ``navigation`` set (RCS) together, with the RCS held to ZERO net
+      force (an equality: couples only).  The main engine's gimbal is its
+      own torque authority (TVC); a gimballed engine whose line misses the
+      centre of mass turns through it, so its thrust leans off the asked
+      direction rather than making a moment -- the lean is the attitude
+      loop's to remove by pointing the thrust line, not the RCS's to fight.
+      Every solve also starts from that geometric trim;
+    * if none lights, the RCS answer the whole wrench (translation).
+
+    A design without declared roles is the single problem below.
+    """
+    thrusters = tuple(thrusters)
+    roles = {t.role for t in thrusters}
+    navigation = [k for k, t in enumerate(thrusters)
+                  if t.role == "navigation"]
+    propulsive = [k for k, t in enumerate(thrusters)
+                  if t.role in PROPULSIVE_ROLES]
+    common = dict(centre_of_mass_m=centre_of_mass_m, attitude=attitude,
+                  throttle_state=throttle_state, gimbal_state=gimbal_state,
+                  round_s=round_s, force_weight=force_weight,
+                  torque_weight=torque_weight, fuel_weight=fuel_weight,
+                  max_branches=max_branches)
+    if (not navigation or not propulsive
+            or roles - {"navigation", *PROPULSIVE_ROLES}):
+        return _allocate(thrusters, force_n, torque_n_m,
+                         tank_propellant_kg=tank_propellant_kg, **common)
+    target_f = np.asarray(force_n, dtype=float).reshape(3)
+    # the brake opposes the main thrust: burning both at once is propellant
+    # spent against itself, so a lit stage uses one set, the better kept
+    sets = [[k for k in propulsive if thrusters[k].role == role]
+            for role in PROPULSIVE_ROLES]
+    sets = [group for group in sets if group]
+    # does the FORCE light a propulsive set?  (torque unweighted: a set the
+    # force alone leaves dark is not lit to make torque)
+    force_only = dict(common, torque_weight=0.0)
+    lighting = []
+    for group in sets:
+        push = _allocate(thrusters, target_f, np.zeros(3), active=group,
+                         tank_propellant_kg=tank_propellant_kg, **force_only)
+        if np.any(delivered_throttles(thrusters,
+                                      push.throttles)[group] > 0.0):
+            lighting.append(group)
+    if not lighting:
+        # nothing pushes: the RCS answer the whole wrench (translation)
+        return _allocate(thrusters, force_n, torque_n_m, active=navigation,
+                         tank_propellant_kg=tank_propellant_kg, **common)
+    # lit: a gimballed engine first settles its own moment by its gimbal
+    # (the set alone, the whole wrench asked of it: TVC); then the set's
+    # throttles and the RCS together, the gimbals held there and the RCS
+    # held to couples -- so the RCS take only the torque the set leaves
+    # and never buy back the lean
+    trials = []
+    for group in lighting:
+        held = dict(common)
+        if any(thrusters[k].gimballed for k in group):
+            settle = _allocate(thrusters, force_n, torque_n_m, active=group,
+                               tank_propellant_kg=tank_propellant_kg,
+                               **common)
+            held["gimbal_state"] = settle.gimbal_rad
+        trials.append(_allocate(thrusters, force_n, torque_n_m,
+                                active=group + navigation,
+                                net_zero=navigation, hold_gimbals=True,
+                                tank_propellant_kg=tank_propellant_kg,
+                                **held))
+    best = min(trials, key=lambda trial: trial.cost)
+    return dataclasses.replace(
+        best, branches=sum(trial.branches for trial in trials))
+
+
+def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
+              attitude=None, throttle_state=None, gimbal_state=None,
+              tank_propellant_kg: dict | None = None,
+              round_s: float | None = None, force_weight: float = 1.0,
+              torque_weight: float = 1.0, fuel_weight: float = 1.0e-4,
+              max_branches: int = 64, active=None,
+              net_zero=(), hold_gimbals: bool = False) -> Allocation:
+    """The exact problem below over the ``active`` thrusters (all when
+    ``None``; the rest off).  ``hold_gimbals``: every gimbal
+    stays at ``gimbal_state``.  ``net_zero``: fixed thrusters whose summed
+    force must vanish (an equality: they may only make couples).
 
     Decision variables: each thruster's throttle and each gimballed
     thruster's two actuator angles ``(a, b)``.  Cost (the tracker's form):
@@ -975,7 +1069,8 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
         if flow[k] > 0.0 and any(tanks.get(tank, math.inf) <= 0.0
                                  for tank, _ in t.feeds):
             alive[k] = False
-    gimbals = [k for k, t in enumerate(thrusters) if t.gimballed]
+    gimbals = [k for k, t in enumerate(thrusters)
+               if t.gimballed and not hold_gimbals]
     gimbal_box = {}
     for k in gimbals:
         t = thrusters[k]
@@ -990,7 +1085,7 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
     options = []
     for k, t in enumerate(thrusters):
         band = t.deadband
-        if not alive[k]:
+        if not alive[k] or (active is not None and k not in active):
             options.append(("off",))
         elif band <= 0.0:
             options.append(("free",))
@@ -1033,7 +1128,7 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
         # thruster's column is rebuilt from its angles each evaluation.
         columns = np.zeros((6, n_u))
         for i, k in enumerate(on):
-            f = thrust[k] * np.asarray(thrusters[k].direction, dtype=float)
+            f = thrust[k] * thrusters[k].direction_at(*angles0[k])
             columns[:3, i] = wf * (rotation @ f)
             columns[3:, i] = wt * np.cross(arms[k], f)
         target = np.concatenate([wf * target_f, wt * target_t])
@@ -1087,6 +1182,15 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                 return row[None, :]
             constraints.append({"type": "ineq", "fun": cone,
                                 "jac": cone_jac})
+        couple = [i for i, k in enumerate(on) if k in set(net_zero)]
+        if couple:
+            rows = np.zeros((3, n_u + n_g))
+            for i in couple:
+                rows[:, i] = thrust[on[i]] * np.asarray(
+                    thrusters[on[i]].direction, dtype=float)
+            constraints.append({"type": "eq",
+                                "fun": lambda x, rows=rows: rows @ x,
+                                "jac": lambda x, rows=rows: rows})
         budgets = []
         if h is not None:
             for tank, kg in tanks.items():
@@ -1113,6 +1217,13 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
             warm = np.clip(warm, lower, upper)
             centred = warm.copy()
             centred[n_u:] = np.clip(0.0, lower[n_u:], upper[n_u:])
+            # the geometric trim: each gimballed engine's line through the
+            # centre of mass (a start, not an answer)
+            trim = warm.copy()
+            for i, k in enumerate(g_on):
+                trim[n_u + 2 * i:n_u + 2 * i + 2] = _trim_angles(
+                    thrusters[k], -arms[k])
+            trim = np.clip(trim, lower, upper)
             best = None
             # SLSQP's ftol is absolute on the objective; an RCS-sized request
             # at the main engine's scale has an objective of ~1e-9, so the
@@ -1123,8 +1234,11 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
             def scaled(x):
                 value, grad = fun(x)
                 return value / unit, grad / unit
-            for x0 in ((warm,) if np.array_equal(warm, centred)
-                       else (warm, centred)):
+            starts = [warm]
+            for extra in (centred, trim):
+                if not any(np.array_equal(extra, seen) for seen in starts):
+                    starts.append(extra)
+            for x0 in starts:
                 result = minimize(scaled, x0, jac=True, method="SLSQP",
                                   bounds=bounds, constraints=constraints,
                                   options={"ftol": 1.0e-15,
@@ -1161,6 +1275,18 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                       force_shortfall_n=target_f - force,
                       torque_shortfall_n_m=target_t - torque,
                       cost=float(value), branches=branches)
+
+
+def _trim_angles(thruster: Thruster, toward) -> np.ndarray:
+    """The Cardan angles ``(a, b)`` that point ``thruster`` along
+    ``toward`` (craft frame), inverted from ``direction_at``:
+    ``sin a = -d . e2`` and ``tan b = (d . e1) / (d . n)``."""
+    n, e1, e2 = thruster.gimbal_frame()
+    d = np.asarray(toward, dtype=float)
+    d = d / np.linalg.norm(d)
+    a = math.asin(max(-1.0, min(1.0, -float(d @ e2))))
+    b = math.atan2(float(d @ e1), float(d @ n))
+    return np.asarray((a, b))
 
 
 def _onto_cones(x, n_u, g_on, thrusters):

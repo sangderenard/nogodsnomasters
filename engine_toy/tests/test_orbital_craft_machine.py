@@ -377,3 +377,39 @@ def test_fuel_is_priced_by_propellant_flow_not_by_newtons():
     # 0.799: the price itself trades a 1e-3 miss (fuel_weight 1e-3)
     assert allocation.throttles[0] == pytest.approx(0.8, abs=2e-3)
     assert allocation.throttles[1] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_a_burn_is_the_gimballed_main_engine_and_torque_keeps_its_sign():
+    # the tracker's burn request: thrust along +x, no torque, 2 s round.
+    # The main engine's line misses the centre of mass by 2.37 deg, so it
+    # turns through it (the lean is the attitude loop's to point away);
+    # the RCS do not fight the lean, and the brake never opposes the main.
+    centre = _cm()
+    names = [t.identity for t in CRAFT.thrusters]
+    k = CRAFT.thrusters_by_role("main")[0]
+    nav = CRAFT.thrusters_by_role("navigation")
+    brakes = CRAFT.thrusters_by_role("brake")
+    burn = allocate_wrench(CRAFT.thrusters, (3997.0, 0.0, 0.0), np.zeros(3),
+                           centre_of_mass_m=centre, tank_propellant_kg=FULL,
+                           round_s=2.0)
+    print(f"\nburn: |F| {np.linalg.norm(burn.force_n):.2f} N, tau "
+          f"{burn.torque_n_m}, gimbal {_deflection_deg(burn.gimbal_rad[k]):.3f}"
+          f" deg, RCS sum {burn.throttles[nav].sum():.3f}")
+    assert np.linalg.norm(burn.force_n) == pytest.approx(3997.0, rel=2e-3)
+    assert np.linalg.norm(burn.torque_n_m) < 0.02
+    assert burn.throttles[nav].sum() < 0.2
+    assert np.all(burn.throttles[brakes] == 0.0)
+    for torque in ((0.0, 5.0, 0.0), (0.0, -5.0, 0.0), (0.0, 0.0, 5.0),
+                   (5.0, 0.0, 0.0), (0.0, 20.0, 0.0)):
+        lit = allocate_wrench(
+            CRAFT.thrusters, (3997.0, 0.0, 0.0), torque,
+            centre_of_mass_m=centre, tank_propellant_kg=FULL, round_s=2.0,
+            throttle_state=burn.throttles, gimbal_state=burn.gimbal_rad)
+        on = {names[j] for j, u in enumerate(lit.throttles) if u > 0.0}
+        print(f"ask {torque}: got {np.round(lit.torque_n_m, 4)}")
+        assert lit.torque_n_m == pytest.approx(torque, abs=0.02)
+        assert not on & {names[j] for j in brakes}
+        # what the allocator reports is what the laws deliver
+        force, achieved = machine_wrench(CRAFT.thrusters, lit.throttles,
+                                         lit.gimbal_rad, centre)
+        assert achieved == pytest.approx(lit.torque_n_m, abs=1e-9)
