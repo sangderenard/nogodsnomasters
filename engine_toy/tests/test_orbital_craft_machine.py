@@ -20,6 +20,7 @@ from orbital_craft_machine import (
     MachineCraft,
     craft_machine_columns,
     craft_machine_dt_pieces,
+    craft_machine_equations,
     orbital_craft,
 )
 
@@ -41,6 +42,21 @@ def _roles(allocation, tol=1e-9):
 def _deflection_deg(angles):
     a, b = angles
     return math.degrees(math.acos(min(1.0, math.cos(a) * math.cos(b))))
+
+
+def test_machine_laws_publish_metrics_without_dictating_dt():
+    pieces = craft_machine_equations(CRAFT, center_count=0)
+    assert not any(name.endswith("_actuator_limit") for name, _group in pieces)
+    equations = tuple(equation for _name, group in pieces for equation in group)
+    assert not any(equation.lhs.name == "dt_limit" for equation in equations)
+    metric_names = {equation.lhs.name for equation in equations}
+    assert {
+        "orbital_translation_energy_residual_j",
+        "orbital_rotation_energy_residual_j",
+        "orbital_angular_momentum_residual_n_m_s",
+        "orbital_attitude_orthogonality",
+        "orbital_wheel_speed_excess_rad_s",
+    }.issubset(metric_names)
 
 
 # ------------------------------------------------------------ the document
@@ -302,8 +318,10 @@ def test_a_burn_drains_each_tank_at_its_share_and_moves_the_centre_of_mass():
     throttles = np.zeros(CRAFT.thruster_count)
     throttles[k] = 1.0
     craft.throttle(throttles)
-    for _ in range(rounds):
+    for step in range(rounds):
         craft.advance()
+        if (step + 1) % 5 == 0:
+            print(f"tank burn t={craft.time_s:.12g}, attempts={craft.substeps}", flush=True)
     left = craft.tank_propellant_kg()
     burned = {name: FULL[name] - left[name] for name in FULL}
     impulse = craft.thruster_impulses_n_s[k]
@@ -350,14 +368,64 @@ def test_propellant_supply_is_the_cutoff_laws_tank_supply():
         craft = MachineCraft([], design, position_m=(0.0, 0.0, 0.0),
                              velocity_m_s=(0.0, 0.0, 0.0),
                              length_scale_m=1.0e6, window_s=0.5)
+        initial_tanks = craft.tank_propellant_kg()
+        initial_mass = craft.mass_kg
         throttles = np.zeros(CRAFT.thruster_count)
         throttles[k] = 1.0
         craft.throttle(throttles)
         craft.advance()
+        if fill is not None and fill["tank.mmh"] == 0.0:
+            craft.advance()
+            assert craft.thruster_impulses_n_s[k] == 0.0
+            assert craft.tank_propellant_kg() == initial_tanks
+            assert craft.mass_kg == initial_mass
+            assert craft.r()[1] == pytest.approx((0.0, 0.0, 0.0), abs=0.0)
         return craft.propellant_supply
 
     assert _supply(None) == 1.0
     assert _supply({**FULL, "tank.mmh": 0.0}) == 0.0
+
+
+def test_a_burn_exhausts_a_finite_tank_then_delivers_no_more_impulse():
+    import copy
+    import dataclasses
+
+    design = copy.copy(CRAFT)
+    # Both fed tanks are small so the burn-share assertion measures their
+    # actual changes without subtracting milligrams from hundreds of kg.
+    fill = {**FULL, "tank.mmh": 0.002, "tank.nto": 0.004}
+    design.tanks = tuple(dataclasses.replace(tank, fill_kg=fill[tank.identity])
+                         for tank in CRAFT.tanks)
+    craft = MachineCraft([], design, position_m=(0.0, 0.0, 0.0),
+                         velocity_m_s=(0.0, 0.0, 0.0),
+                         length_scale_m=1.0e6, window_s=1.0)
+    print("finite tank crossing: cached c0 constructor loaded", flush=True)
+    initial_mass = craft.mass_kg
+    k = design.thrusters_by_role("main")[0]
+    throttles = np.zeros(design.thruster_count)
+    throttles[k] = 1.0
+    craft.throttle(throttles)
+    for _ in range(2):
+        craft.advance()
+        print(f"finite tank crossing t={craft.time_s:.12g}, "
+              f"attempts={craft.substeps}, tanks={craft.tank_propellant_kg()}, "
+              f"impulse={craft.thruster_impulses_n_s[k]:.12g}", flush=True)
+    remaining = craft.tank_propellant_kg()
+    burned = {name: fill[name] - remaining[name] for name in fill}
+    impulse = craft.thruster_impulses_n_s[k]
+    exhaust = design.thrusters[k].thruster_kind.exhaust_velocity_m_s
+    assert remaining["tank.mmh"] == 0.0
+    assert burned["tank.hydrazine"] == 0.0
+    assert burned["tank.nto"] / burned["tank.mmh"] == pytest.approx(1.65, rel=1e-12)
+    assert sum(burned.values()) == pytest.approx(impulse / exhaust, rel=1e-12)
+    assert craft.mass_kg == pytest.approx(initial_mass - sum(burned.values()), rel=1e-13)
+    empty_mass = craft.mass_kg
+    # Leave the command on: the empty physical tank must stop the flow.
+    craft.advance()
+    assert craft.tank_propellant_kg() == remaining
+    assert craft.thruster_impulses_n_s[k] == impulse
+    assert craft.mass_kg == empty_mass
+    assert craft.propellant_supply == 0.0
 
 
 def test_the_allocate_seam_applies_its_commands_and_the_craft_delivers_them():
@@ -520,11 +588,14 @@ def test_total_angular_momentum_is_conserved_without_external_torque():
     worst = 0.0
     schedule = [(0.6, -0.4, 0.9)] * 30 + [(-0.9, 0.7, -0.5)] * 30 \
         + [(0.0, 0.0, 0.0)] * 15
-    for torques in schedule:
+    for step, torques in enumerate(schedule):
         craft.wheel_torque(torques)
         craft.advance()
         worst = max(worst, float(np.linalg.norm(craft.angular_momentum()
                                                 - H0)))
+        if (step + 1) % 5 == 0:
+            print(f"angular conservation t={craft.time_s:.12g}, "
+                  f"attempts={craft.substeps}, worst_H={worst:.12g}", flush=True)
     print(f"\n|H0| {np.linalg.norm(H0):.6f} N m s; wheel h "
           f"{np.round(craft.wheel_momenta(), 3)}; worst |H - H0| "
           f"{worst:.3e} N m s ({worst / np.linalg.norm(H0):.3e} rel) over "
@@ -557,12 +628,15 @@ def test_saturation_hands_off_to_rcs_desaturation():
     tanks0 = craft.tank_propellant_kg()
     speeds = [craft.wheel_speeds()[k]]
     worst_w = 0.0
-    for _ in range(30):
+    for step in range(30):
         craft.allocate(np.zeros(3), np.zeros(3))
         craft.advance()
         speeds.append(craft.wheel_speeds()[k])
         worst_w = max(worst_w, float(np.linalg.norm(
             craft.angular_velocity())))
+        if (step + 1) % 5 == 0:
+            print(f"desaturation t={craft.time_s:.12g}, attempts={craft.substeps}, "
+                  f"wheel_speed={speeds[-1]:.12g}, worst_omega={worst_w:.12g}", flush=True)
     burned = tanks0["tank.hydrazine"] - craft.tank_propellant_kg()[
         "tank.hydrazine"]
     band = wheel.dump_fraction * wheel.max_speed_rad_s
@@ -575,41 +649,48 @@ def test_saturation_hands_off_to_rcs_desaturation():
     assert worst_w < 2.0e-3
 
 
-def test_substeps_follow_the_fast_states():
-    # coast: one substep per round; main ignition: the spool's bound and
-    # then the propellant step; wheels holding momentum: the gyroscopic
-    # bound; all quiet again: back to one
-    window = 2.0
+def test_metrics_shrink_and_regrow_across_a_burn_change():
+    from orbital_jumper import ORBITAL_CHANNEL_NAMES, ORBITAL_ERROR_LIMITS
+
+    window = 0.25
     craft = _free_craft(window)
-    counts = {}
+    assert all("dt_limit" not in piece.output_names for piece in craft.pieces)
+    native_advance = craft.dt_state.program["advance_pieces"]
+    attempts = []
 
-    def rounds(label, n):
-        before = craft.substeps
-        for _ in range(n):
-            craft.advance()
-        counts[label] = (craft.substeps - before) / n
+    def observe(actual, dt):
+        result = native_advance(actual, dt)
+        values = np.asarray(actual.pub_values).reshape(
+            len(craft.pieces), len(ORBITAL_CHANNEL_NAMES))
+        error = values[:, -len(ORBITAL_ERROR_LIMITS):].max(axis=0)
+        attempts.append((float(dt), float(np.max(
+            error / np.asarray(tuple(ORBITAL_ERROR_LIMITS.values()))))))
+        assert not np.asarray(actual.pub_dt_limit_present, dtype=bool).any()
+        return result
 
-    rounds("coast", 3)
+    craft.dt_state.program["advance_pieces"] = observe
+
+    def one_round():
+        attempts.clear()
+        _advanced, dt_next, _telemetry = craft.advance()
+        return tuple(attempts), float(dt_next)
+
+    coast, _coast_next = one_round()
     k = CRAFT.thrusters_by_role("main")[0]
     throttles = np.zeros(CRAFT.thruster_count)
     throttles[k] = 1.0
     craft.throttle(throttles)
-    rounds("ignition", 1)
-    rounds("burn", 3)
+    ignition, _ignition_next = one_round()
+    burn, _burn_next = one_round()
     craft.throttle(np.zeros(CRAFT.thruster_count))
-    rounds("cutoff", 1)
-    craft.wheel_torque((1.0, 1.0, 1.0))
-    rounds("spin-up", 20)
-    craft.wheel_torque((0.0, 0.0, 0.0))
-    rounds("spinning", 3)
-    craft.wheel_torque(-np.sign(craft.wheel_momenta()))
-    rounds("spin-down", 20)
-    craft.wheel_torque((0.0, 0.0, 0.0))
-    rounds("quiet", 2)
-    rounds("quiet again", 3)
-    print("\nsubsteps per 2 s round: " + ", ".join(
-        f"{label} {value:.1f}" for label, value in counts.items()))
-    assert counts["coast"] == 1.0
-    assert counts["ignition"] > counts["burn"] > 1.0
-    assert counts["spinning"] > 1.0
-    assert counts["quiet again"] == 1.0
+    cutoff, cutoff_next = one_round()
+    post_cutoff, post_cutoff_next = one_round()
+    print(f"\nmetric dt: coast={coast}; ignition first={ignition[:8]}; "
+          f"burn first={burn[:8]}; cutoff first={cutoff[:8]}; "
+          f"post-cutoff next {post_cutoff_next:.12g} from {cutoff_next:.12g}")
+    assert coast == ((window, 0.0),)
+    assert ignition[0][0] == window and ignition[0][1] > 1.0
+    assert min(dt for dt, _ratio in ignition) < window
+    assert len({dt for dt, _ratio in burn[:12]}) > 3
+    assert post_cutoff_next > cutoff_next
+    assert len(post_cutoff) > 1

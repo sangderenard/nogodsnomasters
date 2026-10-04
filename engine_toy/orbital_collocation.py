@@ -15,22 +15,15 @@ every plan -- and every re-plan -- is the total trip from the current moment
 over a horizon that shrinks as the trip proceeds (sum dt_k is free).
 
 Dynamics defects ``x_{k+1} - flow(x_k, u_k, dt_k)``; the flow is
-``substeps`` steps of ``dt_k / substeps`` (16: 3.6 m worst per-slice error
-against 256 steps on the LEO -> 8000 km plan; ONE step per slice left 994 m,
-which the tracker then paid fuel to follow).  ``step`` is the
-jumper's own laws (``orbital_jumper`` / ``orbital_actuation``): actuation
+``substeps`` steps of ``dt_k / substeps`` (the existing default is 16).
+``step`` is constructed by the dt library's actual ``RK4Integrator.step``
+from the jumper's seven continuous laws
+(``orbital_jumper`` / ``orbital_actuation``): actuation
 eq_TS1_2 at the planning attitude, propellant flow eq_TS1_2/TS1_4, gravity
 eq_N4_1, the variable-mass momentum law eq_N7_2, position eq_N1_1 -- stepped
-as the jumper steps them, symplectic Euler read as leapfrog, here with the
-kicks at the slice's two nodes (kick-drift-kick):
+with the mass ``dry + P`` and gravity evaluated at each library stage.
 
-    m_0 = dry + P_0,  m_h = m_0 - flow dt/2,  m_1 = m_0 - flow dt
-    p_h = p_0 + dt/2 N7.2(r_0, p_0, m_0)
-    r_1 = r_0 + dt N1.1(p_h, m_h)
-    p_1 = p_h + dt/2 N7.2(r_1, p_h, m_h)
-    P_1 = P_0 - flow dt
-
-with the propellant supply at 1 (the planner keeps the tank above empty:
+The propellant supply is 1 (the planner keeps the tank above empty:
 the barrier below).  Arrival at node N: radius = r_target, vis-viva eq_KE1_3
 (``orbital_plan``, from the original ``Orbit.vis_viva``) at a = r_target,
 no radial velocity, and the present orbit's plane (two rows).
@@ -117,6 +110,7 @@ from orbital_jumper import GravityCenter
 from orbital_plan import KEPLER_LAWS, hohmann_plan
 from orbital_plan import reference as hohmann_reference
 from orbital_tracker import PlannedImpulse, allocate_throttles
+from src.common.dt_system.integrator.integrator import RK4Integrator
 
 # ---------------------------------------------------------------- the laws
 _DT, _MASS, _DRY = sp.Symbol("dt"), sp.Symbol("mass"), sp.Symbol("dry_mass")
@@ -137,6 +131,26 @@ def _fuel_price_symbol(j: int) -> sp.Symbol:
     return sp.Symbol(f"thruster{j}_fuel_price")
 
 
+def _cancel_affine_physical_law(expression, variables):
+    """Cancel rational coefficients without expanding the physical forces.
+
+    The library RK4 position/momentum relations are affine in the initial
+    momenta and the forces from its actual callbacks. Preserve every existing
+    Float's exact binary value before polynomial reconstruction; otherwise
+    SymPy can round coefficients while cancelling the stage mass factors.
+    This is rational algebra on the authored law, not numerical precision.
+    Its domain retains the original nonzero stage masses.
+    """
+    exact = expression.xreplace({atom: sp.Rational(atom)
+                                 for atom in expression.atoms(sp.Float)})
+    numerator, denominator = exact.as_numer_denom()
+    polynomial = sp.Poly(numerator, *variables)
+    return sp.Add(*(
+        sp.factor(sp.cancel(coefficient / denominator))
+        * sp.prod(variable**power for variable, power in zip(variables, powers))
+        for powers, coefficient in polynomial.terms()))
+
+
 def slice_defect_laws(center_count: int, thruster_count: int):
     """The seven defects ``x_next - step(x, u, dt)`` of one slice (module
     docstring), spelled on the jumper's columns; ``*_next`` is node k+1."""
@@ -146,24 +160,44 @@ def slice_defect_laws(center_count: int, thruster_count: int):
                for a in AXES}
     gravity = {a: oj.gravity_force_rhs(a, center_count) for a in AXES}
     n72 = {a: oj.variable_mass_momentum_rate(a) for a in AXES}
+    outflow = sp.Dummy("physical_outflow")
+    forces = {}
 
-    def rate(axis, r, p, m):
-        at = {**{_POSITION[b]: r[b] for b in AXES}, _MASS: m}
-        force = gravity[axis].xreplace(at) + applied[axis]
-        return n72[axis].xreplace({_FORCE[axis]: force, PROPELLANT_FLOW: flow,
-                                   _MOMENTUM[axis]: p[axis], _MASS: m})
+    def derivative(_time, state):
+        at = dict(zip(STATE, state))
+        mass = _DRY + at[PROPELLANT_MASS]
+        position = {a: at[_POSITION[a]] for a in AXES}
+        momentum = {a: at[_MOMENTUM[a]] for a in AXES}
+        stage_forces = {}
+        for a in AXES:
+            force = sp.Dummy(f"physical_force_{a}")
+            forces[force] = gravity[a].xreplace({
+                **{_POSITION[b]: position[b] for b in AXES}, _MASS: mass}) + applied[a]
+            stage_forces[a] = force
+        return sp.Matrix(
+            [n72[a].xreplace({_FORCE[a]: stage_forces[a], PROPELLANT_FLOW: outflow,
+                             _MOMENTUM[a]: momentum[a], _MASS: mass}) for a in AXES]
+            + [honorary.eq_N1_1.rhs.xreplace({
+                honorary.m_i(honorary.t): mass,
+                honorary.p_i(honorary.t): momentum[a]}) for a in AXES]
+            + [-outflow])
 
-    m0 = _DRY + PROPELLANT_MASS
-    m_h = m0 - flow * _DT / 2
-    p_h = {a: _MOMENTUM[a] + _DT / 2 * rate(a, _POSITION, _MOMENTUM, m0)
-           for a in AXES}
-    r_1 = {a: _POSITION[a] + _DT * honorary.eq_N1_1.rhs.xreplace(
-        {honorary.m_i(honorary.t): m_h, honorary.p_i(honorary.t): p_h[a]})
-        for a in AXES}
-    p_1 = {a: p_h[a] + _DT / 2 * rate(a, r_1, p_h, m_h) for a in AXES}
-    return ([_NEXT[_MOMENTUM[a]] - p_1[a] for a in AXES]
-            + [_NEXT[_POSITION[a]] - r_1[a] for a in AXES]
-            + [_NEXT[PROPELLANT_MASS] - (PROPELLANT_MASS - flow * _DT)])
+    advanced = RK4Integrator().step(derivative, sp.Integer(0),
+                                   sp.Matrix(STATE), _DT)
+    # The native c0/t1 gate's transverse throttle derivatives cancelled five
+    # nonzero adjoints only after rounding. Collect these exact relations
+    # before AD instead: ballistic velocity then contains no outflow factor.
+    # Force definitions come from the callbacks above, including their actual
+    # gravity positions. They are substituted in reverse dependency order;
+    # no stage schedule or RK weight is authored here.
+    variables = (*_MOMENTUM.values(), *forces)
+    reduced = []
+    for expression in advanced:
+        expression = _cancel_affine_physical_law(expression, variables)
+        for force, definition in reversed(tuple(forces.items())):
+            expression = expression.xreplace({force: definition})
+        reduced.append(expression.xreplace({outflow: flow}))
+    return [_NEXT[s] - reduced[i] for i, s in enumerate(STATE)]
 
 
 def arrival_laws():
@@ -480,6 +514,12 @@ def _cost_rows() -> ReverseRows:
                                 [_FUEL, _DURATION])
 
 
+def prepare_rows(problem):
+    """Load/build all four row families during setup, before flight workers."""
+    return (_slice_rows(len(problem.centers), problem.design.thruster_count),
+            _arrival_rows(), _fuel_rows(problem.design.thruster_count), _cost_rows())
+
+
 # ------------------------------------------------------------- the problem
 @dataclass(frozen=True)
 class CollocationProblem:
@@ -593,19 +633,19 @@ class _Transcription:
 
     @functools.cached_property
     def slice_rows(self):
-        return _slice_rows(len(self.problem.centers), self.n_u)
+        return dataclasses.replace(_slice_rows(len(self.problem.centers), self.n_u))
 
     @functools.cached_property
     def arrival_rows(self):
-        return _arrival_rows()
+        return dataclasses.replace(_arrival_rows())
 
     @functools.cached_property
     def fuel_rows(self):
-        return _fuel_rows(self.n_u)
+        return dataclasses.replace(_fuel_rows(self.n_u))
 
     @functools.cached_property
     def cost_rows(self):
-        return _cost_rows()
+        return dataclasses.replace(_cost_rows())
 
     # -- layout
     def u_slot(self, k):
@@ -1377,6 +1417,22 @@ def remainder_warm_start(previous: "CollocationPlan", problem,
         dt += [duration / n] * n
         burn += [False] * n
     return hp, tr, np.array(u), np.array(dt), np.array(burn)
+
+
+def capture_remainder(previous):
+    """Copy the NumPy warm-start data; no native call or live craft read."""
+    if not isinstance(previous, CollocationPlan):
+        return previous
+    arrays = {}
+    for name in ("times", "positions", "velocities", "propellant_kg", "throttles"):
+        value = np.array(getattr(previous, name), copy=True)
+        value.setflags(write=False)
+        arrays[name] = value
+    tr = _Transcription(previous.transcription.problem, previous.t_start,
+                        arrays["positions"][0], arrays["velocities"][0],
+                        arrays["propellant_kg"][0])
+    return dataclasses.replace(previous, **arrays, transcription=tr,
+                               stages=[], _thrusting_cache=None, _coast=[])
 
 
 def plan_transfer(problem: CollocationProblem, t0: float, position, velocity,

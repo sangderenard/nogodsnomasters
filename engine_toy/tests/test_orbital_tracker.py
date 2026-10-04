@@ -68,9 +68,8 @@ def test_tracker_flies_leo_to_geo():
           f"{np.linalg.norm(velocity) - circular:.4f} m/s, v_r "
           f"{radial_speed:.3f} m/s; fuel {report.fuel_impulse_n_s:.4e} N*s "
           f"= {report.fuel_ratio:.4f} x ideal {report.ideal_impulse_n_s:.4e}")
-    # on the target circle (step 5: trims leave velocity errors inside the
-    # coast band |g| h alone -- the size of r()'s own reading stagger,
-    # 0.224 m/s^2 * 10 s = 2.2 m/s at GEO; measured 1.04 m/s)
+    # Retain the established coast-band requirement |g| h (about 2.2 m/s
+    # at GEO). Position and velocity now share the accepted endpoint.
     assert abs(radius - R_GEO) < 200.0
     assert abs(np.linalg.norm(velocity) - circular) < (
         MU_EARTH / R_GEO**2 * 10.0)
@@ -142,13 +141,12 @@ def _on_circle(craft, radius):
 
 
 def _arrived(craft, report):
-    """On the target circle and on the plan, up to the seam's stagger.
+    """Retain the established physical arrival requirements.
 
-    ``r()`` reads symplectic Euler's state: the velocity is half a substep
-    ahead of the position, ``|v_read - v(t)| ~ g dt / 2`` (3.3 m/s at
-    8000 km with the ~1 s substeps the attitude bound leaves), and the PD
-    settles where ``w^2 e_r = 2 w e_v``: ``|e_r| = 2 (g dt / 2) / w`` (330 m
-    at w = 0.02).  The bounds are that stagger's, not the tracker's."""
+    The coupled library integration reports position and velocity at the
+    same accepted endpoint. These bounds remain unchanged during its
+    adoption; they no longer have a half-step reading-offset rationale.
+    """
     dr, dv, vr = _on_circle(craft, R_HIGH)
     assert abs(dr) < 500.0 and abs(dv) < 1.0 and abs(vr) < 5.0
     assert report.final_position_error_m < 500.0
@@ -305,34 +303,25 @@ def test_plans_are_read_through_their_own_reference():
         abs(plan.dv1), rel=1e-9)
 
 
-# ------------------------------------------- the attitude bounds the step
-def test_attitude_dt_limit_keeps_a_spin_per_step_small():
-    # step 7's open case: CFL substeps of ~22 s in LEO with a 0.1 rad/s
-    # spin turned 2 atan(1.1) = 1.67 rad per step where the spin turns 2.2
+# ------------------------------------------ attitude metrics steer the step
+def test_attitude_metrics_refine_a_spin_without_a_prescribed_dt():
     speed = math.sqrt(MU_EARTH / R_LEO)
-    turned = {}
-    for bound in (math.inf, None):
-        extra = {} if bound is None else {"attitude_step_rad": bound}
-        craft = OrbitalJumper([GravityCenter((0.0, 0.0, 0.0), MU_EARTH)],
-                              design=six_axis_jumper(100.0, MASS),
-                              position_m=(R_LEO, 0.0, 0.0),
-                              velocity_m_s=(0.0, speed, 0.0),
-                              length_scale_m=22.0 * speed / 0.5,
-                              window_s=22.0,
-                              angular_velocity_rad_s=(0.0, 0.0, 0.1),
-                              **extra)
-        before = craft.attitude()
-        craft.advance()
-        step = before.T @ craft.attitude()
-        turned[bound] = (math.atan2(step[1, 0], step[0, 0]), craft.substeps)
-    print(f"\nper 22 s window: unbounded {turned[math.inf]}, bounded "
-          f"{turned[None]} (omega t = 2.2 rad)")
-    assert turned[math.inf][0] == pytest.approx(2.0 * math.atan(1.1),
-                                                abs=1e-3)
-    # the published dt_limit = 0.125 rad / |omega| = 1.25 s: 18 substeps,
-    # each turning 2 atan(dt w / 2) -> 2.1972 rad, 0.13 % short of 2.2
-    assert turned[None][1] == 18
-    assert turned[None][0] == pytest.approx(2.2, rel=2e-3)
+    craft = OrbitalJumper([GravityCenter((0.0, 0.0, 0.0), MU_EARTH)],
+                          design=six_axis_jumper(100.0, MASS),
+                          position_m=(R_LEO, 0.0, 0.0),
+                          velocity_m_s=(0.0, speed, 0.0),
+                          length_scale_m=22.0 * speed / 0.5,
+                          window_s=22.0,
+                          angular_velocity_rad_s=(0.0, 0.0, 0.1))
+    assert all("dt_limit" not in piece.output_names for piece in craft.pieces)
+    before = craft.attitude()
+    craft.advance()
+    step = before.T @ craft.attitude()
+    turned = math.atan2(step[1, 0], step[0, 0])
+    print(f"\nper 22 s window: metric-steered {turned, craft.substeps} "
+          "(omega t = 2.2 rad)")
+    assert craft.substeps > 1
+    assert turned == pytest.approx(2.2, rel=2e-3)
 
 
 # ------------------------------------------- the machine craft (step 8)
@@ -385,6 +374,20 @@ def test_machine_craft_transfer_arrives_with_gimballed_burns():
 
 
 # ------------------------------- burns end on their cutoff; frames don't cut
+def test_coast_clears_the_previous_wheel_motor_commands():
+    from orbital_craft_machine import MachineCraft, orbital_craft
+    from orbital_tracker import Actuation, _coast
+
+    craft = MachineCraft([GravityCenter((0.0, 0.0, 0.0), MU_EARTH)],
+                         orbital_craft(), position_m=(R_LEO, 0.0, 0.0),
+                         velocity_m_s=(0.0, math.sqrt(MU_EARTH / R_LEO), 0.0),
+                         length_scale_m=5.0e4, window_s=ROUND)
+    craft.wheel_torque(np.ones(len(craft.craft.wheels)))
+    actuation = Actuation(craft.design, STEER, craft=craft, round_s=ROUND)
+    _coast(craft, STEER, craft.attitude(), craft.angular_velocity(), actuation)
+    assert np.all(craft.wheel_commands() == 0.0)
+
+
 def test_burn_cutoff_and_frame_boundaries_on_the_machine_craft():
     # Burn 1 of 7000 -> 8000 km (t_burn1 100 s), flown once in one call and
     # once in 7.3 s frames (off the 2 s round grid: frames cut the slew-up,

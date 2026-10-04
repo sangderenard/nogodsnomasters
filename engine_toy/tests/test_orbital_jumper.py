@@ -14,12 +14,28 @@ from orbital_jumper import (
     GravityCenter,
     OrbitalJumper,
     gravity_force_rhs,
+    orbital_jumper_equations,
     original_transfer_set,
     thrust_cost_integrand,
 )
 
 MU_EARTH = 3.986004418e14
 R_ORBIT = 7.0e6
+
+
+def test_orbital_laws_publish_metrics_without_dictating_dt():
+    pieces = orbital_jumper_equations(center_count=1, thruster_count=0)
+    equations = tuple(equation for _name, group in pieces for equation in group)
+    assert not any(equation.has(sp.zoo) for equation in equations)
+    assert not any(equation.lhs == sp.Symbol("dt_limit")
+                   for equation in equations)
+    metric_names = {equation.lhs.name for equation in equations}
+    assert set((
+        "orbital_translation_energy_residual_j",
+        "orbital_rotation_energy_residual_j",
+        "orbital_angular_momentum_residual_n_m_s",
+        "orbital_attitude_orthogonality",
+    )).issubset(metric_names)
 
 
 def _original_specific_energy():
@@ -282,13 +298,34 @@ def test_pure_torque_spins_at_the_rate_the_inertia_predicts():
                                                          abs=0.0)
     window, rounds = 0.25, 40
     jumper = _resting(design, window)
+    from orbital_jumper import ORBITAL_CHANNEL_NAMES, ORBITAL_ERROR_LIMITS
+    attempt_errors = []
+    native_advance = jumper.dt_state.program["advance_pieces"]
+
+    def observe(actual, dt):
+        result = native_advance(actual, dt)
+        values = np.asarray(actual.pub_values).reshape(
+            len(jumper.pieces), len(ORBITAL_CHANNEL_NAMES))
+        attempt_errors.append(values[:, -len(ORBITAL_ERROR_LIMITS):].max(axis=0).copy())
+        return result
+
+    jumper.dt_state.program["advance_pieces"] = observe
     jumper.throttle(u)
     for _ in range(rounds):
         jumper.advance()
-    assert jumper.substeps == rounds        # at rest: dt is the window
     t = window * rounds
     alpha = tau[2] / inertia[2]
     omega = jumper.angular_velocity()
+    R = jumper.attitude()
+    limits = np.asarray(tuple(ORBITAL_ERROR_LIMITS.values()))
+    rejected = sum(bool(np.any(errors > limits)) for errors in attempt_errors)
+    print(f"\nspin attempts={len(attempt_errors)}, metric-rejected={rejected}, "
+          f"within-error-limits={len(attempt_errors)-rejected}", flush=True)
+    print(f"\nphysical spin endpoint: substeps={jumper.substeps}, "
+          f"angle={math.atan2(R[1, 0], R[0, 0]):.15g}, "
+          f"continuum={alpha * t * t / 2:.15g}, "
+          f"max|R^T R-I|={np.abs(R.T @ R - np.eye(3)).max():.15g}, "
+          f"det={np.linalg.det(R):.15g}", flush=True)
     print(f"\nomega_z {omega[2]:.15f} rad/s, tau t / I_z "
           f"{alpha * t:.15f} rad/s")
     assert jumper.torque() == pytest.approx(tau, abs=0.0)
@@ -297,11 +334,11 @@ def test_pure_torque_spins_at_the_rate_the_inertia_predicts():
     position, velocity = jumper.r()
     assert position == pytest.approx((0.0, 0.0, 0.0), abs=1e-12)
     assert velocity == pytest.approx((0.0, 0.0, 0.0), abs=1e-12)
-    # N1.3 by the Cayley step: each substep turns by 2 atan(dt w_n / 2)
-    # with w_n the new rate; it stays a rotation (N1.4, N1.5)
-    turned = sum(2.0 * math.atan(window * alpha * n * window / 2.0)
-                 for n in range(1, rounds + 1))
-    R = jumper.attitude()
+    # The physical endpoint remains a rotation and follows the continuum
+    # angle. Internal step counts and the former Cayley formula are not
+    # properties of the library integrator. Keep the established physical
+    # phase-error bound and orthogonality requirement below.
+    turned = math.atan2(R[1, 0], R[0, 0])
     print(f"turned {turned:.12f} rad (continuum alpha t^2/2 = "
           f"{alpha * t * t / 2:.12f}); |R^T R - I| "
           f"{np.abs(R.T @ R - np.eye(3)).max():.2e}, det {np.linalg.det(R)}")
@@ -309,13 +346,18 @@ def test_pure_torque_spins_at_the_rate_the_inertia_predicts():
     assert np.abs(R.T @ R - np.eye(3)).max() < 1e-14
     assert abs(turned - alpha * t * t / 2) <= alpha * t * window / 2
 
-    # thrust direction follows the attitude the dynamics produced: one
-    # substep of main engine, the couple off (the craft keeps spinning)
+    # Thrust follows the integrated attitude during the next outer window.
+    # For this constant z spin, d(R e_y)/dt = -omega_z R e_x, so its actual
+    # endpoint difference determines the force integral without predicting
+    # internal steps or treating the direction as fixed during the window.
     before = jumper.attitude()
+    impulse_before = jumper.applied_impulse_n_s
     jumper.throttle((0.0, 0.0, 1.0))
     jumper.advance()
-    assert jumper.applied_force() == pytest.approx(
-        before @ np.asarray((50.0, 0.0, 0.0)), rel=1e-14, abs=1e-12)
+    mean_force = (jumper.applied_impulse_n_s - impulse_before) / window
+    expected_mean = (50.0 / (omega[2] * window)
+                     * (before[:, 1] - jumper.attitude()[:, 1]))
+    assert mean_force == pytest.approx(expected_mean, rel=1e-14, abs=1e-12)
     assert jumper.torque() == pytest.approx((0.0, 0.0, 0.0), abs=0.0)
     assert jumper.angular_velocity()[2] == pytest.approx(alpha * t,
                                                          rel=1e-13)
@@ -416,9 +458,8 @@ def test_interleaved_states_each_run_their_own_program():
 
 
 def test_dt_grows_back_once_a_spin_stops():
-    # every orbital piece declares BIND; with no gravity center nothing
-    # publishes an exchange, so after the despin only the CFL proposal and
-    # the attitude dt_limit bound dt -- and it grows back to the window
+    # every orbital piece declares BIND; the configured error metrics refine
+    # the spin and the controller grows back after the despin
     design = CraftDesign((
         Thruster("rcs+y", (0.0, 1.0, 0.0), (-1.0, 0.0, 0.0), 1.0),
         Thruster("rcs-y", (0.0, -1.0, 0.0), (1.0, 0.0, 0.0), 1.0),
@@ -434,6 +475,9 @@ def test_dt_grows_back_once_a_spin_stops():
             before = jumper.substeps
             jumper.advance()
             counts.append(jumper.substeps - before)
+            print(f"spin recovery t={jumper.time_s:.12g}: "
+                  f"attempts={counts[-1]}, omega_z={jumper.angular_velocity()[2]:.12g}",
+                  flush=True)
     print(f"\nsubsteps per 10 s round, spin/despin/coast: {counts}; "
           f"w_z {jumper.angular_velocity()[2]:.3e}")
     assert jumper.angular_velocity()[2] == pytest.approx(0.0, abs=1e-12)

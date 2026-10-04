@@ -27,9 +27,9 @@ Nothing here is new machinery; it is the existing pieces wired together:
                    and targets agree at every frame boundary (lockstep).
                    They do not attract the craft (the plan is two-body).
     the plan       ``orbital_plan.hohmann_plan`` (or, through the one
-                   ``planner=`` switch, the collocation planner), PHASED by
-                   the laws below so the craft meets the target, not just
-                   its radius
+                   ``planner=`` switch, ``orbital_collocation.plan_transfer``),
+                   phased by the laws below using that plan's actual angular
+                   sweep so the craft meets the target, not just its radius
     the flight     ``orbital_tracker.fly``, called once per frame over the
                    frame's window (its own per-round read/decide/allocate/
                    advance loop), with the tracker's own
@@ -41,11 +41,11 @@ Nothing here is new machinery; it is the existing pieces wired together:
                    and a headless ``--frames`` mode (hidden window +
                    ``glReadPixels`` -> PNG)
 
-Phasing laws (section PH, composed with ``orbital_plan.KEPLER_LAWS``).  The
-plan's burn 1 is at the craft's polar angle ``phase`` and it arrives on the
-target circle at ``phase + sweep`` (``sweep = pi`` for Hohmann,
-``HohmannPlan.legs``) after ``t_transfer``.  With the target leading the
-craft by ``phi_0`` now:
+Phasing laws (section PH, composed with ``orbital_plan.KEPLER_LAWS``). The
+plan starts at the craft's polar angle ``phase`` and arrives on the target
+circle at ``phase + sweep`` after ``t_transfer``. The sweep comes from the
+actual plan reference (for Hohmann, ``HohmannPlan.legs`` gives pi). With the
+target leading the craft by ``phi_0`` now:
 
     eq_PH1_1  n_1 = eq_KE1_6 at a = r_1        craft mean motion
     eq_PH1_2  n_2 = eq_KE1_6 at a = r_2        target mean motion
@@ -73,6 +73,7 @@ from __future__ import annotations
 import functools
 import math
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -88,7 +89,9 @@ from orbital_craft_machine import CraftMachine, MachineCraft, orbital_craft
 from orbital_jumper import GravityCenter, OrbitalJumper
 from orbital_plan import KEPLER_LAWS, hohmann_plan, reference
 from orbital_tracker import (TrackingGains, fly, hohmann_replanner,
-                             tracker_mode)
+                             plan_impulses, plan_reference, tracker_mode,
+                             tracking_error)
+from solution_service import SolutionService
 
 MU_EARTH = 3.986004418e14
 R_EARTH = 6.371e6
@@ -96,11 +99,8 @@ CRAFT_RADIUS_M = 7.0e6
 #: Stations are plain thrusterless jumpers (``mass_kg``); the mass only
 #: names the lanes (they do not attract the craft).
 TARGET_MASS_KG = 1.0e3
-#: The machine craft's round and gains: the configuration
-#: ``tests/test_orbital_tracker.py::test_machine_craft_transfer_arrives_
-#: with_gimballed_burns`` flies (2 s rounds; attitude PD at 0.2 rad/s,
-#: w_a * round = 0.4).
-ROUND_S = 2.0
+#: Attitude response used by the machine tracker.  The dt system supplies the
+#: integration span; the game does not impose a frame-sized timestep.
 MACHINE_GAINS = TrackingGains(attitude_frequency_rad_s=0.2)
 LENGTH_SCALE_M = 5.0e4
 #: The thruster groups by declared ``Thruster.role``, in display order.
@@ -115,6 +115,15 @@ STATION_LENGTH_SCALE_M = 5.0e3
 #: tracker turns the impulsive burn 2 into a finite saturated burn that
 #: starts at ``t_burn2``.
 ARRIVAL_SETTLE_S = 300.0
+
+# Presentation owns only how quickly accepted simulation time is shown.  These
+# are simulation-seconds per wall-second and never select a physics window.
+PRESENTATION_FPS = 30.0
+TIME_MULTIPLIERS = (0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0,
+                    64.0, 128.0, 256.0, 512.0, 1024.0, 2048.0,
+                    4096.0)
+DEFAULT_TIME_MULTIPLIER = 1.0
+GUIDANCE_PRESENTATION_MULTIPLIER = 1.0
 
 
 @dataclass(frozen=True)
@@ -219,19 +228,68 @@ def phasing(mu: float, r1: float, r2: float, t_transfer: float,
 
 # ------------------------------------------------------------ the planner
 def _collocation_planner():
-    # orbital_collocation is being built by another agent; when it exposes
-    # a plan with the HohmannPlan interface it plugs in here.
+    """Use the collocation module's problem-based planner API."""
     import orbital_collocation
-    return orbital_collocation.collocation_plan
+
+    def planner(problem, t0, position, velocity, *, propellant_kg=None,
+                previous=None):
+        plan, _hohmann = orbital_collocation.plan_transfer(
+            problem, t0, position, velocity, propellant_kg=propellant_kg,
+            previous=previous)
+        return plan
+
+    return planner
 
 
 PLANNERS = {
     "hohmann": lambda: hohmann_plan,
     "collocation": _collocation_planner,
 }
-#: Polar angle the plan sweeps from burn 1 to arrival (HohmannPlan.legs:
-#: the arrival circle's periapsis angle is ``phase + pi``).
-PLAN_SWEEP_RAD = {"hohmann": math.pi, "collocation": math.pi}
+def _plan_times(plan) -> tuple[float, float, float, float]:
+    """Return start, arrival, and first/last thrust times for a plan."""
+    impulses = plan_impulses(plan)
+    if impulses:
+        first_burn, last_burn = (float(impulses[0].time_s),
+                                 float(impulses[-1].time_s))
+    else:
+        start = float(plan.t_start if hasattr(plan, "t_start") else
+                      plan.t_burn1)
+        arrival = float(plan.t_arrive if hasattr(plan, "t_arrive") else
+                        plan.t_burn2)
+        first_burn = float(plan.t_burn1 if hasattr(plan, "t_burn1") else
+                            start)
+        last_burn = float(plan.t_burn2 if hasattr(plan, "t_burn2") else
+                          arrival)
+    if impulses:
+        start = float(plan.t_start if hasattr(plan, "t_start") else
+                      first_burn)
+        arrival = float(plan.t_arrive if hasattr(plan, "t_arrive") else
+                        last_burn)
+    return start, arrival, first_burn, last_burn
+
+
+def _plan_sweep(plan, samples: int = 240) -> float:
+    """Unwrapped in-plane angle traversed by the actual planned reference."""
+    legs = getattr(plan, "legs", None)
+    if callable(legs):
+        declared = legs()
+        return float(declared[-1][3] - declared[0][3])
+    if hasattr(plan, "positions"):
+        positions = np.asarray(plan.positions, dtype=float)
+    else:
+        start, arrival, _first_burn, _last_burn = _plan_times(plan)
+        times = np.linspace(start, arrival, max(2, int(samples)))
+        positions = reference(plan, times)[0]
+    angles = np.unwrap(np.arctan2(positions[:, 1], positions[:, 0]))
+    return float(angles[-1] - angles[0])
+
+
+def _plan_positions(plan, times) -> np.ndarray:
+    """Sample positions through each plan's own reference interface."""
+    times = np.asarray(times, dtype=float).reshape(-1)
+    if hasattr(plan, "positions"):
+        return np.stack([plan.reference(float(t))[0] for t in times])
+    return reference(plan, times)[0]
 
 
 @dataclass(frozen=True)
@@ -255,6 +313,333 @@ class Rendezvous:
     relative_speed_m_s: float
 
 
+@dataclass(frozen=True)
+class PresentationEndpoint:
+    """One accepted endpoint retained for rendering between dt windows."""
+
+    time_s: float
+    craft_position_m: np.ndarray
+    craft_velocity_m_s: np.ndarray
+    station_position_m: np.ndarray
+    station_velocity_m_s: np.ndarray
+    craft_attitude: np.ndarray
+    craft_drawing: object
+
+
+@dataclass(frozen=True)
+class GameView:
+    """One immutable publication containing every mutable renderer read."""
+
+    endpoint: PresentationEndpoint
+    order_target: int | None
+    plan_curve: np.ndarray
+    plan_times: tuple | None
+    plan_delta_v: str | None
+    on_plan: bool
+    replans: int
+    planner_name: str
+    phase_name: str
+    plan_deviation_m: float | None
+    rendezvous: tuple
+    path: tuple
+    propellant_kg: float
+    propellant_fraction: float
+    mass_kg: float
+    tanks: tuple
+    main_gimbal: tuple | None
+    com_shift_m: float
+    thruster_groups: tuple
+    wheel_actuators: tuple
+    dt_proposal_s: float
+    dt_blocker: str
+    propagation_mode: str
+    guidance_signature: tuple
+    guidance_active: bool
+    announcements: tuple
+
+
+@dataclass(frozen=True)
+class StepRequest:
+    generation: int
+    outer_window_s: float | None
+    selection: int | None = None
+
+
+@dataclass(frozen=True)
+class StepPublication:
+    request: StepRequest
+    view: GameView | None = None
+    error: str | None = None
+    wall_s: float = 0.0
+
+
+def _command_signature(command) -> tuple:
+    if command is None:
+        return ("idle",)
+
+    def values(value):
+        if value is None:
+            return ()
+        return tuple(np.round(np.asarray(value, dtype=float).reshape(-1), 9))
+
+    return (command.phase, values(command.force_demand_n),
+            values(command.torque_demand_n_m), values(command.throttles),
+            values(command.gimbal_rad), values(command.wheel_torque_n_m))
+
+
+def _command_active(command) -> bool:
+    signature = _command_signature(command)
+    return (command is not None
+            and (command.phase != "coast"
+                 or any(abs(value) > 1.0e-9 for group in signature[1:]
+                        for value in group)))
+
+
+def _guidance_state(game) -> tuple[tuple, bool]:
+    mode = tracker_mode(game.craft)
+    command = None if mode is None else (mode.round_command or mode.last)
+    signature = _command_signature(command)
+    active = _command_active(command)
+    return signature, active
+
+
+def _game_view(game) -> GameView:
+    plan = game.flown_plan()
+    plan_times = None
+    plan_delta_v = None
+    curve = np.zeros((0, 3), dtype=float)
+    if game.order is not None and plan is not None:
+        plan_times = _plan_times(plan)
+        curve = np.asarray(game.plan_curve(), dtype=float).copy()
+        if hasattr(plan, "dv1"):
+            plan_delta_v = f"plan dv {plan.dv1:+.1f} / {plan.dv2:+.1f} m/s"
+        else:
+            plan_delta_v = f"plan delta-v {plan.ideal_delta_v:.1f} m/s"
+    contents = game.craft.tank_propellant_kg()
+    tanks = tuple((tank.identity, tank.fluid, float(contents[tank.identity]),
+                   float(game.loaded_tank_kg[tank.identity]))
+                  for tank in game.craft.craft.tanks)
+    guidance_signature, guidance_active = _guidance_state(game)
+    return GameView(
+        endpoint=_presentation_endpoint(game),
+        order_target=(None if game.order is None else game.order.target),
+        plan_curve=curve, plan_times=plan_times,
+        plan_delta_v=plan_delta_v, on_plan=game.on_plan(),
+        replans=game.replans(), planner_name=game.planner_name,
+        phase_name=game.phase_name(),
+        plan_deviation_m=game.plan_deviation_m,
+        rendezvous=tuple(game.rendezvous), path=tuple(game.path),
+        propellant_kg=game.propellant_kg,
+        propellant_fraction=game.propellant_fraction,
+        mass_kg=float(game.craft.mass_kg), tanks=tanks,
+        main_gimbal=game.main_gimbal(),
+        com_shift_m=float(np.linalg.norm(
+            game.craft.centre_of_mass() - game.loaded_centre_of_mass)),
+        thruster_groups=tuple(game.thruster_groups()),
+        wheel_actuators=tuple(game.wheel_actuators()),
+        dt_proposal_s=game.craft.managed_dt_proposal_s,
+        dt_blocker=game.craft.managed_dt_blocker,
+        propagation_mode=game.craft.propagation_mode,
+        guidance_signature=guidance_signature,
+        guidance_active=guidance_active,
+        announcements=tuple(game.announcements()))
+
+
+class OrbitalStepService:
+    """Single owner for mutable game state; publishes complete snapshots."""
+
+    def __init__(self, game):
+        self.game = game
+        self.view = _game_view(game)
+        self.request: StepRequest | None = None
+        self.completed: StepPublication | None = None
+        self._generation = 0
+        self._solved_generation = 0
+        self._wake = threading.Event()
+        self._done = threading.Event()
+        self._stop = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, name="orbital-step", daemon=True)
+
+    def start(self):
+        self._thread.start()
+        return self
+
+    @property
+    def busy(self) -> bool:
+        return (self.request is not None
+                and self.request.generation > self._solved_generation)
+
+    def submit(self, outer_window_s: float | None,
+               selection: int | None = None) -> StepRequest:
+        if self.busy:
+            raise RuntimeError("orbital step already in flight")
+        self._generation += 1
+        request = StepRequest(self._generation, outer_window_s, selection)
+        self.request = request
+        self._done.clear()
+        self._wake.set()
+        return request
+
+    def latest_result(self) -> StepPublication | None:
+        return self.completed
+
+    def wait(self):
+        self._done.wait()
+
+    def stop(self) -> bool:
+        self._stop.set()
+        self._wake.set()
+        self._thread.join(timeout=1.0)
+        return not self._thread.is_alive()
+
+    def _run(self):
+        try:
+            while not self._stop.is_set():
+                request = self.request
+                if (request is None
+                        or request.generation == self._solved_generation):
+                    self._wake.wait(0.05)
+                    self._wake.clear()
+                    continue
+                began = time.perf_counter()
+                try:
+                    if request.selection is not None:
+                        self.game.select(request.selection)
+                    if request.outer_window_s is not None:
+                        self.game.step(request.outer_window_s)
+                    view = _game_view(self.game)
+                    publication = StepPublication(
+                        request, view=view,
+                        wall_s=time.perf_counter() - began)
+                except Exception as error:
+                    publication = StepPublication(
+                        request, error=f"{type(error).__name__}: {error}",
+                        wall_s=time.perf_counter() - began)
+                if not self._stop.is_set() and self.request is request:
+                    self.view = publication.view or self.view
+                    self.completed = publication
+                    self._solved_generation = request.generation
+                    self._done.set()
+        finally:
+            self.game.close()
+
+
+def _presentation_endpoint(game) -> PresentationEndpoint:
+    craft_position, craft_velocity = game.craft.r()
+    station_position, station_velocity = game.station_states()
+    return PresentationEndpoint(
+        float(game.time_s),
+        np.asarray(craft_position, dtype=float).copy(),
+        np.asarray(craft_velocity, dtype=float).copy(),
+        np.asarray(station_position, dtype=float).copy(),
+        np.asarray(station_velocity, dtype=float).copy(),
+        np.asarray(game.craft.attitude(), dtype=float).copy(),
+        craft_drawing(game.craft, game.loaded_centre_of_mass))
+
+
+def _hermite_position(p0, v0, p1, v1, span_s: float, fraction: float):
+    """Interpolate an accepted trajectory segment using endpoint velocity."""
+    u = min(1.0, max(0.0, float(fraction)))
+    u2, u3 = u * u, u * u * u
+    return ((2.0 * u3 - 3.0 * u2 + 1.0) * p0
+            + (u3 - 2.0 * u2 + u) * span_s * v0
+            + (-2.0 * u3 + 3.0 * u2) * p1
+            + (u3 - u2) * span_s * v1)
+
+
+class PresentationPacer:
+    """Wall-clock pacing and tweening around accepted dt-system endpoints.
+
+    Only one accepted endpoint may be ahead of the displayed state.  If a
+    physics window costs more wall time than its display duration, excess
+    demand is backpressured rather than accumulated into a later large jump.
+    """
+
+    def __init__(self, game, multiplier: float = DEFAULT_TIME_MULTIPLIER):
+        multiplier = float(multiplier)
+        if (not math.isfinite(multiplier)
+                or not TIME_MULTIPLIERS[0] <= multiplier <= TIME_MULTIPLIERS[-1]):
+            raise ValueError(
+                f"time multiplier must be between {TIME_MULTIPLIERS[0]:g}x "
+                f"and {TIME_MULTIPLIERS[-1]:g}x")
+        self._multiplier = multiplier
+        endpoint = _presentation_endpoint(game)
+        self.previous = endpoint
+        self.current = endpoint
+        self.display_time_s = endpoint.time_s
+        self.paused = False
+        self.backpressure_s = 0.0
+
+    @property
+    def multiplier(self) -> float:
+        return self._multiplier
+
+    @property
+    def ready(self) -> bool:
+        return self.display_time_s >= self.current.time_s - 1.0e-12
+
+    def faster(self):
+        self._multiplier = next(
+            (rate for rate in TIME_MULTIPLIERS if rate > self.multiplier),
+            TIME_MULTIPLIERS[-1])
+
+    def slower(self):
+        self._multiplier = next(
+            (rate for rate in reversed(TIME_MULTIPLIERS)
+             if rate < self.multiplier), TIME_MULTIPLIERS[0])
+
+    def limit_for_guidance(self) -> bool:
+        limited = min(self.multiplier, GUIDANCE_PRESENTATION_MULTIPLIER)
+        changed = limited < self.multiplier
+        self._multiplier = limited
+        return changed
+
+    def accept(self, endpoint: PresentationEndpoint):
+        self.previous, self.current = self.current, endpoint
+        self.display_time_s = max(self.display_time_s, self.previous.time_s)
+
+    def wall_demand(self, elapsed_s: float) -> float:
+        return (0.0 if self.paused else
+                max(0.0, float(elapsed_s)) * self.multiplier)
+
+    def consume(self, demand_s: float) -> float:
+        """Move the display toward its accepted endpoint; return excess."""
+        available = max(0.0, self.current.time_s - self.display_time_s)
+        shown = min(max(0.0, float(demand_s)), available)
+        self.display_time_s += shown
+        return max(0.0, float(demand_s) - shown)
+
+    def sample(self) -> PresentationEndpoint:
+        span = self.current.time_s - self.previous.time_s
+        if span <= 1.0e-12:
+            return self.current
+        fraction = min(1.0, max(
+            0.0, (self.display_time_s - self.previous.time_s) / span))
+        return PresentationEndpoint(
+            self.display_time_s,
+            _hermite_position(self.previous.craft_position_m,
+                              self.previous.craft_velocity_m_s,
+                              self.current.craft_position_m,
+                              self.current.craft_velocity_m_s,
+                              span, fraction),
+            (1.0 - fraction) * self.previous.craft_velocity_m_s
+            + fraction * self.current.craft_velocity_m_s,
+            _hermite_position(self.previous.station_position_m,
+                              self.previous.station_velocity_m_s,
+                              self.current.station_position_m,
+                              self.current.station_velocity_m_s,
+                              span, fraction),
+            (1.0 - fraction) * self.previous.station_velocity_m_s
+            + fraction * self.current.station_velocity_m_s,
+            _blend_rotation(self.previous.craft_attitude,
+                            self.current.craft_attitude, fraction),
+            _blend_craft_drawing(self.previous.craft_drawing,
+                                 self.current.craft_drawing,
+                                 self.previous.craft_attitude,
+                                 self.current.craft_attitude, fraction))
+
+
 def _circular_state(mu: float, radius: float, angle: float):
     speed = math.sqrt(mu / radius)
     return ((radius * math.cos(angle), radius * math.sin(angle), 0.0),
@@ -263,6 +648,82 @@ def _circular_state(mu: float, radius: float, angle: float):
 
 def _polar(position) -> float:
     return math.atan2(float(position[1]), float(position[0]))
+
+
+@dataclass(frozen=True)
+class PlanningInputs:
+    """Main-thread capture: workers never read the craft or station columns."""
+    target: int
+    target_spec: TargetSpec
+    order_id: int
+    epoch: int
+    time_s: float
+    mu: float
+    position: tuple
+    velocity: tuple
+    target_position: tuple
+    target_velocity: tuple
+    target_time_s: float
+    propellant_kg: float
+    planner: object
+    problem: object = None
+    previous: object = None
+    previous_owner: object = None
+    previous_reference: tuple | None = None
+    replan: bool = False
+
+
+def _solve_planning(request: PlanningInputs):
+    """Solve only captured inputs, using the existing two planner APIs."""
+    if request.replan:
+        if request.problem is None:
+            return hohmann_replanner(request.previous, request.time_s,
+                                     request.position, request.velocity)
+        plan = request.planner(
+            request.problem, request.time_s, request.position, request.velocity,
+            propellant_kg=request.propellant_kg, previous=request.previous)
+    else:
+        r1 = float(np.linalg.norm(request.position))
+        r2 = float(np.linalg.norm(request.target_position))
+        theta = _polar(request.position)
+        phi = _polar(request.target_position) - theta
+        if request.problem is None:
+            probe = request.planner(request.mu, r1, r2)
+        else:
+            probe = request.planner(request.problem, request.time_s,
+                                    request.position, request.velocity,
+                                    propellant_kg=request.propellant_kg)
+        timing = phasing(request.mu, r1, r2, probe.transfer_time,
+                         _plan_sweep(probe), phi, theta)
+        if request.problem is None:
+            plan = request.planner(request.mu, r1, r2,
+                                   t_burn1=request.time_s + timing.t_wait,
+                                   phase=timing.phase)
+        else:
+            position, velocity = _circular_state(request.mu, r1, timing.phase)
+            plan = request.planner(request.problem,
+                                   request.time_s + timing.t_wait,
+                                   position, velocity,
+                                   propellant_kg=request.propellant_kg)
+        if not getattr(plan, "converged", True):
+            raise RuntimeError(f"planner did not converge: {plan.message}")
+        return TransferOrder(request.target, request.time_s, plan, timing, phi)
+    if not getattr(plan, "converged", True):
+        raise RuntimeError(f"planner did not converge: {plan.message}")
+    return plan
+
+
+class _ServiceReplanner:
+    """The existing tracker callback, with nonblocking service publication."""
+    def __init__(self, game):
+        self.game = game
+
+    def __call__(self, previous, time_s, position, velocity):
+        self.game._request_replan(previous)
+        return None
+
+    def poll(self, previous, time_s, position, velocity):
+        return self.game._poll_replan(previous)
 
 
 class OrbitalGame:
@@ -274,7 +735,7 @@ class OrbitalGame:
                  targets=DEFAULT_TARGETS,
                  machine: CraftMachine | None = None,
                  gains: TrackingGains | None = None,
-                 round_s: float = ROUND_S,
+                 round_s: float | None = None,
                  length_scale_m: float = LENGTH_SCALE_M,
                  station_length_scale_m: float = STATION_LENGTH_SCALE_M,
                  planner: str = "hohmann"):
@@ -284,19 +745,24 @@ class OrbitalGame:
         self.mu = float(mu)
         self.planner_name = planner
         self.planner = PLANNERS[planner]()
-        # the tracker's own full-trip re-planner (its ON/OFF-PLAN switch);
-        # the collocation planner's re-planner needs a problem object
-        # (orbital_collocation.collocation_replanner): not wired here
-        self.replanner = hohmann_replanner if planner == "hohmann" else None
         self.gains = MACHINE_GAINS if gains is None else gains
-        self.round_s = float(round_s)
         center = GravityCenter((0.0, 0.0, 0.0), self.mu)
+        self.center = center
         machine = orbital_craft() if machine is None else machine
         position, velocity = _circular_state(self.mu, craft_radius_m,
                                              craft_angle_rad)
+        # An explicit round_s remains a caller-owned outer-window override.
+        # Otherwise the opening window is the dt controller's own stability
+        # ceiling, dx / max_vel.  After that, step() uses dt_next verbatim.
+        initial_window = (float(round_s) if round_s is not None else
+                          float(length_scale_m)
+                          / float(np.linalg.norm(velocity)))
+        self.round_s = initial_window
         self.craft = MachineCraft(
             [center], machine, position_m=position, velocity_m_s=velocity,
-            length_scale_m=length_scale_m, window_s=self.round_s)
+            length_scale_m=length_scale_m, window_s=initial_window,
+            best_effort_metrics=("orbital_attitude_orthogonality",),
+            green_coast=True)
         self.loaded_tank_kg = self.craft.tank_propellant_kg()
         self.loaded_centre_of_mass = self.craft.centre_of_mass()
         self.specs = tuple(targets)
@@ -308,7 +774,7 @@ class OrbitalGame:
             position_m=np.asarray([p for p, _v in states], dtype=float),
             velocity_m_s=np.asarray([v for _p, v in states], dtype=float),
             length_scale_m=station_length_scale_m,
-            window_s=self.round_s, batch=len(self.specs))
+            window_s=initial_window, batch=len(self.specs))
         self.max_thrust = np.asarray(
             [t.max_thrust_n for t in machine.thrusters], dtype=float)
         self.order: TransferOrder | None = None
@@ -318,6 +784,48 @@ class OrbitalGame:
         self.plan_deviation_m: float | None = None
         self.path: list[tuple[float, float]] = []
         self._record_path()
+        self._init_planning()
+        self.prepare_planning()
+        self._planning_service.start()
+
+    def _init_planning(self):
+        self._planning_service = SolutionService(solver=_solve_planning)
+        self._pending_plan = None
+        self._order_id = 0
+        self._planning_epoch = 0
+        self._planning_time = self.time_s
+        self._planning_closed = False
+        self.planning_error = None
+        self._announcements = []
+        self.replanner = _ServiceReplanner(self)
+
+    def prepare_planning(self):
+        """Warm native helpers during setup, before the planning worker starts."""
+        from orbital_plan import _plan_piece, _reference_pieces
+        from orbital_actuation import throttle_delivery
+        _plan_piece()
+        _reference_pieces()
+        _phasing_piece()
+        count = self.craft.design.thruster_count
+        throttle_delivery(self.craft.design.thrusters, np.zeros(count),
+                          np.zeros(count), 1.0)
+        if self.planner_name == "collocation":
+            import orbital_collocation as collocation
+            problem = collocation.CollocationProblem(
+                collocation.pointing_proxy(self.craft.design), (self.center,),
+                self.specs[0].radius_m, fuel_budget=self.craft.propellant_kg)
+            collocation.prepare_rows(problem)
+
+    def close(self):
+        """Stop publication; an in-flight solve cannot start a second worker."""
+        self._pending_plan = None
+        self._planning_closed = True
+        self._planning_service.stop()
+
+    def announcements(self):
+        """Drain main-thread acceptance/failure messages exactly once."""
+        messages, self._announcements = tuple(self._announcements), []
+        return messages
 
     # ------------------------------------------------------------- reads
     @property
@@ -365,7 +873,8 @@ class OrbitalGame:
         """When the active order's rendezvous is measured."""
         if self.order is None:
             return None
-        return self.flown_plan().t_burn2 + ARRIVAL_SETTLE_S
+        _start, arrival, _first, _last = _plan_times(self.flown_plan())
+        return arrival + ARRIVAL_SETTLE_S
 
     def busy(self) -> bool:
         """An order is still on its way (its rendezvous is ahead)."""
@@ -374,11 +883,12 @@ class OrbitalGame:
 
     def phase_name(self) -> str:
         if self.order is None:
-            return "coasting"
+            return "planning" if self._pending_plan is not None else "coasting"
         plan, t = self.flown_plan(), self.time_s
-        if t < plan.t_burn1:
+        _start, _arrival, first_burn, last_burn = _plan_times(plan)
+        if t < first_burn:
             return "phasing wait"
-        if t < plan.t_burn2:
+        if t < last_burn:
             return "transfer"
         if t < self.arrival_s():
             return "arrival burn"
@@ -389,8 +899,9 @@ class OrbitalGame:
         if self.order is None:
             return np.zeros((0, 3))
         plan = self.flown_plan()
-        times = np.linspace(plan.t_burn1, plan.t_burn2, samples)
-        return reference(plan, times)[0]
+        start, arrival, _first_burn, _last_burn = _plan_times(plan)
+        times = np.linspace(start, arrival, samples)
+        return _plan_positions(plan, times)
 
     def main_gimbal(self) -> tuple[float, float] | None:
         """The main engine's tilt off its axis (rad): from the craft's
@@ -426,65 +937,245 @@ class OrbitalGame:
                         float(np.max(self.plume_throttles[ks]))))
         return out
 
+    def wheel_actuators(self):
+        """Live reaction-wheel actuator rows for the flight display."""
+        commands = self.craft.wheel_commands()
+        momenta = self.craft.wheel_momenta()
+        speeds = self.craft.wheel_speeds()
+        out = []
+        for wheel, command, momentum, speed in zip(
+                self.craft.craft.wheels, commands, momenta, speeds):
+            dumping = abs(speed) >= wheel.dump_fraction * wheel.max_speed_rad_s
+            out.append((wheel, float(command), float(momentum), float(speed),
+                        float(wheel.electrical_power_w(command, speed)),
+                        dumping))
+        return out
+
     # ------------------------------------------------------------ orders
-    def select(self, index: int) -> TransferOrder:
-        """Order a phased transfer from the present state to target
-        ``index``.  Refused while a transfer is on its way."""
+    def select(self, index: int):
+        """Submit a captured transfer request. Flight never waits for its solve."""
         if self.busy():
             raise RuntimeError("transfer in progress")
-        craft_r, _ = self.craft.r()
-        target_r, _ = self.target_state(index)
-        r1 = float(np.linalg.norm(craft_r))
-        r2 = float(np.linalg.norm(target_r))
-        theta_0 = _polar(craft_r)
-        phi_0 = _polar(target_r) - theta_0
-        probe = self.planner(self.mu, r1, r2)
-        timing = phasing(self.mu, r1, r2, probe.transfer_time,
-                         PLAN_SWEEP_RAD[self.planner_name], phi_0, theta_0)
-        plan = self.planner(self.mu, r1, r2,
-                            t_burn1=self.time_s + timing.t_wait,
-                            phase=timing.phase)
-        self.order = TransferOrder(index, self.time_s, plan, timing, phi_0)
-        self.report = None
-        return self.order
+        if self._planning_closed:
+            raise RuntimeError("planning service is stopped")
+        if not 0 <= index < len(self.specs):
+            raise ValueError("unknown target")
+        self._update_planning_epoch()
+        self._order_id += 1
+        self.planning_error = None
+        return self._submit_plan(index)
 
-    # ------------------------------------------------------------ frames
-    def frame_window(self, base_s: float, burn_s: float = 2.0,
-                     margin_s: float = 60.0) -> float:
-        """Time warp: ``burn_s`` per frame within ``margin_s`` of a burn so
-        the plumes can be seen, else ``base_s``."""
-        if self.order is not None:
-            t = self.time_s
-            plan = self.flown_plan()
-            for burn in (plan.t_burn1, plan.t_burn2):
-                if burn - margin_s <= t <= burn + max(margin_s,
-                                                      ARRIVAL_SETTLE_S):
-                    return burn_s
-        return base_s
+    def _capture_plan(self, index, previous=None):
+        position, velocity = self.craft.r()
+        target_position, target_velocity = self.target_state(index)
+        propellant = float(self.craft.propellant_kg)
+        previous_owner = previous
+        previous_reference = (None if previous is None else
+                              tuple(tuple(map(float, value)) for value in
+                                    plan_reference(previous, self.time_s)))
+        problem = None
+        if self.planner_name == "collocation":
+            import orbital_collocation as collocation
+            problem = collocation.CollocationProblem(
+                collocation.pointing_proxy(self.craft.design), (self.center,),
+                float(np.linalg.norm(target_position)), fuel_budget=propellant)
+            previous = collocation.capture_remainder(previous)
+        return PlanningInputs(
+            index, self.specs[index], self._order_id, self._planning_epoch,
+            self.time_s, self.mu, tuple(map(float, position)),
+            tuple(map(float, velocity)), tuple(map(float, target_position)),
+            tuple(map(float, target_velocity)), float(self.stations.time_s),
+            propellant, self.planner, problem=problem, previous=previous,
+            previous_owner=previous_owner, previous_reference=previous_reference,
+            replan=previous_owner is not None)
 
-    def step(self, window_s: float) -> float:
-        """Advance craft and stations over one frame window, in lockstep.
-        The window is clipped to land on the order's arrival time, where
-        the rendezvous is measured.  Returns the window advanced."""
-        window = float(window_s)
+    def _submit_plan(self, index, previous=None):
+        self._pending_plan = self._planning_service.submit(
+            self._capture_plan(index, previous))
+        return self._pending_plan
+
+    def _request_replan(self, previous):
+        if (not self._planning_closed and self._pending_plan is None
+                and self.order is not None):
+            self.planning_error = None
+            self._submit_plan(self.order.target, previous)
+
+    def _update_planning_epoch(self):
+        if self.time_s < self._planning_time:
+            self._planning_epoch += 1
+        self._planning_time = self.time_s
+
+    def _completed_plan(self):
+        self._update_planning_epoch()
+        pending = self._pending_plan
+        if pending is None:
+            return None
+        captured = pending.payload
+        if (captured.epoch != self._planning_epoch
+                or captured.order_id != self._order_id
+                or not 0 <= captured.target < len(self.specs)
+                or captured.target_spec != self.specs[captured.target]):
+            self._pending_plan = None
+            self.planning_error = "request changed"
+            self._announcements.append("planning result discarded: request changed")
+            return None
+        done = self._planning_service.latest_result()
+        if done is None or done.request.generation != pending.generation:
+            return None
+        self._pending_plan = None
+        if done.error is not None:
+            self.planning_error = done.error
+            self._announcements.append(
+                f"re-plan failed: {done.error}; continuing previous plan"
+                if captured.replan else f"planning failed: {done.error}")
+            return None
+        return captured, done.result
+
+    def _fresh_plan(self, captured, plan):
+        now = self.time_s
+        start, arrival, first, _last = _plan_times(plan)
+        if captured.replan and now >= arrival + ARRIVAL_SETTLE_S:
+            return "arrival passed during solve"
+        if not captured.replan and now > first:
+            return "first burn passed during solve"
+        if captured.replan:
+            # Transport the captured discrepancy on the previous reference.
+            # This tests unchanged assumptions; it is not physical propagation.
+            old_r, old_v = plan_reference(captured.previous_owner, now)
+            then_r, then_v = captured.previous_reference
+            r_ref = np.asarray(captured.position) + old_r - np.asarray(then_r)
+            v_ref = np.asarray(captured.velocity) + old_v - np.asarray(then_v)
+        elif now < start:
+            r1 = float(np.linalg.norm(captured.position))
+            angle = _polar(captured.position) + math.sqrt(self.mu / r1**3) * (
+                now - captured.time_s)
+            r_ref, v_ref = _circular_state(self.mu, r1, angle)
+        else:
+            r_ref, v_ref = plan_reference(plan, now)
+        r, v = self.craft.r()
+        if tracking_error(r, v, r_ref, v_ref) >= self.gains.on_plan_threshold:
+            return "craft moved outside the ON PLAN band during solve"
+        target_radius = float(np.linalg.norm(captured.target_position))
+        target_angle = _polar(captured.target_position) + math.sqrt(
+            self.mu / target_radius**3) * (
+                self.stations.time_s - captured.target_time_s)
+        target_ref = _circular_state(self.mu, target_radius, target_angle)
+        target_now = self.target_state(captured.target)
+        if tracking_error(*target_now, *target_ref) >= self.gains.on_plan_threshold:
+            return "target moved outside its captured circular orbit"
+        if (captured.problem is not None and captured.problem.burns_propellant
+                and self.craft.propellant_kg < float(plan.fuel)):
+            return "remaining propellant does not cover the candidate's fuel use"
+        return None
+
+    def poll_planning(self):
+        """Accept an initial result on the main thread; never waits."""
+        if self._pending_plan is None or self._pending_plan.payload.replan:
+            return None
+        completed = self._completed_plan()
+        if completed is None:
+            return None
+        captured, order = completed
+        stale = self._fresh_plan(captured, order.plan)
+        if stale:
+            self._announcements.append(f"planning result stale: {stale}; retrying")
+            self._submit_plan(captured.target)
+            return None
+        self.order, self.report = order, None
+        self._announcements.append(
+            f"-> {self.specs[order.target].name}: wait "
+            f"{_fmt_time(max(0.0, _plan_times(order.plan)[0] - self.time_s))}, "
+            f"transfer {_fmt_time(order.plan.transfer_time)}")
+        return order
+
+    def _poll_replan(self, previous):
+        if self._pending_plan is None or not self._pending_plan.payload.replan:
+            return None
+        completed = self._completed_plan()
+        if completed is None:
+            return None
+        captured, plan = completed
+        if (self.order is None or captured.target != self.order.target
+                or captured.previous_owner is not previous):
+            self._announcements.append("re-plan discarded: flown plan changed")
+            return None
+        stale = self._fresh_plan(captured, plan)
+        if stale:
+            self._announcements.append(f"re-plan stale: {stale}; retrying")
+            self._submit_plan(self.order.target, previous)
+            return None
+        self._announcements.append("OFF PLAN: completed re-plan accepted")
+        return plan
+
+    # ------------------------------------------------------------ steps
+    def step(self, outer_window_s: float | None = None) -> float:
+        """Advance one requested outer window through the dt coordinator.
+
+        With no override, the request is the dt system's published ``dt_next``.
+        The dt system remains responsible for every internal grow, shrink,
+        rejection, retry, and accepted substep spanning the requested window.
+        """
+        self.poll_planning()
+        yield_on_guidance_change = outer_window_s is not None
+        window = (self.craft.managed_dt_proposal_s
+                  if outer_window_s is None else float(outer_window_s))
+        if not math.isfinite(window) or window <= 0.0:
+            raise ValueError("outer window must be finite and positive")
         arrival = None
         if self.busy():
             arrival = self.arrival_s()
             window = min(window, arrival - self.time_s)
         start = self.time_s
+        frame_start = start
         impulses = self.craft.thruster_impulses_n_s
         if self.order is not None:
-            self.report = fly(self.craft, self.order.plan, self.gains,
-                              until_s=start + window, round_s=self.round_s,
-                              replanner=self.replanner)
-            self.plan_deviation_m = self.report.final_position_error_m
-        else:
-            remaining = window
+            plan = self.flown_plan()
+            plan_start = (float(plan.t_start)
+                          if hasattr(plan, "t_start") else start)
+            wait = min(window, max(0.0, plan_start - start))
+            if wait > 1.0e-9:
+                count = self.craft.design.thruster_count
+                self.craft.throttle(np.zeros(count))
+                gimbal = getattr(self.craft, "gimbal", None)
+                if callable(gimbal):
+                    gimbal(np.zeros((count, 2)))
+                wheel_torque = getattr(self.craft, "wheel_torque", None)
+                if callable(wheel_torque):
+                    wheel_torque(np.zeros_like(self.craft.wheel_commands()))
+            remaining = wait
             while remaining > 1.0e-9:
-                chunk = min(self.round_s, remaining)
-                self.craft.advance(chunk)
-                remaining -= chunk
-        advanced = self.craft.time_s - start
+                chunk = min(self.craft.managed_dt_proposal_s, remaining)
+                advanced, _dt_next, _telemetry = self.craft.advance(chunk)
+                advanced = float(advanced)
+                reduced = remaining - advanced
+                if (not math.isfinite(advanced) or advanced <= 0.0
+                        or reduced == remaining):
+                    raise RuntimeError(
+                        "dt system made no representable progress during coast")
+                remaining = max(0.0, reduced)
+            window -= wait
+            start = self.time_s
+            if window > 1.0e-9:
+                frame_end = start + window
+                deadline = ((lambda: min(frame_end, self.arrival_s()))
+                            if arrival is not None else frame_end)
+                guidance_yield = None
+                if (yield_on_guidance_change
+                        and window > (GUIDANCE_PRESENTATION_MULTIPLIER
+                                      / PRESENTATION_FPS + 1.0e-12)):
+                    guidance_yield = lambda previous, current: (
+                        _command_active(current)
+                        and _command_signature(current)
+                        != _command_signature(previous))
+                self.report = fly(self.craft, self.order.plan, self.gains,
+                                  until_s=deadline,
+                                  round_s=window,
+                                  replanner=self.replanner,
+                                  yield_on_guidance=guidance_yield)
+                self.plan_deviation_m = self.report.final_position_error_m
+        else:
+            self.craft.advance(window)
+        advanced = self.craft.time_s - frame_start
         if advanced > 0.0:
             # every station lane in one round of the one batched dt state
             self.stations.advance(advanced)
@@ -493,15 +1184,36 @@ class OrbitalGame:
         self._record_path()
         if arrival is not None and self.time_s >= self.arrival_s() - 1.0e-9:
             self._measure_rendezvous()
+        self.poll_planning()
         return advanced
 
-    def run_until_arrival(self, window_s: float) -> Rendezvous:
+    def run_until_arrival(self, window_s: float | None = None) -> Rendezvous:
         """Step until the active order's arrival is measured (no graphics)."""
-        if not self.busy():
+        if self._planning_closed and self.order is None:
+            raise RuntimeError("initial transfer request was cancelled")
+        if not self.busy() and self._pending_plan is None:
             raise RuntimeError("no transfer on its way")
         count = len(self.rendezvous)
+        stalled = 0
         while len(self.rendezvous) == count:
-            self.step(self.frame_window(window_s))
+            before = self.time_s
+            self.step(window_s)
+            if self.time_s <= before:
+                stalled += 1
+                # One zero-time return is the intentional guidance publication
+                # handoff.  A second one means the requested window cannot move
+                # the managed clock and must not become an unbounded wait.
+                if stalled >= 2:
+                    raise RuntimeError(
+                        "dt system made no progress across consecutive "
+                        "arrival steps")
+            else:
+                stalled = 0
+            if (len(self.rendezvous) == count and not self.busy()
+                    and self._pending_plan is None):
+                if self.planning_error is not None:
+                    raise RuntimeError(f"planning failed: {self.planning_error}")
+                raise RuntimeError("transfer request was cancelled")
         return self.rendezvous[-1]
 
     def _record_path(self):
@@ -567,6 +1279,65 @@ def craft_drawing(craft: MachineCraft,
         tanks=tanks)
 
 
+def _blend_rotation(previous, current, fraction: float) -> np.ndarray:
+    """Interpolate two attitudes and project the result back onto SO(3)."""
+    u = min(1.0, max(0.0, float(fraction)))
+    mixed = ((1.0 - u) * np.asarray(previous, dtype=float)
+             + u * np.asarray(current, dtype=float))
+    left, _singular, right = np.linalg.svd(mixed)
+    rotation = left @ right
+    if np.linalg.det(rotation) < 0.0:
+        left[:, -1] *= -1.0
+        rotation = left @ right
+    return rotation
+
+
+def _blend_craft_drawing(previous: CraftDrawing, current: CraftDrawing,
+                         previous_attitude, current_attitude,
+                         fraction: float) -> CraftDrawing:
+    """Tween all visible craft state carried by two accepted endpoints."""
+    u = min(1.0, max(0.0, float(fraction)))
+    before = np.asarray(previous_attitude, dtype=float)
+    after = np.asarray(current_attitude, dtype=float)
+    rotation = _blend_rotation(before, after, u)
+
+    def blend(a, b):
+        return (1.0 - u) * np.asarray(a, dtype=float) + u * np.asarray(
+            b, dtype=float)
+
+    def local_blend(left, right):
+        return blend(before.T @ np.asarray(left, dtype=float),
+                     after.T @ np.asarray(right, dtype=float))
+
+    parts = []
+    for left, right in zip(previous.parts, current.parts):
+        exhaust = rotation @ local_blend(left.exhaust, right.exhaust)
+        norm = float(np.linalg.norm(exhaust))
+        if norm > 1.0e-12:
+            exhaust = exhaust / norm
+        else:
+            exhaust = np.asarray(right.exhaust, dtype=float).copy()
+        parts.append(type(right)(
+            identity=right.identity, role=right.role,
+            mount_m=rotation @ local_blend(left.mount_m, right.mount_m),
+            exhaust=exhaust,
+            throttle=(1.0 - u) * left.throttle + u * right.throttle))
+    tanks = tuple(
+        (right[0], rotation @ local_blend(left[1], right[1]),
+         (1.0 - u) * left[2] + u * right[2])
+        for left, right in zip(previous.tanks, current.tanks))
+    body_local = blend(np.asarray(previous.body) @ before,
+                       np.asarray(current.body) @ after)
+    return CraftDrawing(
+        parts=tuple(parts),
+        centre_of_mass_m=rotation @ local_blend(
+            previous.centre_of_mass_m, current.centre_of_mass_m),
+        loaded_centre_of_mass_m=rotation @ local_blend(
+            previous.loaded_centre_of_mass_m,
+            current.loaded_centre_of_mass_m),
+        body=body_local @ rotation.T, tanks=tanks)
+
+
 # ================================================================ viewer
 WINDOW = (1400, 860)
 PLAN_SIZE = 840
@@ -581,7 +1352,6 @@ RED = (226, 96, 84)
 BLUE = (70, 120, 200)
 TARGET_COLOURS = ((120, 190, 240), (220, 150, 230), (240, 210, 120),
                   (150, 230, 200), (240, 140, 120), (180, 180, 250))
-BASE_WARP_S = 60.0
 INSET_SIZE = 230
 #: Plume length at full throttle, in body extents.
 PLUME_LENGTH_BODY = 1.6
@@ -715,9 +1485,10 @@ def _fmt_time(seconds: float) -> str:
 
 
 def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
-         click: int | None = None, warp_s: float = BASE_WARP_S,
+         click: int | None = None,
          planner: str = "hohmann", burn_shots: bool = False,
-         station_dx_m: float = STATION_LENGTH_SCALE_M) -> int:
+         station_dx_m: float = STATION_LENGTH_SCALE_M,
+         time_multiplier: float = DEFAULT_TIME_MULTIPLIER) -> int:
     """``frames`` > 0 runs headless, saving a PNG every ``every`` frames
     (turret_demo's check-without-a-person mode); ``burn_shots`` also saves
     a frame while plumes are lit (at most one per 8 frames)."""
@@ -726,249 +1497,342 @@ def main(frames: int = 0, out_prefix: str = "orbital_game", every: int = 1,
                            glClear, glClearColor, glReadPixels)
 
     game = OrbitalGame(planner=planner, station_length_scale_m=station_dx_m)
-    pygame.init()
-    flags = pygame.OPENGL | pygame.DOUBLEBUF | (pygame.HIDDEN if frames else 0)
-    pygame.display.set_mode(WINDOW, flags)
-    pygame.display.set_caption("orbital game -- click a station to go there")
-    font = pygame.font.SysFont("consolas", 15)
-    small = pygame.font.SysFont("consolas", 12)
+    text = None
+    step_service = None
+    try:
+        pygame.init()
+        flags = pygame.OPENGL | pygame.DOUBLEBUF | (pygame.HIDDEN if frames else 0)
+        pygame.display.set_mode(WINDOW, flags)
+        pygame.display.set_caption("orbital game -- click a station to go there")
+        font = pygame.font.SysFont("consolas", 15)
+        small = pygame.font.SysFont("consolas", 12)
 
-    from gl_text import TextLayer
-    text = TextLayer(font, *WINDOW)
+        from gl_text import TextLayer
+        text = TextLayer(font, *WINDOW)
 
-    extent = 1.08 * max([s.radius_m for s in game.specs]
-                        + [CRAFT_RADIUS_M])
-    scale = (PLAN_SIZE / 2 - 12) / extent
-    centre = PLAN_SIZE / 2
+        extent = 1.08 * max([s.radius_m for s in game.specs]
+                            + [CRAFT_RADIUS_M])
+        scale = (PLAN_SIZE / 2 - 12) / extent
+        centre = PLAN_SIZE / 2
 
-    def to_px(x, y):
-        return (centre + x * scale, centre - y * scale)
+        def to_px(x, y):
+            return (centre + x * scale, centre - y * scale)
 
-    messages: list[str] = []
+        messages: list[str] = []
 
-    def say(message: str):
-        messages.append(message)
-        del messages[:-4]
-        print(message, flush=True)
+        def say(message: str):
+            messages.append(message)
+            del messages[:-4]
+            print(message, flush=True)
 
-    def order(index: int):
-        try:
-            placed = game.select(index)
-        except (RuntimeError, ValueError) as error:
-            say(f"{game.specs[index].name}: refused ({error})")
-            return
-        plan = placed.plan
-        say(f"-> {game.specs[index].name}: wait "
-            f"{_fmt_time(placed.phasing.t_wait)}, transfer "
-            f"{_fmt_time(plan.transfer_time)}")
+        pending_selections = []
 
-    if click is not None:
-        order(int(click))
+        def order(index: int):
+            pending_selections.append(index)
+            say(f"planning -> {game.specs[index].name}")
 
-    clock = pygame.time.Clock()
-    running, frame, captured, last_burn_shot = True, 0, 0, -100
-    plan_points: list = []
-    plan_for = None
-    reported = 0
-    replans_seen = 0
-    frame_wall_s = 0.0
-    while running:
-        if not frames:
-            clock.tick(30)
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            elif event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_ESCAPE:
+        clock = pygame.time.Clock()
+        pacer = PresentationPacer(game, time_multiplier)
+        step_service = OrbitalStepService(game).start()
+        snapshot = step_service.view
+        display = pacer.sample()
+        if click is not None:
+            order(int(click))
+        initial_selection = (pending_selections.pop(0)
+                             if pending_selections else None)
+        step_service.submit(snapshot.dt_proposal_s, initial_selection)
+        running, frame, captured, last_burn_shot = True, 0, 0, -100
+        plan_points = [to_px(p[0], p[1]) for p in snapshot.plan_curve]
+        completed_generation = 0
+        pending_publication = None
+        guidance_rate_pending = False
+        reported = 0
+        frame_wall_s = 0.0
+        while running:
+            wall_elapsed_s = ((1.0 / PRESENTATION_FPS) if frames else
+                              clock.tick(int(PRESENTATION_FPS)) / 1000.0)
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
                     running = False
-                elif event.key in (pygame.K_PLUS, pygame.K_EQUALS,
-                                   pygame.K_KP_PLUS):
-                    warp_s = min(warp_s * 2.0, 960.0)
-                elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS):
-                    warp_s = max(warp_s / 2.0, 2.0)
-                elif pygame.K_1 <= event.key <= pygame.K_9:
-                    index = event.key - pygame.K_1
-                    if index < len(game.specs):
-                        order(index)
-            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
-                mx, my = event.pos[0] - PLAN_X, event.pos[1] - PLAN_Y
-                best, best_d = None, 28.0
-                for index, position in enumerate(game.station_states()[0]):
-                    px, py = to_px(position[0], position[1])
-                    distance = math.hypot(px - mx, py - my)
-                    if distance < best_d:
-                        best, best_d = index, distance
-                if best is not None:
-                    order(best)
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        running = False
+                    elif event.key in (pygame.K_EQUALS, pygame.K_PLUS,
+                                      pygame.K_KP_PLUS, pygame.K_RIGHTBRACKET):
+                        pacer.faster()
+                        say(f"time rate {pacer.multiplier:g}x")
+                    elif event.key in (pygame.K_MINUS, pygame.K_KP_MINUS,
+                                      pygame.K_LEFTBRACKET):
+                        pacer.slower()
+                        say(f"time rate {pacer.multiplier:g}x")
+                    elif event.key == pygame.K_SPACE:
+                        pacer.paused = not pacer.paused
+                        say("time paused" if pacer.paused else
+                            f"time rate {pacer.multiplier:g}x")
+                    elif pygame.K_1 <= event.key <= pygame.K_9:
+                        index = event.key - pygame.K_1
+                        if index < len(game.specs):
+                            order(index)
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    mx, my = event.pos[0] - PLAN_X, event.pos[1] - PLAN_Y
+                    best, best_d = None, 28.0
+                    for index, position in enumerate(display.station_position_m):
+                        px, py = to_px(position[0], position[1])
+                        distance = math.hypot(px - mx, py - my)
+                        if distance < best_d:
+                            best, best_d = index, distance
+                    if best is not None:
+                        order(best)
 
-        started = time.perf_counter()
-        game.step(game.frame_window(warp_s))
-        frame_wall_s = time.perf_counter() - started
-        while reported < len(game.rendezvous):
-            meet = game.rendezvous[reported]
-            say(f"arrived at {game.specs[meet.target].name}: "
-                f"{meet.distance_m / 1000.0:.3f} km, "
-                f"{meet.relative_speed_m_s:.2f} m/s")
-            reported += 1
-        if game.replans() > replans_seen:
-            replans_seen = game.replans()
-            say(f"OFF PLAN: re-plan {replans_seen}")
-        if game.order is None:
-            replans_seen = 0
-        flown = game.flown_plan()
-        if flown is not plan_for:
-            plan_for = flown
-            plan_points = [to_px(p[0], p[1]) for p in game.plan_curve()]
+            if frames and step_service.busy:
+                step_service.wait()
+            publication = step_service.latest_result()
+            if (publication is not None
+                    and publication.request.generation > completed_generation):
+                completed_generation = publication.request.generation
+                frame_wall_s = publication.wall_s
+                if publication.error is not None:
+                    selected = publication.request.selection
+                    prefix = ("simulation" if selected is None else
+                              game.specs[selected].name)
+                    pacer.paused = True
+                    say(f"{prefix}: request refused ({publication.error}); "
+                        "simulation paused")
+                else:
+                    pending_publication = publication
+                    candidate = publication.view
+                    if (candidate.guidance_active
+                            and candidate.guidance_signature
+                            != snapshot.guidance_signature
+                            and pacer.multiplier
+                            > GUIDANCE_PRESENTATION_MULTIPLIER):
+                        # This endpoint includes coast time already accepted at
+                        # the old presentation rate.  Present that interval at
+                        # the rate under which it was requested, then reduce
+                        # the rate before asking physics for a guided window.
+                        guidance_rate_pending = True
 
-        # ---- draw the plan view ----
-        text.begin_frame()
-        glClearColor(BG[0] / 255, BG[1] / 255, BG[2] / 255, 1.0)
-        glClear(GL_COLOR_BUFFER_BIT)
-        view = pygame.Surface((PLAN_SIZE, PLAN_SIZE), pygame.SRCALPHA)
-        view.fill((18, 20, 26, 255))
-        pygame.draw.circle(view, BLUE, (int(centre), int(centre)),
-                           max(3, int(R_EARTH * scale)))
-        stations, _ = game.station_states()
-        for index, (spec, position) in enumerate(zip(game.specs, stations)):
-            colour = TARGET_COLOURS[index % len(TARGET_COLOURS)]
-            pygame.draw.circle(view, (38, 44, 54), (int(centre), int(centre)),
-                               int(spec.radius_m * scale), 1)
-            px, py = to_px(position[0], position[1])
-            chosen = game.order is not None and game.order.target == index
-            pygame.draw.circle(view, colour, (int(px), int(py)),
-                               7 if chosen else 5)
-            if chosen:
-                pygame.draw.circle(view, colour, (int(px), int(py)), 13, 1)
-            view.blit(small.render(f"{index + 1} {spec.name}", True, colour),
-                      (px + 9, py - 7))
-        if len(plan_points) > 1:
-            pygame.draw.lines(view, AMBER if game.on_plan() else RED, False,
-                              plan_points, 1)
-        if len(game.path) > 1:
-            trail = [to_px(x, y) for x, y in game.path[-3000:]]
-            pygame.draw.lines(view, GREEN, False, trail, 2)
-        position, _ = game.craft.r()
-        drawing = craft_drawing(game.craft, game.loaded_centre_of_mass)
-        # on the map the craft is an icon: its declared geometry at a fixed
-        # icon scale (the body's largest extent ~14 px)
-        icon_scale = 14.0 / max(float(np.max(np.abs(drawing.body))) * 2.0,
-                                1.0e-9)
-        _draw_craft(view, to_px(position[0], position[1]), icon_scale,
-                    drawing, frame, detail=False)
-        text.draw_surface(view, PLAN_X, PLAN_Y, cache_key=("view", frame))
+            if pending_publication is not None and pacer.ready:
+                snapshot = pending_publication.view
+                pacer.accept(snapshot.endpoint)
+                pending_publication = None
+                plan_points = [to_px(p[0], p[1])
+                               for p in snapshot.plan_curve]
+                for message in snapshot.announcements:
+                    say(message)
+                while reported < len(snapshot.rendezvous):
+                    meet = snapshot.rendezvous[reported]
+                    say(f"arrived at {game.specs[meet.target].name}: "
+                        f"{meet.distance_m / 1000.0:.3f} km, "
+                        f"{meet.relative_speed_m_s:.2f} m/s")
+                    reported += 1
 
-        # ---- the panel ----
-        rows = [
-            ("ORBITAL GAME -- machine craft", AMBER),
-            (f"t = {_fmt_time(game.time_s)}   warp "
-             f"{game.frame_window(warp_s):.0f} s/frame   "
-             f"wall {frame_wall_s:5.2f} s", INK),
-            (f"planner: {game.planner_name}   status: {game.phase_name()}",
-             INK),
-        ]
-        if game.order is not None:
-            plan = game.flown_plan()
-            spec = game.specs[game.order.target]
-            rows += [
-                (f"tracker: {'ON PLAN' if game.on_plan() else 'OFF PLAN'}"
-                 f"   re-plans {game.replans()}",
-                 GREEN if game.on_plan() else RED),
-                (f"target: {spec.name}", INK),
-                ((f"burn 1 in {_fmt_time(plan.t_burn1 - game.time_s)}"
-                  if game.time_s < plan.t_burn1 else "burn 1 done")
-                 + "   " +
-                 (f"arrive in {_fmt_time(plan.t_burn2 - game.time_s)}"
-                  if game.time_s < plan.t_burn2 else "arrived"), INK),
-                (f"plan dv {plan.dv1:+.1f} / {plan.dv2:+.1f} m/s", INK),
+            demand_s = pacer.wall_demand(wall_elapsed_s)
+            demand_s = pacer.consume(demand_s)
+            # The worker may be negotiating a long burn window.  The UI keeps
+            # this remainder as reported backpressure only; it never creates
+            # an unbounded catch-up request.
+            pacer.backpressure_s = demand_s
+            display = pacer.sample()
+
+            if guidance_rate_pending and pacer.ready:
+                pacer.limit_for_guidance()
+                guidance_rate_pending = False
+                say(f"guidance changed: time rate {pacer.multiplier:g}x")
+
+            if (not step_service.busy and pending_publication is None
+                    and not guidance_rate_pending
+                    and (pending_selections or not pacer.paused)
+                    and (not frames or captured < frames - 1)):
+                # The dt system publishes the next requested window.  The
+                # display multiplier only controls tweening of accepted time.
+                window = None if pacer.paused else snapshot.dt_proposal_s
+                selection = (pending_selections.pop(0)
+                             if pending_selections else None)
+                step_service.submit(window, selection)
+
+
+            # ---- draw the plan view ----
+            text.begin_frame()
+            glClearColor(BG[0] / 255, BG[1] / 255, BG[2] / 255, 1.0)
+            glClear(GL_COLOR_BUFFER_BIT)
+            view = pygame.Surface((PLAN_SIZE, PLAN_SIZE), pygame.SRCALPHA)
+            view.fill((18, 20, 26, 255))
+            pygame.draw.circle(view, BLUE, (int(centre), int(centre)),
+                               max(3, int(R_EARTH * scale)))
+            stations = display.station_position_m
+            for index, (spec, position) in enumerate(zip(game.specs, stations)):
+                colour = TARGET_COLOURS[index % len(TARGET_COLOURS)]
+                pygame.draw.circle(view, (38, 44, 54), (int(centre), int(centre)),
+                                   int(spec.radius_m * scale), 1)
+                px, py = to_px(position[0], position[1])
+                chosen = snapshot.order_target == index
+                pygame.draw.circle(view, colour, (int(px), int(py)),
+                                   7 if chosen else 5)
+                if chosen:
+                    pygame.draw.circle(view, colour, (int(px), int(py)), 13, 1)
+                view.blit(small.render(f"{index + 1} {spec.name}", True, colour),
+                          (px + 9, py - 7))
+            if len(plan_points) > 1:
+                pygame.draw.lines(view, AMBER if snapshot.on_plan else RED, False,
+                                  plan_points, 1)
+            if len(snapshot.path) > 1:
+                trail = [to_px(x, y) for x, y in snapshot.path[-3000:]]
+                pygame.draw.lines(view, GREEN, False, trail, 2)
+            position = display.craft_position_m
+            drawing = display.craft_drawing
+            # on the map the craft is an icon: its declared geometry at a fixed
+            # icon scale (the body's largest extent ~14 px)
+            icon_scale = 14.0 / max(float(np.max(np.abs(drawing.body))) * 2.0,
+                                    1.0e-9)
+            _draw_craft(view, to_px(position[0], position[1]), icon_scale,
+                        drawing, frame, detail=False)
+            text.draw_surface(view, PLAN_X, PLAN_Y, cache_key=("view", frame))
+            text.draw(f"dt limiting metric: {snapshot.dt_blocker}",
+                      PLAN_X + 8, PLAN_Y + 8, AMBER)
+
+            # ---- the panel ----
+            rows = [
+                ("ORBITAL GAME -- machine craft", AMBER),
+                (f"t = {_fmt_time(display.time_s)}   dt proposal "
+                 f"{snapshot.dt_proposal_s:.6g} s   "
+                 f"wall {frame_wall_s:5.2f} s", INK),
+                (("PAUSED" if pacer.paused else
+                  f"rate {pacer.multiplier:g}x")
+                 + f"   backpressure {pacer.backpressure_s:.3g} s"
+                 + ("   calculating" if step_service.busy else ""), AMBER),
+                (f"propagator: {snapshot.propagation_mode}",
+                 GREEN if snapshot.propagation_mode.startswith("GREEN")
+                 else AMBER),
+                (f"planner: {snapshot.planner_name}   status: "
+                 f"{snapshot.phase_name}",
+                 INK),
             ]
-        if game.plan_deviation_m is not None:
-            rows.append((f"plan deviation {game.plan_deviation_m:9.1f} m",
-                         GREEN))
-        if game.rendezvous:
-            meet = game.rendezvous[-1]
-            rows.append((f"last rendezvous {meet.distance_m:.1f} m "
-                         f"@ {meet.relative_speed_m_s:.3f} m/s", AMBER))
-        rows.append((f"propellant {game.propellant_kg:7.1f} kg "
-                     f"({100.0 * game.propellant_fraction:5.1f}%)  mass "
-                     f"{game.craft.mass_kg:7.1f} kg",
-                     RED if game.propellant_fraction < 0.1 else INK))
-        contents = game.craft.tank_propellant_kg()
-        for t, tank in enumerate(game.craft.craft.tanks):
-            left = contents[tank.identity]
-            loaded = game.loaded_tank_kg[tank.identity]
-            share = 0.0 if loaded <= 0.0 else left / loaded
-            rows.append((f"  {tank.identity:<15} {tank.fluid:<10} "
-                         f"{left:7.2f} kg ({100.0 * share:5.1f}%)",
-                         TANK_COLOURS[t % len(TANK_COLOURS)]))
-        gimbal = game.main_gimbal()
-        if gimbal is not None:
-            state, command = gimbal
-            commanded = ("--" if math.isnan(command)
-                         else f"{math.degrees(command):5.2f}")
-            rows.append((f"main gimbal {math.degrees(state):5.2f} deg "
-                         f"(command {commanded} deg)", INK))
-        shift = game.craft.centre_of_mass() - game.loaded_centre_of_mass
-        rows.append((f"centre of mass moved {1000.0 * np.linalg.norm(shift):6.1f}"
-                     f" mm since loading", (255, 120, 210)))
-        rows.append(("thruster groups (live / fired this frame):", DIM))
-        for label, count, lit, live, fired in game.thruster_groups():
-            rows.append((f"  {label:<6} {lit:2d}/{count:<2d} "
-                         f"{'FIRING' if lit else '  off '}  live {live:4.2f}"
-                         f"  frame {fired:4.2f}",
-                         AMBER if lit else DIM))
-        y = 20
-        for row, colour in rows:
-            text.draw(row, PANEL_X, y, colour)
-            y += 19
-        y += 4
-        inset = pygame.Surface((INSET_SIZE, INSET_SIZE), pygame.SRCALPHA)
-        inset.fill((22, 25, 31, 255))
-        reach = max(float(np.max(np.abs(drawing.body))),
-                    max((float(np.linalg.norm(drawing.centre_of_mass_m
-                                              + part.mount_m))
-                         for part in drawing.parts), default=0.0))
-        inset_scale = 0.5 * INSET_SIZE / (reach * (1.0 + 0.6 * PLUME_LENGTH_BODY))
-        _draw_craft(inset, (INSET_SIZE / 2, INSET_SIZE / 2), inset_scale,
-                    drawing, frame)
-        inset.blit(small.render(
-            f"top view; CoM shift x{COM_SHIFT_MAGNIFICATION:.0f}", True, DIM),
-            (6, 4))
-        text.draw_surface(inset, PANEL_X, y, cache_key=("inset", frame))
-        y += INSET_SIZE + 8
-        for row in ("click a station (or 1-9) to go there; +/- warp; ESC",
-                    *messages):
-            text.draw(row, PANEL_X, y, DIM if not row.startswith(
-                ("->", "arr", "OFF")) else AMBER)
-            y += 19
-        text.end_frame()
+            if snapshot.order_target is not None:
+                spec = game.specs[snapshot.order_target]
+                _start, arrival, first_burn, _last_burn = snapshot.plan_times
+                rows += [
+                    (f"tracker: {'ON PLAN' if snapshot.on_plan else 'OFF PLAN'}"
+                     f"   re-plans {snapshot.replans}",
+                     GREEN if snapshot.on_plan else RED),
+                    (f"target: {spec.name}", INK),
+                    ((f"burn 1 in {_fmt_time(first_burn - display.time_s)}"
+                      if display.time_s < first_burn else "burn 1 done")
+                     + "   " +
+                     (f"arrive in {_fmt_time(arrival - display.time_s)}"
+                      if display.time_s < arrival else "arrived"), INK),
+                ]
+                rows.append((snapshot.plan_delta_v, INK))
+            if snapshot.plan_deviation_m is not None:
+                rows.append((f"plan deviation {snapshot.plan_deviation_m:9.1f} m",
+                             GREEN))
+            if snapshot.rendezvous:
+                meet = snapshot.rendezvous[-1]
+                rows.append((f"last rendezvous {meet.distance_m:.1f} m "
+                             f"@ {meet.relative_speed_m_s:.3f} m/s", AMBER))
+            rows.append((f"propellant {snapshot.propellant_kg:7.1f} kg "
+                         f"({100.0 * snapshot.propellant_fraction:5.1f}%)  mass "
+                         f"{snapshot.mass_kg:7.1f} kg",
+                         RED if snapshot.propellant_fraction < 0.1 else INK))
+            for t, (identity, fluid, left, loaded) in enumerate(snapshot.tanks):
+                share = 0.0 if loaded <= 0.0 else left / loaded
+                rows.append((f"  {identity:<15} {fluid:<10} "
+                             f"{left:7.2f} kg ({100.0 * share:5.1f}%)",
+                             TANK_COLOURS[t % len(TANK_COLOURS)]))
+            gimbal = snapshot.main_gimbal
+            if gimbal is not None:
+                state, command = gimbal
+                commanded = ("--" if math.isnan(command)
+                             else f"{math.degrees(command):5.2f}")
+                rows.append((f"main gimbal {math.degrees(state):5.2f} deg "
+                             f"(command {commanded} deg)", INK))
+            rows.append((f"centre of mass moved {1000.0 * snapshot.com_shift_m:6.1f}"
+                         f" mm since loading", (255, 120, 210)))
+            rows.append(("thruster groups (live / fired this frame):", DIM))
+            for label, count, lit, live, fired in snapshot.thruster_groups:
+                rows.append((f"  {label:<6} {lit:2d}/{count:<2d} "
+                             f"{'FIRING' if lit else '  off '}  live {live:4.2f}"
+                             f"  frame {fired:4.2f}",
+                             AMBER if lit else DIM))
+            rows.append(("reaction-wheel actuators (last command / live state):",
+                         DIM))
+            for wheel, command, momentum, speed, power, dumping in (
+                    snapshot.wheel_actuators):
+                axis = "".join(f"{v:+.0f}" for v in wheel.axis)
+                rows.append((
+                    f"  {wheel.identity:<9} axis {axis}  "
+                    f"tau {command:+.3f}/{wheel.max_torque_n_m:.1f} Nm  "
+                    f"{speed * 60.0 / (2.0 * math.pi):+6.0f}/"
+                    f"{wheel.max_speed_rad_s * 60.0 / (2.0 * math.pi):.0f} rpm",
+                    AMBER if dumping or abs(command) > 1.0e-6 else DIM))
+                rows.append((
+                    f"    momentum {momentum:+.1f}/"
+                    f"{wheel.max_momentum_n_m_s:.1f} Nms  "
+                    f"motor {power:+6.1f} W{'  DUMP' if dumping else ''}",
+                    AMBER if dumping or abs(command) > 1.0e-6 else DIM))
+            y = 20
+            for row, colour in rows:
+                text.draw(row, PANEL_X, y, colour)
+                y += 19
+            y += 4
+            inset = pygame.Surface((INSET_SIZE, INSET_SIZE), pygame.SRCALPHA)
+            inset.fill((22, 25, 31, 255))
+            reach = max(float(np.max(np.abs(drawing.body))),
+                        max((float(np.linalg.norm(drawing.centre_of_mass_m
+                                                  + part.mount_m))
+                             for part in drawing.parts), default=0.0))
+            inset_scale = 0.5 * INSET_SIZE / (reach * (1.0 + 0.6 * PLUME_LENGTH_BODY))
+            _draw_craft(inset, (INSET_SIZE / 2, INSET_SIZE / 2), inset_scale,
+                        drawing, frame)
+            inset.blit(small.render(
+                f"top view; CoM shift x{COM_SHIFT_MAGNIFICATION:.0f}", True, DIM),
+                (6, 4))
+            text.draw_surface(inset, PANEL_X, y, cache_key=("inset", frame))
+            y += INSET_SIZE + 8
+            for row in ("click/1-9 target; +/- time rate; SPACE pause; ESC",
+                        *messages):
+                text.draw(row, PANEL_X, y, DIM if not row.startswith(
+                    ("->", "arr", "OFF")) else AMBER)
+                y += 19
+            text.end_frame()
 
-        if frames:
-            # a main or retro engine lit (live or over the frame)
-            lit = any(max(live, fired) > 0.05 for label, _n, _lit, live, fired
-                      in game.thruster_groups() if label != "RCS")
-            burn_shot = burn_shots and lit and frame - last_burn_shot >= 8
-            if burn_shot:
-                last_burn_shot = frame
-            if frame % max(1, every) == 0 or burn_shot:
-                buf = glReadPixels(0, 0, WINDOW[0], WINDOW[1], GL_RGB,
-                                   GL_UNSIGNED_BYTE)
-                image = np.frombuffer(buf, dtype=np.uint8).reshape(
-                    WINDOW[1], WINDOW[0], 3)[::-1]
-                surface = pygame.image.frombuffer(
-                    np.ascontiguousarray(image).tobytes(), WINDOW, "RGB")
-                Path(f"{out_prefix}_{captured:02d}.png").parent.mkdir(
-                    parents=True, exist_ok=True)
-                pygame.image.save(surface, f"{out_prefix}_{captured:02d}.png")
-                captured += 1
-                if captured >= frames:
-                    running = False
-        else:
-            pygame.display.flip()
-        frame += 1
+            if frames:
+                # a main or retro engine lit (live or over the frame)
+                lit = any(max(live, fired) > 0.05 for label, _n, _lit, live, fired
+                          in snapshot.thruster_groups if label != "RCS")
+                burn_shot = burn_shots and lit and frame - last_burn_shot >= 8
+                if burn_shot:
+                    last_burn_shot = frame
+                if frame % max(1, every) == 0 or burn_shot:
+                    buf = glReadPixels(0, 0, WINDOW[0], WINDOW[1], GL_RGB,
+                                       GL_UNSIGNED_BYTE)
+                    image = np.frombuffer(buf, dtype=np.uint8).reshape(
+                        WINDOW[1], WINDOW[0], 3)[::-1]
+                    surface = pygame.image.frombuffer(
+                        np.ascontiguousarray(image).tobytes(), WINDOW, "RGB")
+                    Path(f"{out_prefix}_{captured:02d}.png").parent.mkdir(
+                        parents=True, exist_ok=True)
+                    pygame.image.save(surface, f"{out_prefix}_{captured:02d}.png")
+                    captured += 1
+                    if captured >= frames:
+                        running = False
+            else:
+                pygame.display.flip()
+            frame += 1
 
-    text.close()
-    pygame.quit()
-    return 0
+        return 0
+    finally:
+        try:
+            if step_service is None:
+                game.close()
+            else:
+                step_service.stop()
+        finally:
+            try:
+                if text is not None:
+                    text.close()
+            finally:
+                pygame.quit()
 
 
 if __name__ == "__main__":
@@ -981,16 +1845,18 @@ if __name__ == "__main__":
     ap.add_argument("--out", default="orbital_game")
     ap.add_argument("--click", type=int, default=None,
                     help="select this target index at start")
-    ap.add_argument("--warp", type=float, default=BASE_WARP_S,
-                    help="sim seconds per frame away from burns")
     ap.add_argument("--planner", default="hohmann", choices=sorted(PLANNERS))
     ap.add_argument("--burn-shots", action="store_true",
                     help="headless: also save frames while plumes are lit")
     ap.add_argument("--station-dx", type=float,
                     default=STATION_LENGTH_SCALE_M,
                     help="stations' controller dx (m): accuracy vs speed")
+    ap.add_argument("--time-multiplier", type=float,
+                    default=DEFAULT_TIME_MULTIPLIER,
+                    help="initial simulation seconds per wall second")
     a = ap.parse_args()
     raise SystemExit(main(frames=a.frames, out_prefix=a.out, every=a.every,
-                          click=a.click, warp_s=a.warp, planner=a.planner,
+                          click=a.click, planner=a.planner,
                           burn_shots=a.burn_shots,
-                          station_dx_m=a.station_dx))
+                          station_dx_m=a.station_dx,
+                          time_multiplier=a.time_multiplier))

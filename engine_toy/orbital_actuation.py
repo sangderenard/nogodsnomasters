@@ -884,60 +884,6 @@ def machine_thruster_columns(thrusters, tank_index: dict) -> dict:
     return columns
 
 
-# ------------------------------------------- the actuators' own step bound
-#: The column holding the craft's declared impulse step (N s): the most
-#: impulse one substep may misplace by sampling an actuator state that is
-#: still moving (:func:`actuator_dt_limit_rhs`).
-IMPULSE_STEP_MAX = sp.Symbol("impulse_step_max")
-
-
-def _sampling_bound(force, travel, rate):
-    """The longest step that misplaces at most ``impulse_step_max`` of
-    impulse while a state moves ``travel`` at ``rate`` and scales a force
-    ``force`` per unit of state.
-
-    The slew laws are exact for the STATE, but every later law reads the
-    state at the end of the substep and holds it over the whole substep, so
-    a ramp the step covers is delivered as if it were already done.  A step
-    ``dt`` inside a ramp misplaces ``force * rate * dt^2 / 2``; stepping
-    over the whole remaining ramp at once misplaces ``force * travel^2 /
-    (2 rate)``.  The bound is ``sqrt(2 J / (force * rate))`` while the
-    remaining ramp would misplace more than ``J``; otherwise the whole
-    remaining ramp may be one step, and the bound lifts as ``J / error``
-    (continuous at ``error = J``, where it is exactly the ramp's own
-    duration ``travel / rate``; +inf, the dt system's "no bound", once
-    nothing moves)."""
-    error = force * travel**2 / (2 * rate)
-    return (sp.sqrt(2 * IMPULSE_STEP_MAX / (force * rate))
-            * sp.Max(sp.Integer(1), IMPULSE_STEP_MAX / error))
-
-
-def actuator_dt_limit_rhs(thrusters):
-    """The slew piece's ``dt_limit``: the least :func:`_sampling_bound`
-    over every thruster's throttle state (its spool, force ``max_thrust``)
-    and every gimbal (its slew, the lateral force ``max_thrust * state``
-    per radian), each on the travel LEFT after this substep's slew.  A
-    pending command the step has not reached yet is the next step's ramp."""
-    bounds = []
-    for index, thruster in enumerate(thrusters):
-        s = machine_thruster_symbols(index)
-        state = throttle_state_rhs(index)
-        command = sp.Min(sp.Max(s["throttle"], s["throttle_min"]),
-                         s["throttle_max"])
-        bounds.append(_sampling_bound(s["max_thrust"],
-                                      sp.Abs(command - state),
-                                      s["throttle_slew"]))
-        if thruster.gimballed:
-            travel = sp.Max(*[
-                sp.Abs(sp.Max(-s["cone"], sp.Min(
-                    s["cone"], s[f"gimbal_{actuator}_command"]))
-                    - gimbal_state_rhs(index, actuator))
-                for actuator in ("a", "b")])
-            bounds.append(_sampling_bound(s["max_thrust"] * state, travel,
-                                          s["gimbal_slew"]))
-    return sp.Min(*bounds) if len(bounds) > 1 else bounds[0]
-
-
 # ======================================================================
 # Reaction wheels: electric flywheels on the craft's own axes
 # ======================================================================
@@ -1211,30 +1157,30 @@ PROPULSIVE_ROLES = ("main", "brake")
 def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                     attitude=None, throttle_state=None, gimbal_state=None,
                     tank_propellant_kg: dict | None = None,
+                    force_direction_n=None,
                     round_s: float | None = None, force_weight: float = 1.0,
                     torque_weight: float = 1.0, fuel_weight: float = 1.0e-4,
                     max_branches: int = 64, wheels=(),
                     wheel_momentum_n_m_s=None, angular_velocity_rad_s=None,
-                    power_weight: float = 1.0e-6) -> Allocation:
+                    power_weight: float = 1.0e-9) -> Allocation:
     """The commands that best achieve a wrench: ``force_n`` (world) and
     ``torque_n_m`` (craft frame, about ``centre_of_mass_m``).
 
-    REACTION WHEELS FIRST.  With ``wheels`` (:class:`ReactionWheel`), their
-    absolute momenta ``wheel_momentum_n_m_s`` and the craft rate
-    ``angular_velocity_rad_s``, the torque is the wheels' before it is any
-    thruster's: they burn no propellant, and their electrical cost (the
-    copper loss, ``power_weight`` of the largest wheel's at full torque) is
-    priced far below any propellant.  The request is read the way a driver
-    that knows only the craft writes it, ``I w' = tau - w x I w``; the
-    stored wheel momentum adds ``- w x sum h a``, so the actuators are asked
-    for ``tau + w x sum h a``, and the achieved torque is reported back in
-    the request's own terms.  Each motor torque is held to its limit and to
-    what keeps the wheel's speed inside its band over ``round_s``; a wheel
-    above ``dump_fraction`` of its speed adds the dump torque ``-I_w excess
-    / dump_time_s`` (desaturation).  The thrusters are then allocated
-    (below) for the force and for the torque the wheels did not give: what
-    saturation leaves, and the reaction of a dump, which the RCS couples
-    carry.
+    ``force_direction_n`` retains a pending translation direction when its
+    requested magnitude is temporarily zero (for example while rotating into
+    a burn).  Achieved force may be lateral but may not project backwards
+    along that direction.  With no explicit direction, a nonzero ``force_n``
+    supplies it.
+
+    With ``wheels`` (:class:`ReactionWheel`), throttle, gimbal, navigation
+    thrust and wheel motor torque are one bounded wrench solve.  A wheel's
+    column is torque-only, ``[0; -axis]``; a thruster's column is its world
+    force and moment about the live centre of mass.  The stored wheel
+    momentum contributes ``-w x sum(h axis)`` to the achieved body torque.
+    Each motor command is held to its torque limit and to the speed band it
+    can reach over ``round_s``.  Above ``dump_fraction`` the existing dump
+    command remains the preferred origin of the wheel decision, so a zero
+    requested wrench does not silently cancel desaturation.
 
     A craft whose thrusters declare ROLES is allocated by them:
 
@@ -1242,54 +1188,40 @@ def allocate_wrench(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
       thrust, and lighting both is propellant spent against itself) lights
       only when the FORCE asks for it -- decided by the same problem over
       that set with the torque unweighted;
-    * if one lights, the problem is solved over that set and the
-      ``navigation`` set (RCS) together, with the RCS held to ZERO net
-      force (an equality: couples only).  The main engine's gimbal is its
-      own torque authority (TVC); a gimballed engine whose line misses the
-      centre of mass turns through it, so its thrust leans off the asked
-      direction rather than making a moment -- the lean is the attitude
-      loop's to remove by pointing the thrust line, not the RCS's to fight.
-      Every solve also starts from that geometric trim;
-    * if none lights, the RCS answer the whole wrench (translation).
+    * if one lights, that set, the ``navigation`` set (RCS), its free
+      gimbals and the wheels solve the requested force and torque together.
+      RCS may supply translation or compensate a propulsive engine's
+      lateral force and moment; every solve also starts from the geometric
+      gimbal trim;
+    * if none lights from force alone, navigation-only, main-assisted and
+      brake-assisted answers are compared by that same wrench and resource
+      cost; zero-force requests constrain every candidate to an exact
+      force-free answer.
 
     A design without declared roles is the single problem below.
     """
     common = dict(centre_of_mass_m=centre_of_mass_m, attitude=attitude,
                   throttle_state=throttle_state, gimbal_state=gimbal_state,
                   tank_propellant_kg=tank_propellant_kg, round_s=round_s,
+                  force_direction_n=force_direction_n,
                   force_weight=force_weight, torque_weight=torque_weight,
-                  fuel_weight=fuel_weight, max_branches=max_branches)
-    wheels = tuple(wheels)
-    if not wheels:
-        return _allocate_thrusters(thrusters, force_n, torque_n_m, **common)
-    request = np.asarray(torque_n_m, dtype=float).reshape(3)
-    omega = (np.zeros(3) if angular_velocity_rad_s is None
-             else np.asarray(angular_velocity_rad_s, float).reshape(3))
-    momentum = (np.zeros(len(wheels)) if wheel_momentum_n_m_s is None
-                else np.asarray(wheel_momentum_n_m_s, float).reshape(
-                    len(wheels)))
-    torque, gyroscopic = wheel_allocation(
-        wheels, request, momentum, omega, round_s=round_s,
-        power_weight=power_weight)
-    axes = np.stack([np.asarray(w.axis, float) for w in wheels], axis=1)
-    # the actuators owe tau + w x (A h); the wheels give -A tau_m of it
-    remainder = request + gyroscopic + axes @ torque
-    thrust = _allocate_thrusters(thrusters, force_n, remainder, **common)
-    achieved = thrust.torque_n_m - axes @ torque - gyroscopic
-    return dataclasses.replace(thrust, torque_n_m=achieved,
-                               torque_shortfall_n_m=request - achieved,
-                               wheel_torque_n_m=torque)
+                  fuel_weight=fuel_weight, max_branches=max_branches,
+                  wheels=tuple(wheels),
+                  wheel_momentum_n_m_s=wheel_momentum_n_m_s,
+                  angular_velocity_rad_s=angular_velocity_rad_s,
+                  power_weight=power_weight)
+    return _allocate_thrusters(thrusters, force_n, torque_n_m, **common)
 
 
 def wheel_allocation(wheels, request, momentum, omega, *, round_s=None,
                      power_weight: float = 1.0e-6):
     """``(motor torques, w x sum h a)``: the wheels' share of the craft
-    torque ``request`` (:func:`allocate_wrench`'s convention) by bounded
-    least squares (scipy ``lsq_linear``) over each motor's box -- its torque
+    torque ``request`` (:func:`allocate_wrench`'s convention) by the compiled
+    AbstractTensor bounded least-squares solve over each motor's box -- its torque
     limit and, over ``round_s``, its speed band -- with the dump torque of
     any wheel above its dump fraction added on top (the share is solved
     inside what the box leaves after the dump)."""
-    from scipy.optimize import lsq_linear
+    from orbital_allocator_native import bounded_least_squares_solver
 
     axes = np.stack([np.asarray(w.axis, float) for w in wheels], axis=1)
     inertia = np.asarray([w.rotor_inertia_kg_m2 for w in wheels])
@@ -1318,28 +1250,24 @@ def wheel_allocation(wheels, request, momentum, omega, *, round_s=None,
                                       / reference))])
     rhs = np.concatenate([target / scale, np.zeros(len(wheels))])
     lower, upper = low - dump, high - dump
-    open_ = upper > lower
-    share = np.zeros(len(wheels))
-    if np.any(open_):
-        # a wheel whose box has closed (pinned at a band edge) is held there
-        fixed = ~open_
-        result = lsq_linear(rows[:, open_],
-                            rhs - rows[:, fixed] @ lower[fixed],
-                            bounds=(lower[open_], upper[open_]))
-        share[open_] = result.x
-        share[fixed] = lower[fixed]
-    else:
-        share = lower
+    solver = bounded_least_squares_solver(rows.shape[0], len(wheels))
+    share = solver.solve(rows, rhs, lower, upper,
+                         initial=np.clip(np.zeros(len(wheels)), lower, upper),
+                         regularization=1.0e-12, tolerance=1.0e-12)
     return np.clip(share + dump, low, high), gyroscopic
 
 
 def _allocate_thrusters(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                         attitude=None, throttle_state=None, gimbal_state=None,
                         tank_propellant_kg: dict | None = None,
+                        force_direction_n=None,
                         round_s: float | None = None,
                         force_weight: float = 1.0, torque_weight: float = 1.0,
                         fuel_weight: float = 1.0e-4,
-                        max_branches: int = 64) -> Allocation:
+                        max_branches: int = 64, wheels=(),
+                        wheel_momentum_n_m_s=None,
+                        angular_velocity_rad_s=None,
+                        power_weight: float = 1.0e-9) -> Allocation:
     """:func:`allocate_wrench` over the thrusters alone (its role
     structure, below)."""
     thrusters = tuple(thrusters)
@@ -1351,8 +1279,12 @@ def _allocate_thrusters(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
     common = dict(centre_of_mass_m=centre_of_mass_m, attitude=attitude,
                   throttle_state=throttle_state, gimbal_state=gimbal_state,
                   round_s=round_s, force_weight=force_weight,
+                  force_direction_n=force_direction_n,
                   torque_weight=torque_weight, fuel_weight=fuel_weight,
-                  max_branches=max_branches)
+                  max_branches=max_branches, wheels=tuple(wheels),
+                  wheel_momentum_n_m_s=wheel_momentum_n_m_s,
+                  angular_velocity_rad_s=angular_velocity_rad_s,
+                  power_weight=power_weight)
     if (not navigation or not propulsive
             or roles - {"navigation", *PROPULSIVE_ROLES}):
         return _allocate(thrusters, force_n, torque_n_m,
@@ -1365,7 +1297,9 @@ def _allocate_thrusters(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
     sets = [group for group in sets if group]
     # does the FORCE light a propulsive set?  (torque unweighted: a set the
     # force alone leaves dark is not lit to make torque)
-    force_only = dict(common, torque_weight=0.0)
+    force_only = dict(common, torque_weight=0.0, wheels=(),
+                      wheel_momentum_n_m_s=None,
+                      angular_velocity_rad_s=None)
     lighting = []
     for group in sets:
         push = _allocate(thrusters, target_f, np.zeros(3), active=group,
@@ -1373,28 +1307,21 @@ def _allocate_thrusters(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
         if np.any(delivered_throttles(thrusters,
                                       push.throttles)[group] > 0.0):
             lighting.append(group)
-    if not lighting:
-        # nothing pushes: the RCS answer the whole wrench (translation)
-        return _allocate(thrusters, force_n, torque_n_m, active=navigation,
-                         tank_propellant_kg=tank_propellant_kg, **common)
-    # lit: a gimballed engine first settles its own moment by its gimbal
-    # (the set alone, the whole wrench asked of it: TVC); then the set's
-    # throttles and the RCS together, the gimbals held there and the RCS
-    # held to couples -- so the RCS take only the torque the set leaves
-    # and never buy back the lean
-    trials = []
-    for group in lighting:
-        held = dict(common)
-        if any(thrusters[k].gimballed for k in group):
-            settle = _allocate(thrusters, force_n, torque_n_m, active=group,
-                               tank_propellant_kg=tank_propellant_kg,
-                               **common)
-            held["gimbal_state"] = settle.gimbal_rad
+    # Navigation-only, main-assisted and brake-assisted answers are evaluated
+    # by the same constrained wrench solve.  The allocator, not a role
+    # shortcut, decides which available actuator graph best answers the need.
+    trials = [_allocate(thrusters, force_n, torque_n_m, active=navigation,
+                        tank_propellant_kg=tank_propellant_kg, **common)]
+    candidates = lighting if lighting else sets
+    for group in candidates:
+        # One graph: the propulsive gimbals, navigation translation/couples,
+        # and reaction wheels may all compensate one another.  The propulsive
+        # roles stay mutually exclusive; opposing engines are not burned
+        # against each other merely to manufacture a moment.
         trials.append(_allocate(thrusters, force_n, torque_n_m,
                                 active=group + navigation,
-                                net_zero=navigation, hold_gimbals=True,
                                 tank_propellant_kg=tank_propellant_kg,
-                                **held))
+                                **common))
     best = min(trials, key=lambda trial: trial.cost)
     return dataclasses.replace(
         best, branches=sum(trial.branches for trial in trials))
@@ -1403,17 +1330,21 @@ def _allocate_thrusters(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
 def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
               attitude=None, throttle_state=None, gimbal_state=None,
               tank_propellant_kg: dict | None = None,
+              force_direction_n=None,
               round_s: float | None = None, force_weight: float = 1.0,
               torque_weight: float = 1.0, fuel_weight: float = 1.0e-4,
               max_branches: int = 64, active=None,
-              net_zero=(), hold_gimbals: bool = False) -> Allocation:
+              net_zero=(), hold_gimbals: bool = False, wheels=(),
+              wheel_momentum_n_m_s=None, angular_velocity_rad_s=None,
+              power_weight: float = 1.0e-9) -> Allocation:
     """The exact problem below over the ``active`` thrusters (all when
     ``None``; the rest off).  ``hold_gimbals``: every gimbal
     stays at ``gimbal_state``.  ``net_zero``: fixed thrusters whose summed
     force must vanish (an equality: they may only make couples).
 
-    Decision variables: each thruster's throttle and each gimballed
-    thruster's two actuator angles ``(a, b)``.  Cost (the tracker's form):
+    Decision variables: each thruster's throttle, each gimballed thruster's
+    two actuator angles ``(a, b)``, and each wheel's motor-torque share
+    about its desaturation command.  Cost (the tracker's form):
 
         J = W_F |F(x) - F*|^2 / (2 T_max^2) + W_tau |tau(x) - tau*|^2
             / (2 tau_max^2) + fuel_weight sum_k q_k u_k / q_max
@@ -1435,11 +1366,13 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
     * fuel: per tank, ``round_s * sum_k share_kt * flow_k(u_k) <= tank``;
       a thruster with an empty feed tank delivers nothing.
 
-    Each branch is solved by SLSQP from the current states (warm) and from
-    the gimbal centre, the better kept.  Without ``round_s`` there is no
+    Each branch is solved by a fixed-topology bounded Gauss-Newton iteration.
+    Its linear step is the repository's compiled AbstractTensor linear solve,
+    with one prepared native execution reused for every branch and guidance
+    retry of the same actuator topology.  Without ``round_s`` there is no
     slew or fuel limit (the static allocation).
     """
-    from scipy.optimize import minimize
+    from orbital_allocator_native import bounded_least_squares_solver
 
     thrusters = tuple(thrusters)
     count = len(thrusters)
@@ -1456,6 +1389,51 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
     h = None if round_s is None else float(round_s)
     if h is not None and not h > 0.0:
         raise ValueError("round_s must be positive")
+
+    wheels = tuple(wheels)
+    wheel_count = len(wheels)
+    if wheel_count:
+        axes = np.stack([np.asarray(w.axis, float) for w in wheels], axis=1)
+        momentum = (np.zeros(wheel_count)
+                    if wheel_momentum_n_m_s is None else
+                    np.asarray(wheel_momentum_n_m_s, float).reshape(
+                        wheel_count))
+        omega = (np.zeros(3) if angular_velocity_rad_s is None else
+                 np.asarray(angular_velocity_rad_s, float).reshape(3))
+        wheel_inertia = np.asarray(
+            [w.rotor_inertia_kg_m2 for w in wheels])
+        wheel_top = np.asarray([w.max_speed_rad_s for w in wheels])
+        wheel_limit = np.asarray([w.max_torque_n_m for w in wheels])
+        wheel_speed = momentum / wheel_inertia - axes.T @ omega
+        wheel_low, wheel_high = -wheel_limit, wheel_limit.copy()
+        if h is not None:
+            wheel_low = np.maximum(
+                wheel_low, wheel_inertia * (-wheel_top - wheel_speed) / h)
+            wheel_high = np.minimum(
+                wheel_high, wheel_inertia * (wheel_top - wheel_speed) / h)
+            wheel_high = np.maximum(wheel_high, wheel_low)
+        wheel_band = np.asarray([w.dump_fraction for w in wheels]) * wheel_top
+        wheel_excess = wheel_speed - np.clip(
+            wheel_speed, -wheel_band, wheel_band)
+        wheel_dump = np.clip(
+            -wheel_inertia * wheel_excess
+            / np.asarray([w.dump_time_s for w in wheels]),
+            wheel_low, wheel_high)
+        wheel_share_low = wheel_low - wheel_dump
+        wheel_share_high = wheel_high - wheel_dump
+        wheel_gyroscopic = np.cross(omega, axes @ momentum)
+        wheel_copper = np.asarray([
+            w.winding_resistance_ohm / w.torque_constant_n_m_a**2
+            for w in wheels])
+        wheel_reference = float(
+            (wheel_copper * wheel_limit**2).max()) or 1.0
+        wheel_price = power_weight * wheel_copper / wheel_reference
+    else:
+        axes = np.zeros((3, 0))
+        wheel_dump = np.zeros(0)
+        wheel_share_low = wheel_share_high = np.zeros(0)
+        wheel_gyroscopic = np.zeros(3)
+        wheel_price = np.zeros(0)
 
     thrust = np.asarray([t.max_thrust_n for t in thrusters], dtype=float)
     arms = np.asarray([np.asarray(t.position_m, float) - centre
@@ -1531,10 +1509,11 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                         if choice[k] == "on" else (low[k], high[k]))
                     for k in on}
         g_on = [k for k in gimbals if k in u_bounds]
-        n_u, n_g = len(on), 2 * len(g_on)
+        n_u, n_g, n_w = len(on), 2 * len(g_on), wheel_count
         bounds = [u_bounds[k] for k in on]
         for k in g_on:
             bounds.extend(gimbal_box[k])
+        bounds.extend(zip(wheel_share_low, wheel_share_high))
 
         def unpack(x):
             u = np.zeros(count)
@@ -1543,7 +1522,8 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                 u[k] = x[i]
             for i, k in enumerate(g_on):
                 ang[k] = x[n_u + 2 * i:n_u + 2 * i + 2]
-            return u, ang
+            share = np.asarray(x[n_u + n_g:n_u + n_g + n_w])
+            return u, ang, share
 
         price = np.asarray([fuel_price[k] for k in on])
 
@@ -1556,14 +1536,17 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
             f = thrust[k] * thrusters[k].direction_at(*angles0[k])
             columns[:3, i] = wf * (rotation @ f)
             columns[3:, i] = wt * np.cross(arms[k], f)
-        target = np.concatenate([wf * target_f, wt * target_t])
+        target = np.concatenate([
+            wf * target_f,
+            wt * (target_t + wheel_gyroscopic + axes @ wheel_dump)])
         slot_of = {k: i for i, k in enumerate(on)}
         frames = [thrusters[k].gimbal_frame() for k in g_on]
 
-        def fun(x):
+        def wrench_jacobian(x):
             u = x[:n_u]
-            jac = np.zeros((6, n_u + n_g))
+            jac = np.zeros((6, n_u + n_g + n_w))
             jac[:, :n_u] = columns
+            jac[3:, n_u + n_g:] = -wt * axes
             for i, k in enumerate(g_on):
                 n, e1, e2 = frames[i]
                 a, b = x[n_u + 2 * i], x[n_u + 2 * i + 1]
@@ -1585,13 +1568,50 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                         jac[:, column] = block
                     else:
                         jac[:, n_u + 2 * i + j] = block
-            residual = jac[:, :n_u] @ u - target
-            value = 0.5 * float(residual @ residual) + float(price @ u)
+            return jac
+
+        def fun(x):
+            u = x[:n_u]
+            share = x[n_u + n_g:n_u + n_g + n_w]
+            jac = wrench_jacobian(x)
+            residual = (jac[:, :n_u] @ u
+                        + jac[:, n_u + n_g:] @ share - target)
+            value = (0.5 * float(residual @ residual) + float(price @ u)
+                     + float(wheel_price @ (share * share)))
             grad = jac.T @ residual
             grad[:n_u] += price
+            grad[n_u + n_g:] += 2.0 * wheel_price * share
             return value, grad
 
         constraints = []
+        # Rotation retains the pending translation direction even while its
+        # force magnitude is gated to zero.  The solve remains free to make
+        # torque with every actuator, but incidental thrust may never oppose
+        # that direction.  The constraint uses the same live gimballed force
+        # columns as the objective, rather than nominal thruster directions.
+        direction_force = (target_f if force_direction_n is None else
+                           np.asarray(force_direction_n, dtype=float).reshape(3))
+        direction_force_size = float(np.linalg.norm(direction_force))
+
+        def achieved_force_and_jac(x):
+            u = x[:n_u]
+            jac = wrench_jacobian(x)
+            return (jac[:3, :n_u] @ u / wf,
+                    jac[:3, :] / wf)
+
+        if direction_force_size > 0.0:
+            requested_direction = direction_force / direction_force_size
+
+            def forward_force(x, direction=requested_direction):
+                force, _jac = achieved_force_and_jac(x)
+                return np.asarray([direction @ force])
+
+            def forward_force_jac(x, direction=requested_direction):
+                _force, jac = achieved_force_and_jac(x)
+                return (direction @ jac)[None, :]
+
+            constraints.append({"type": "ineq", "fun": forward_force,
+                                "jac": forward_force_jac})
         for i, k in enumerate(g_on):
             cos_cone = math.cos(thrusters[k].cone_half_angle_rad)
             slot = n_u + 2 * i
@@ -1601,7 +1621,7 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                                    - cos_cone])
 
             def cone_jac(x, slot=slot):
-                row = np.zeros(n_u + n_g)
+                row = np.zeros(n_u + n_g + n_w)
                 row[slot] = -math.sin(x[slot]) * math.cos(x[slot + 1])
                 row[slot + 1] = -math.cos(x[slot]) * math.sin(x[slot + 1])
                 return row[None, :]
@@ -1609,7 +1629,7 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                                 "jac": cone_jac})
         couple = [i for i, k in enumerate(on) if k in set(net_zero)]
         if couple:
-            rows = np.zeros((3, n_u + n_g))
+            rows = np.zeros((3, n_u + n_g + n_w))
             for i in couple:
                 rows[:, i] = thrust[on[i]] * np.asarray(
                     thrusters[on[i]].direction, dtype=float)
@@ -1619,7 +1639,7 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
         budgets = []
         if h is not None:
             for tank, kg in tanks.items():
-                row = np.zeros(n_u + n_g)
+                row = np.zeros(n_u + n_g + n_w)
                 for i, k in enumerate(on):
                     for name, share in thrusters[k].feeds:
                         if name == tank:
@@ -1632,16 +1652,18 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                             [kg - row @ x]),
                         "jac": lambda x, row=row: -row[None, :]})
         if not bounds:
-            u, ang = unpack(np.zeros(0))
+            u, ang, share = unpack(np.zeros(0))
             value = fun(np.zeros(0))[0]
         else:
             lower = np.asarray([b[0] for b in bounds])
             upper = np.asarray([b[1] for b in bounds])
             warm = np.concatenate([np.asarray([state[k] for k in on]),
-                                   *[angles0[k] for k in g_on]])
+                                   *[angles0[k] for k in g_on],
+                                   np.zeros(n_w)])
             warm = np.clip(warm, lower, upper)
             centred = warm.copy()
-            centred[n_u:] = np.clip(0.0, lower[n_u:], upper[n_u:])
+            centred[n_u:n_u + n_g] = np.clip(
+                0.0, lower[n_u:n_u + n_g], upper[n_u:n_u + n_g])
             # the geometric trim: each gimballed engine's line through the
             # centre of mass (a start, not an answer)
             trim = warm.copy()
@@ -1650,36 +1672,87 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
                     thrusters[k], -arms[k])
             trim = np.clip(trim, lower, upper)
             best = None
-            # SLSQP's ftol is absolute on the objective; an RCS-sized request
-            # at the main engine's scale has an objective of ~1e-9, so the
-            # solver sees the cost relative to its value at the warm start
-            # (the same problem, the minimiser unchanged)
-            unit = max(fun(warm)[0], fun(centred)[0], 1.0e-300)
-
-            def scaled(x):
-                value, grad = fun(x)
-                return value / unit, grad / unit
+            # Every role/deadband branch pads to the same fixed actuator
+            # topology.  The compiled solver is therefore built once for the
+            # craft rather than once for each active subset.
+            solver_columns = count + 2 * len(gimbals) + wheel_count
+            solver = bounded_least_squares_solver(6, solver_columns)
             starts = [warm]
             for extra in (centred, trim):
                 if not any(np.array_equal(extra, seen) for seen in starts):
                     starts.append(extra)
             for x0 in starts:
-                result = minimize(scaled, x0, jac=True, method="SLSQP",
-                                  bounds=bounds, constraints=constraints,
-                                  options={"ftol": 1.0e-15,
-                                           "maxiter": 1000})
-                x = np.clip(result.x, lower, upper)
-                x = _onto_cones(x, n_u, g_on, thrusters)
-                x = _within_budgets(x, n_u, budgets)
+                x = np.asarray(x0, dtype=float).copy()
+                for _iteration in range(12):
+                    jac = wrench_jacobian(x)
+                    u_now = x[:n_u]
+                    share_now = x[n_u + n_g:n_u + n_g + n_w]
+                    achieved_weighted = (jac[:, :n_u] @ u_now
+                                         + jac[:, n_u + n_g:] @ share_now)
+                    residual = target - achieved_weighted
+                    padded = np.zeros((6, solver_columns))
+                    padded[:, :x.size] = jac
+                    step_low = np.zeros(solver_columns)
+                    step_high = np.zeros(solver_columns)
+                    step_low[:x.size] = lower - x
+                    step_high[:x.size] = upper - x
+                    linear = np.zeros(solver_columns)
+                    linear[:n_u] = price
+                    if n_w:
+                        linear[n_u + n_g:n_u + n_g + n_w] = (
+                            2.0 * wheel_price * share_now)
+                    delta = solver.solve(
+                        padded, residual, step_low, step_high,
+                        initial=np.zeros(solver_columns),
+                        regularization=1.0e-12, linear_term=linear,
+                        tolerance=1.0e-12)[:x.size]
+                    if not np.all(np.isfinite(delta)):
+                        break
+                    # A pending translational plan is an inequality, not a
+                    # force target while the craft is still turning.  Limit
+                    # the Newton step at its zero-projection boundary instead
+                    # of allowing a torque solution to thrust backwards.
+                    if direction_force_size > 0.0:
+                        direction = direction_force / direction_force_size
+                        force_now, force_jac = achieved_force_and_jac(x)
+                        projection = float(direction @ force_now)
+                        slope = float(direction @ (force_jac @ delta))
+                        if slope < 0.0 and projection + slope < 0.0:
+                            delta *= max(0.0, min(1.0,
+                                projection / -slope))
+                    before = fun(x)[0]
+                    accepted = None
+                    scale = 1.0
+                    for _line_search in range(12):
+                        trial = np.clip(x + scale * delta, lower, upper)
+                        trial = _onto_cones(trial, n_u, g_on, thrusters)
+                        trial = _within_budgets(trial, n_u, budgets)
+                        if direction_force_size > 0.0:
+                            force_trial, _ = achieved_force_and_jac(trial)
+                            if float(direction @ force_trial) < -1.0e-10:
+                                scale *= 0.5
+                                continue
+                        trial_value = fun(trial)[0]
+                        if trial_value <= before:
+                            accepted = (trial_value, trial)
+                            break
+                        scale *= 0.5
+                    if accepted is None:
+                        break
+                    trial_value, trial = accepted
+                    motion = float(np.max(np.abs(trial - x)))
+                    x = trial
+                    if motion <= 1.0e-11 or before - trial_value <= 1.0e-14:
+                        break
                 value = fun(x)[0]
                 if best is None or value < best[0]:
                     best = (value, x)
             value, x = best
-            u, ang = unpack(x)
+            u, ang, share = unpack(x)
         for k in range(count):
             if choice[k] == "off":
                 u[k] = thrusters[k].throttle_min
-        return value, u, ang
+        return value, u, ang, share
 
     best = None
     branches = 0
@@ -1687,19 +1760,23 @@ def _allocate(thrusters, force_n, torque_n_m, *, centre_of_mass_m,
         choice = [o[0] for o in options]
         for position, k in enumerate(split):
             choice[k] = "on" if bits >> position & 1 else "off"
-        value, u, ang = solve_branch(choice)
+        value, u, ang, share = solve_branch(choice)
         branches += 1
         if best is None or value < best[0]:
-            best = (value, u, ang, choice)
-    value, u, ang, choice = best
+            best = (value, u, ang, share, choice)
+    value, u, ang, share, choice = best
     delivered = np.where([c != "off" for c in choice], u, 0.0)
-    force, torque = machine_wrench(thrusters, delivered, ang, centre,
-                                   rotation)
+    force, thruster_torque = machine_wrench(
+        thrusters, delivered, ang, centre, rotation)
+    wheel_torque = wheel_dump + share
+    torque = (thruster_torque - axes @ wheel_torque
+              - wheel_gyroscopic)
     return Allocation(throttles=u, gimbal_rad=ang, force_n=force,
                       torque_n_m=torque,
                       force_shortfall_n=target_f - force,
                       torque_shortfall_n_m=target_t - torque,
-                      cost=float(value), branches=branches)
+                      cost=float(value), branches=branches,
+                      wheel_torque_n_m=wheel_torque)
 
 
 def _trim_angles(thruster: Thruster, toward) -> np.ndarray:
