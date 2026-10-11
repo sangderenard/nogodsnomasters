@@ -1268,7 +1268,7 @@ $$I(s)=I_0\exp[-\int_0^s\mu(E,x)\,dx].$$
 
 Scattering buildup, secondary radiation and changing energy require a transport equation, not repeated use of one attenuation number. A stopping-power closure is $dE/ds=-S(E,\mathrm{material})$ with range $\int_0^{E_0}dE/S(E)$ under its continuous-slowing-down assumptions.
 
-$$P_{\rm deposited}=\sum_iA_i\,\overline E_{{\rm dep},i},\qquad D_{\rm absorbed}=E_{\rm deposited}/m.$$
+$$P_{\rm deposited}=\sum_iA_i\,\overline E_{\mathrm{dep},i},\qquad D_{\rm absorbed}=E_{\rm deposited}/m.$$
 
 Deposited energy excludes escaping photons/particles and neutrino energy. Using total $Q$ as local heat is generally wrong unless the deposition assumptions justify it. Dose here is a physical energy-per-mass tally, not a biological risk model.
 
