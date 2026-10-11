@@ -1,5 +1,11 @@
 # `C:\dev\Powershell` — top-level workspace map
 
+Compiler handoff (2026-10-11): canonical Turing is the independent repository
+at C:/dev/Powershell/turing. Compiler repairs and profiling are integrated there;
+read turing/TEST_BASELINE_AND_HAZARDS.md's current opening receipt. The
+native-fallback-link parent worktree contains only an ignored copied Turing
+child; merging this root-only repo will not transfer compiler source.
+
 **This is not a project. It's a junk drawer.** `C:\dev\Powershell` is a personal
 scratch workspace where dozens of unrelated projects live side by side in
 whatever state they were last left in — active, abandoned, half-migrated,
