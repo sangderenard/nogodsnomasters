@@ -1089,10 +1089,18 @@ def craft_machine_equations(craft: CraftMachine, center_count: int,
 def craft_machine_dt_pieces(craft: CraftMachine, center_count: int,
                             batch: int = 1, *, green_coast: bool = False,
                             retain_compilation: bool = False):
-    pieces = tuple(equation_piece(name, equations, batch=batch,
-                                 retain_compilation=retain_compilation)
-                   for name, equations in craft_machine_equations(
-                       craft, center_count, green_coast=green_coast))
+    from src.compiler.shell_telemetry import compile_rule_batch
+
+    rules = craft_machine_equations(craft, center_count, green_coast=green_coast)
+    pieces = []
+    with compile_rule_batch(len(rules)) as progress:
+        for name, equations in rules:
+            with progress.rule(name):
+                pieces.append(equation_piece(
+                    name, equations, batch=batch,
+                    retain_compilation=retain_compilation,
+                ))
+    pieces = tuple(pieces)
     return declare_binding(pieces), ("mass properties", "inverse inertia",
                                     *(piece.entry for piece in pieces[2:]))
 
