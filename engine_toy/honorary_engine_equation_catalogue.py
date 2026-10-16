@@ -3766,6 +3766,83 @@ globals().update(_expand_woodshop())
 
 
 # =====================================================================
+# HELMHOLTZ — LIGHT, COLOUR, AND PERCEPTUAL OUTPUT
+# =====================================================================
+# The colour-system selector belongs outside these laws.  A caller may
+# provide a measured/synthetic spectral distribution, a Planck emitter, or
+# an explicitly chosen white point; every route meets at CIE XYZ and leaves
+# this section as linear-light RGB.  Display/device transfer is a final,
+# separate law so spectral addition is never performed on encoded channels.
+
+# HE1: Planck spectral radiance for a black body.
+lambda_m, temperature_K = sp.symbols(
+    'lambda_m temperature_K', positive=True, real=True)
+h_planck, c_light, k_boltzmann = sp.symbols(
+    'h_planck c_light k_boltzmann', positive=True, real=True)
+B_lambda = sp.symbols('B_lambda', nonnegative=True, real=True)
+eq_HE1_1 = sp.Eq(
+    B_lambda,
+    2 * h_planck * c_light**2
+    / (lambda_m**5 * (sp.exp(h_planck * c_light
+       / (lambda_m * k_boltzmann * temperature_K)) - 1)),
+)
+
+# HE2: a general spectral power distribution projected through the colour
+# matching functions.  S_lambda may be analytic, sampled, measured, or the
+# HE1 Planck law; the colour law does not privilege its origin.
+lambda_visible, lambda_min, lambda_max = sp.symbols(
+    'lambda_visible lambda_min lambda_max', positive=True, real=True)
+S_lambda = sp.Function('S_lambda')
+x_bar = sp.Function('x_bar')
+y_bar = sp.Function('y_bar')
+z_bar = sp.Function('z_bar')
+X_cie, Y_cie, Z_cie = sp.symbols('X_cie Y_cie Z_cie', real=True)
+eq_HE2_1 = sp.Eq(
+    X_cie, sp.Integral(S_lambda(lambda_visible) * x_bar(lambda_visible),
+                       (lambda_visible, lambda_min, lambda_max)))
+eq_HE2_2 = sp.Eq(
+    Y_cie, sp.Integral(S_lambda(lambda_visible) * y_bar(lambda_visible),
+                       (lambda_visible, lambda_min, lambda_max)))
+eq_HE2_3 = sp.Eq(
+    Z_cie, sp.Integral(S_lambda(lambda_visible) * z_bar(lambda_visible),
+                       (lambda_visible, lambda_min, lambda_max)))
+
+# HE3: an xyY white-point chooser enters the same XYZ domain.  Named white
+# points are parameter values, not alternate rendering pipelines.
+x_white, y_white, Y_white = sp.symbols(
+    'x_white y_white Y_white', positive=True, real=True)
+X_white, Z_white = sp.symbols('X_white Z_white', real=True)
+eq_HE3_1 = sp.Eq(X_white, x_white * Y_white / y_white)
+eq_HE3_2 = sp.Eq(Z_white, (1 - x_white - y_white) * Y_white / y_white)
+
+# HE4: IEC 61966-2-1 / sRGB D65 XYZ-to-linear-light primary matrix.
+R_linear, G_linear, B_linear = sp.symbols(
+    'R_linear G_linear B_linear', real=True)
+eq_HE4_1 = sp.Eq(
+    R_linear, sp.Float('3.2406255') * X_cie
+    - sp.Float('1.5372080') * Y_cie - sp.Float('0.4986286') * Z_cie)
+eq_HE4_2 = sp.Eq(
+    G_linear, -sp.Float('0.9689307') * X_cie
+    + sp.Float('1.8757561') * Y_cie + sp.Float('0.0415175') * Z_cie)
+eq_HE4_3 = sp.Eq(
+    B_linear, sp.Float('0.0557101') * X_cie
+    - sp.Float('0.2040211') * Y_cie + sp.Float('1.0569959') * Z_cie)
+
+# HE5: the exact sRGB electro-optical encoding law.  Apply this only after
+# all linear spectral/light-field accumulation and exposure operations.
+C_linear, C_srgb = sp.symbols('C_linear C_srgb', nonnegative=True, real=True)
+eq_HE5_1 = sp.Eq(
+    C_srgb,
+    sp.Piecewise(
+        (sp.Float('12.92') * C_linear,
+         C_linear <= sp.Float('0.0031308')),
+        (sp.Float('1.055') * C_linear ** sp.Rational(5, 12)
+         - sp.Float('0.055'), True),
+    ),
+)
+
+
+# =====================================================================
 # ENGINE / EQUATION REGISTRY
 # =====================================================================
 # Everything above is a flat script: every eq_* name is a module global.
@@ -3810,6 +3887,7 @@ ENGINE_PREFIXES = {
     'MX': ('Maxwell', None),
     'LA': ('Langmuir', None),
     'WO': ('Woodshop', None),
+    'HE': ('Helmholtz', None),
 }
 
 _EQ_NAME_RE = _re.compile(r'^eq_([A-Z]+)(\d+)_(\d+[a-z]?)$')
