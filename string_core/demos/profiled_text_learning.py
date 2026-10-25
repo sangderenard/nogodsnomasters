@@ -102,22 +102,15 @@ def run_profiled_demo():
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--native",
-        action="store_true",
-        help="compile and execute the token-derived learning motion natively",
-    )
     parser.add_argument("--steps", type=int, default=12)
     arguments = parser.parse_args(argv)
-    if arguments.native:
-        from demos.native_text_learning import run_native_demo
-
-        receipt = run_native_demo(steps=arguments.steps)
-    else:
-        receipt = run_profiled_demo()
+    
+    # Force native execution; remove the eager run_profiled_demo() branch
+    from demos.native_text_learning import run_native_demo
+    receipt = run_native_demo(steps=arguments.steps)
+    
     for name, value in receipt.items():
         print(f"{name}: {value}")
-
 
 if __name__ == "__main__":
     main()
