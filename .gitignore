@@ -17,6 +17,10 @@
 # child directory.
 !/engine_toy/
 
+# Token Orchard is a versioned graph-native string-core project. Like
+# engine_toy, it is intentionally owned directly by this repository.
+!/string_core/
+
 # Archive/quarantine names are called out explicitly for human readers. These
 # rules are redundant with /*/ at the root, but document the safety boundary.
 /_quarantine/
@@ -32,8 +36,6 @@
 /.DS_Store
 /Thumbs.db
 
-# What inside engine_toy is NOT source (renders, logs, baked native
-# artifacts, build caches, editor backups) is decided by engine_toy's own
-# .gitignore, so the directory carries its rules with it and can become its
-# own repository unchanged.  Nothing about engine_toy's contents is decided
+# What inside each whitelisted project is NOT source is decided by that
+# project's own .gitignore. Nothing about its generated content is decided
 # here.

@@ -16,16 +16,19 @@ not as parts of a monorepo.
 
 ## Git status of this directory
 
-This folder is a root-only coordination repository on branch
+This folder is primarily a root-level coordination repository on branch
 `nogodsnomasters`, with `origin` at
 `https://github.com/sangderenard/nogodsnomasters.git`. The repository tracks
-only files located directly at this level, while `.gitignore` treats every
-child directory as opaque. The unrelated Electrofluid repository and remote
-belong to `pcb/`.
+coordination files located directly at this level and a few deliberate,
+narrowly whitelisted child projects (`site/`, `engine_toy/`, and
+`string_core/`). `.gitignore` treats every other child directory as opaque.
+The unrelated Electrofluid repository and remote belong to `pcb/`.
 
-Do not force-add ignored directories or weaken the root-only ignore rule. Child
-projects retain their own Git histories and local-only files; this repository
-documents how they relate but does not own or back up their contents.
+Do not force-add ignored directories or broaden the child-directory ignore
+rule. A new tracked child must be named explicitly beside the existing
+exceptions. All other child projects retain their own Git histories and
+local-only files; this repository documents how they relate but does not own
+or back up their contents.
 
 ## Where agent behavior guidance actually lives
 
@@ -72,6 +75,7 @@ rules that actually govern it.
 | `socratic/` | Python "socratic_precept_graph" — spaCy/sentence-transformers concept-graph extraction from conversational text. |
 | `speaktome/` | Multi-project Python repo (beam search controllers, `laplace`/DEC utilities, `tensorprinting`, etc.) sharing one venv. **Home of this tree's actual agent-behavior guidance** — see above. |
 | `spectral-analyzer/` | "Pluck" — graph-driven audio/instrument simulation plus GPU-accelerated optics, cameras, and real-time 3D rendering. Its original CQT analyzer remains one subsystem. Being integrated with `nodus`; see `NODUS_PLUCK_HANDOFF.md`. |
+| `string_core/` | Tracked design and future implementation home of **Token Orchard**, a graph-native integer string core, batched service, and compiler target. Start at `string_core/README.md`. |
 | `transmogrifier/` | Legacy standalone snapshot of graph/tensor and `BindingMembrane` experiments. Active Transmogrifier code is integrated into `turing/src/transmogrifier/`; see `transmogrifier/README.md`. |
 | `turing/` | Python compiler/runtime research spanning managed scientific time, abstract tensors, SSA and graph compilation, analog tape execution, cellular simulation, Riemannian blocks, and the integrated Transmogrifier package. Has its own `AGENTS.md`. |
 | `wheelhouse/` | Self-contained template for building a Git-LFS-free pip wheelhouse; companion to `lfsavoider/`. |
