@@ -52,3 +52,23 @@ Follow the root and `speaktome` guidance, preserve unrelated dirty work, do
 not install packages manually, and record material findings in the shared
 experience reports. Generated products belong in the ignored paths declared
 by this directory's `.gitignore`.
+
+## Durable content never lives in `build/`
+
+`build/` (and every other path in `.gitignore`) is disposable: it is ignored,
+regenerated, and invisible to other checkouts, the Linux gate, and cloud
+agents. Anything a later run or another agent must reproduce is authored
+outside it and tracked.
+
+- Acceptance workloads, extraction configs, case files, and golden values
+  (for example the native manager workload and its five golden results)
+  live in `acceptance/`, not in `build/native_manager_acceptance/`.
+- A build directory may *consume* tracked inputs by copying or referencing
+  them; it must never be their only copy. If a script or run writes an input
+  into `build/` first, move it out and commit it before reporting a result.
+- Reports that cite a build product (a `failure.json`, a retained
+  `rejected-repository-ssa-*.pkl`) must also state the tracked inputs that
+  reproduce it. A result that cannot be reproduced from tracked files is not
+  a result.
+- Before ending a task, run `git status --ignored` and confirm nothing the
+  hand-off depends on appears only under an ignored path.
