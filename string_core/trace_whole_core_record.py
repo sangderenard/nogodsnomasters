@@ -1,5 +1,4 @@
 """Print the two exact record claims at the whole-core audit frontier.
-
 This is an ignored, read-only diagnostic. Run it from string_core instead of
 audit_turing_whole_core.py when tracing the current receiver-view loss.
 """
@@ -10,7 +9,7 @@ import runpy
 import sys
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 AUDIT = ROOT / "tools" / "audit_turing_whole_core.py"
 
 

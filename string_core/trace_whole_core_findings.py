@@ -3,7 +3,7 @@ from pathlib import Path
 import runpy
 import sys
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT.parent / "turing"))
 sys.path.insert(0, str(ROOT))
 

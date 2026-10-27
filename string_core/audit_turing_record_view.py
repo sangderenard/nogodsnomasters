@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-project_root = Path(__file__).resolve().parents[1]
+project_root = Path(__file__).resolve().parent
 source_path = project_root / "tools" / "audit_turing_whole_core.py"
 source = source_path.read_text(encoding="utf-8")
 original = 'TURING_ROOT = WORKSPACE_ROOT / "turing"'
