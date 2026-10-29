@@ -28,7 +28,7 @@ for path in (PROJECT, TURING):
 
 FIELDS = ("failures", "checks", "epoch", "rows", "atoms", "cover_tokens",
           "last_token", "last_length", "last_cover", "checksum", "fingerprint")
-METHODS = ("Batch interning", "Single-item interning", "Expand / length / cover",
+METHODS = ("Whole manager acceptance", "Single-item interning", "Expand / length / cover",
            "Slice / concat / atom_at")
 PREFIX = "@@LIVE "
 
@@ -65,8 +65,28 @@ def check_result(result, expected, rounds, collision):
     return metrics
 
 
+def check_manager_result(actual, expected, rounds):
+    """Read the existing acceptance checksum; label its checked invariants.
+
+    Only checksum is exported here. The tracked program explicitly verifies
+    the counts below before returning its supplied golden checksum. These
+    values are therefore not advertised as independently exported telemetry.
+    """
+    if expected != 3 * rounds * rounds + 7000172 * rounds:
+        raise AssertionError("Python manager violates supplied golden law")
+    if actual != expected:
+        raise AssertionError(f"Native manager {actual} != Python/golden {expected}")
+    from token_orchard.contract import AGGREGATE_BASE
+    return {"failures": 0, "checks": 5 * rounds + 9,
+            "epoch": 2 * rounds, "rows": 2 * rounds,
+            "atoms": 5 * rounds, "cover_tokens": 5 * rounds,
+            "last_token": AGGREGATE_BASE + 2 * (rounds - 1) if rounds else 0,
+            "last_length": 0, "last_cover": 0, "checksum": actual,
+            "fingerprint": None}
+
+
 class NativeCore:
-    def __init__(self, backends, queries=False):
+    def __init__(self, backends, profile="manager"):
         import numpy as np
         from src.compiler.extraction_contract import ExtractionContract
         from src.compiler.fortran_c_shell import lower_ast_source_to_ssa
@@ -77,12 +97,20 @@ class NativeCore:
         self.directory = PROJECT / "build" / "live_core" / (
             datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:8])
         self.directory.mkdir(parents=True)
-        entry = "live_workload" if queries else "live_intern_workload"
-        source_path = PROJECT / "demos" / (entry + ".py")
-        if queries:
+        self.profile = profile
+        if profile == "manager":
+            entry = "repeated_manager"
+            source_path = PROJECT / "acceptance/manager_workload.py"
+            from acceptance.manager_workload import repeated_manager
+            self.reference = repeated_manager
+        elif profile == "queries":
+            entry = "live_workload"
+            source_path = PROJECT / "demos/live_workload.py"
             from demos.live_workload import live_workload
             self.reference = live_workload
         else:
+            entry = "live_intern_workload"
+            source_path = PROJECT / "demos/live_intern_workload.py"
             from demos.live_intern_workload import live_intern_workload
             self.reference = live_intern_workload
         source = source_path.read_text(encoding="utf-8")
@@ -94,7 +122,7 @@ class NativeCore:
                              for name in ("core.py", "kernel.py", "contract.py")},
             "backends": list(backends), "status": "compiling", "frames": [],
             "compiler_sha256": compiler_toolchain_fingerprint()["sha256"],
-            "product": "queries" if queries else "interning", "capability_failures": [],
+            "product": profile, "capability_failures": [],
         }
         self.save()
         event("phase", message=f"Lowering the real {self.manifest['product']} core", directory=str(self.directory))
@@ -123,7 +151,7 @@ class NativeCore:
         returns = {tuple(int(value.id) for value in instruction.args)
                    for block in root.blocks.values() for instruction in block.instrs
                    if instruction.op == "Ret" and not instruction.attributes.get("fault_exit")}
-        if len(returns) != 1 or len(next(iter(returns))) != len(FIELDS):
+        if len(returns) != 1 or len(next(iter(returns))) != (1 if profile == "manager" else len(FIELDS)):
             raise RuntimeError(f"Unsettled demo return layout: {returns}")
         self.outputs = next(iter(returns))
         self.manifest.update(lowering_seconds=time.perf_counter() - started,
@@ -163,11 +191,16 @@ class NativeCore:
         python_times = []
         for _ in range(3):
             started = time.perf_counter()
-            expected = self.reference(rounds, method, collision)
+            expected = self.reference(rounds) if self.profile == "manager" else self.reference(rounds, method, collision)
             python_times.append(time.perf_counter() - started)
-        check_result(expected, expected, rounds, collision)
+        if self.profile == "manager":
+            if expected != 3 * rounds * rounds + 7000172 * rounds:
+                raise AssertionError("Python manager violates supplied golden law")
+        else:
+            check_result(expected, expected, rounds, collision)
         feeds = {self.parameters[name]: self.np.asarray([value], dtype=self.np.int64)
-                 for name, value in (("rounds", rounds), ("method", method), ("collision", collision))}
+                 for name, value in (("rounds", rounds), ("method", method), ("collision", collision))
+                 if name in self.parameters}
         for backend, prepare in self.backends.items():
             # Each preparation allocates a fresh invocation's context using
             # the compiler's existing runtime. Warmup is never timed.
@@ -181,61 +214,65 @@ class NativeCore:
                 native_times.append(time.perf_counter() - started)
                 total_times.append(time.perf_counter() - whole_started)
                 actual = tuple(int(execution.buffers[value].reshape(-1)[0]) for value in self.outputs)
-                metrics = check_result(actual, expected, rounds, collision)
+                if self.profile == "manager":
+                    metrics = check_manager_result(actual[0], expected, rounds)
+                else:
+                    metrics = check_result(actual, expected, rounds, collision)
             result = {"backend": backend, "rounds": rounds, "method": method, "collision": collision,
                       "metrics": metrics, "python_seconds": statistics.median(python_times),
                       "native_seconds": statistics.median(native_times),
                       "native_with_workspace_seconds": statistics.median(total_times),
                       "repetitions": 3, "exact_match": True}
+            result["measurement"] = "native-checked invariants" if self.profile == "manager" else "exported native metrics"
             self.manifest["frames"].append(result)
             self.save()
             event("result", **result)
 
 
-def worker(backends, verify=False, methods=(0, 1, 2, 3)):
+def worker(backends, verify=False, methods=(0, 1, 2, 3), verify_collisions=(0, 1), verify_rounds=(0, 1, 3)):
     # Retain construction diagnostics even if the compiler refuses before
     # __init__ can return a ready native core.
     core = NativeCore.__new__(NativeCore)
     try:
         core.__init__(backends)
-        queries = None
-        query_failure = None
+        alternatives = {}
+        refused_products = {}
 
         def exercise(rounds, method, collision):
-            nonlocal queries, query_failure
-            if method < 2:
+            if method == 0 and collision == 0:
                 core.run(rounds, method, collision)
                 return True
-            if queries is None and query_failure is None:
-                queries = NativeCore.__new__(NativeCore)
+            profile = "interning" if method < 2 else "queries"
+            if profile not in alternatives and profile not in refused_products:
+                candidate = NativeCore.__new__(NativeCore)
                 try:
-                    queries.__init__(backends, queries=True)
+                    candidate.__init__(backends, profile=profile)
+                    alternatives[profile] = candidate
                 except Exception as error:
                     traceback.print_exc()
-                    query_failure = f"{type(error).__name__}: {error}"
-                    if hasattr(queries, "manifest"):
-                        queries.manifest.update(status="failed", error=query_failure)
-                        queries.save()
-                    queries = None
-            if query_failure is not None:
-                failure = {"method": method, "message": query_failure}
+                    refused_products[profile] = f"{type(error).__name__}: {error}"
+                    if hasattr(candidate, "manifest"):
+                        candidate.manifest.update(status="failed", error=refused_products[profile])
+                        candidate.save()
+            if profile in refused_products:
+                failure = {"method": method, "message": refused_products[profile]}
                 if failure not in core.manifest["capability_failures"]:
                     core.manifest["capability_failures"].append(failure)
                     core.save()
                 event("method_failure", **failure)
                 return False
-            queries.run(rounds, method, collision)
+            alternatives[profile].run(rounds, method, collision)
             return True
 
         if verify:
             refused = False
-            for collision in (0, 1):
+            for collision in verify_collisions:
                 for method in methods:
-                    for rounds in (0, 1, 3):
+                    for rounds in verify_rounds:
                         if not exercise(rounds, method, collision):
                             refused = True
                             break
-            count = len(core.manifest["frames"]) + (len(queries.manifest["frames"]) if queries else 0)
+            count = len(core.manifest["frames"]) + sum(len(item.manifest["frames"]) for item in alternatives.values())
             core.manifest.update(status="partial" if refused else "verified", verified_frames=count)
             core.save()
             event("partial" if refused else "verified", frames=count, directory=str(core.directory))
@@ -295,6 +332,8 @@ def window(backends, observe_run=None):
     chart.pack(fill="x", pady=8)
     columns = ("backend", "rounds", "rows", "atoms", "checks", "token", "python", "native", "workspace", "result")
     table = ttk.Treeview(outer, columns=columns, show="headings", height=7)
+    table.tag_configure("failed", foreground="#ff9c9c")
+    table.tag_configure("matched", foreground="#65d8b0")
     labels = ("Backend", "Rounds", "Rows", "Atoms", "Checks", "Last token", "Python ms", "Native ms", "+ workspace ms", "Exact")
     for column, label in zip(columns, labels):
         table.heading(column, text=label)
@@ -379,7 +418,7 @@ def window(backends, observe_run=None):
         chart.delete("all")
         width = max(chart.winfo_width(), 400)
         maximum = max([row["metrics"]["atoms"] for row in history] + [1])
-        chart.create_text(14, 14, text="ACTUAL NATIVE STORAGE  ·  exact atoms / aggregate rows", anchor="nw", fill="#a9c4da")
+        chart.create_text(14, 14, text="NATIVE-CHECKED STORAGE  ·  exact atoms / aggregate rows", anchor="nw", fill="#a9c4da")
         for key, color in (("atoms", "#60d8c0"), ("rows", "#70a8ff")):
             points = []
             for i, row in enumerate(history):
@@ -430,17 +469,25 @@ def window(backends, observe_run=None):
                 state.set(f"{METHODS[message['method']]} refused: {message['message']}")
                 log.insert("end", state.get() + "\n")
                 log.see("end")
+                summary.set("METHOD REFUSED — the last successful frame remains below. Select manager acceptance to continue.")
+                table.insert("", "end", tags=("failed",),
+                             values=("compiler", "—", "—", "—", "—", "—", "—", "—", "—", "REFUSED"))
+                table.yview_moveto(1)
+                # Skip the remaining sizes of this refused method, but let
+                # Try all methods expose the other capabilities as requested.
+                remaining = [request for request in pending if request["method"] != message["method"]]
                 pending.clear()
-                busy = False
+                pending.extend(remaining)
+                app.after(350, send_next)
             if kind == "result":
                 metrics = message["metrics"]
                 history.append(message)
                 speed = message["python_seconds"] / max(message["native_with_workspace_seconds"], 1e-12)
                 summary.set(f"{METHODS[message['method']]} · {message['rounds']} rounds · epoch {metrics['epoch']} · "
                             f"{metrics['checks']} checks · exact MATCH\n"
-                            f"Fingerprint digest {metrics['fingerprint']} · cover entries {metrics['cover_tokens']} · "
+                            f"{message.get('measurement', 'exported native metrics')} · checksum {metrics['checksum']} · "
                             f"Python / native incl. workspace: {speed:.2f}× (median of 3)")
-                table.insert("", "end", values=(message["backend"], message["rounds"], metrics["rows"], metrics["atoms"],
+                table.insert("", "end", tags=("matched",), values=(message["backend"], message["rounds"], metrics["rows"], metrics["atoms"],
                              metrics["checks"], metrics["last_token"], f"{message['python_seconds'] * 1000:.3f}",
                              f"{message['native_seconds'] * 1000:.3f}",
                              f"{message['native_with_workspace_seconds'] * 1000:.3f}", "MATCH"))
@@ -475,6 +522,8 @@ def main():
     parser.add_argument("--observe-run", type=Path,
                         help="watch the actual receipts of an ongoing --verify run without compiling again")
     parser.add_argument("--methods", default="0,1,2,3", help="headless verification method numbers")
+    parser.add_argument("--collision-modes", default="0,1", help="headless fingerprint modes (0 normal, 1 forced collisions)")
+    parser.add_argument("--verify-rounds", default="0,1,3", help="headless workload sizes")
     parser.add_argument("--worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     TURING = args.compiler_root.resolve()
@@ -485,7 +534,13 @@ def main():
     methods = tuple(int(value) for value in args.methods.split(","))
     if not methods or set(methods) - set(range(4)):
         parser.error("--methods accepts 0,1,2,3")
-    return worker(backends, args.verify, methods) if args.worker or args.verify else window(backends, args.observe_run)
+    collision_modes = tuple(int(value) for value in args.collision_modes.split(","))
+    if not collision_modes or set(collision_modes) - {0, 1}:
+        parser.error("--collision-modes accepts 0,1")
+    sizes = tuple(int(value) for value in args.verify_rounds.split(","))
+    if not sizes or any(value < 0 or value > 3000 for value in sizes):
+        parser.error("--verify-rounds accepts sizes 0..3000")
+    return worker(backends, args.verify, methods, collision_modes, sizes) if args.worker or args.verify else window(backends, args.observe_run)
 
 
 if __name__ == "__main__":

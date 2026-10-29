@@ -7,7 +7,7 @@ python -u demos/live_core.py
 ```
 
 Choose **Compile whole core**. This submits the tracked
-`demos/live_intern_workload.py` to Turing's canonical `lower_ast_source_to_ssa`,
+`acceptance/manager_workload.py` to Turing's canonical `lower_ast_source_to_ssa`,
 following the real `token_orchard.core`, `kernel`, and `contract` source.
 The complete reachable workload includes the real interning, validation,
 fingerprinting, exact candidate comparison, cover construction, and the
@@ -15,7 +15,8 @@ interning paths. The Python service queues, codecs and
 learning adapter are outside this integer core workload.
 
 The demo builds C and LLVM libraries from that same admitted module. The
-first query/composition request independently compiles `demos/live_workload.py`
+single-item or forced-collision request independently compiles
+`demos/live_intern_workload.py`; the first query/composition request compiles `demos/live_workload.py`
 through the same entry and source contract. A compiler gap in those extra
 methods is reported as a method refusal and leaves interning usable. It
 does not hand-translate the algorithm, patch SSA, or fall back to Python.
@@ -27,19 +28,27 @@ After READY, choose a method and **Run live**, or **Try all methods**:
 
 | Method | Real core calls exercised |
 | --- | --- |
-| Batch interning | `intern_batch` |
+| Whole manager acceptance | Tracked `repeated_manager`, including batch interning, deduplication, five invalid requests, epoch and storage checks |
 | Single-item interning | `intern` |
 | Expand / length / cover | Batch interning plus `token_domain`, `expand`, `length`, `cover` |
 | Slice / concat / atom_at | All query calls plus `slice`, `concat`, `atom_at` |
 
-Each round submits a distinct Unicode pair and byte triple, then repeats
+The extended probes submit a distinct Unicode pair and byte triple, then repeat
 the Unicode request. Checks verify stable token reuse, domain separation,
 exact expansion and reconstruction, and rejection of a Unicode surrogate
-without changing the epoch. **Force hash collisions** sets the actual
+without changing the epoch. These probes remain compiler-refused at the
+recorded main revision; their Python law tests do not establish native support.
+**Force hash collisions** sets the actual
 Vocabulary fingerprint mode to constant: exact candidate comparison must
 still distinguish the different sequences.
 
-The chart and table show actual native output: aggregate rows, atom count,
+In the default manager view the actual native export is the supplied golden
+checksum. The charted rows, epoch, atoms and cover entries are invariants
+explicitly checked by that authored program before its successful return;
+they are labelled **native-checked invariants**, not separately exported
+telemetry. Fingerprint columns are not verified by this manager view.
+
+The extended probes export their actual native metrics: aggregate rows, atom count,
 epoch, checks, last token, cover entries and a digest of the stored fingerprint
 columns. All eleven output integers must match the same authored Python
 workload exactly. Independent laws additionally require zero failures,
@@ -66,8 +75,9 @@ python -u demos/live_core.py --verify --backends c,llvm
 ```
 
 An explicit checkout can be selected with `--compiler-root C:\path\to\turing`.
-To verify only the independently buildable interning product, add `--methods 0,1`.
-That is explicitly partial method coverage; it never claims the query product passed.
+To verify only the tracked manager product, add `--methods 0 --collision-modes 0`.
+Add `--verify-rounds 0,1,17,300,3000` for the original five sizes. That is
+explicitly partial method coverage; it never claims the extra probes passed.
 The actual compiler commit and the core/workload source hashes are recorded
 in `build/live_core/<unique-run>/run.json`. Products are disposable; all
 authored workload, UI and tests live outside `build/`. No old artifact is
@@ -80,7 +90,9 @@ disabled because that worker owns the verification sequence; **Compile whole
 core** starts a separate interactive worker if desired. Observed results are
 the real native run's published frames, not generated sample data.
 
-At main `09e36ef7`, the new query/composition paths expose compiler gaps.
+At main `09e36ef7`, the tracked manager compiled and matched on C and LLVM
+at 0, 1 and 3 rounds (six native frames). The extended telemetry and
+query/composition paths expose compiler gaps.
 [Turing PR #1111](https://github.com/sangderenard/Turing/pull/1111) contains
 the existing materialized-list-return fix and the observed correction that
 keeps resolved `slice` method calls out of structural slice folding. It is a

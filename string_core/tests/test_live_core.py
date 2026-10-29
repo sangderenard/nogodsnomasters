@@ -1,13 +1,27 @@
 """Independent laws for the exact authored live workload and frame protocol."""
 import unittest
 
-from demos.live_core import FIELDS, check_result, frame_sizes
+from demos.live_core import FIELDS, check_result, check_manager_result, frame_sizes
 from demos.live_workload import live_workload
 from demos.live_intern_workload import live_intern_workload
 from token_orchard.contract import AGGREGATE_BASE
 
 
 class LiveCoreLaws(unittest.TestCase):
+    def test_manager_view_uses_the_tracked_goldens_and_reports_unexported_fingerprints(self):
+        import json
+        from pathlib import Path
+        from acceptance.manager_workload import repeated_manager
+        cases = json.loads((Path(__file__).resolve().parents[1] / "acceptance/cases.json").read_text())["repeated_manager"]
+        for arguments, expected in zip(cases["probes"], cases["expected_probe_results"]):
+            rounds = arguments[0]
+            result = check_manager_result(repeated_manager(rounds), expected, rounds)
+            self.assertEqual(result["checksum"], expected)
+            self.assertIsNone(result["fingerprint"])
+        with self.assertRaisesRegex(AssertionError, "Native manager"):
+            check_manager_result(-14, 7000175, 1)
+        with self.assertRaisesRegex(AssertionError, "golden law"):
+            check_manager_result(99, 99, 1)
     def test_independent_interning_product_matches_the_extended_workload(self):
         for rounds in (0, 1, 3, 12):
             for collision in (0, 1):
