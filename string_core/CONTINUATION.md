@@ -86,7 +86,7 @@ integer operation surface**:
 
 1. define the capacity-bearing native vocabulary-state ABI (typed arena
    pointers, used counts, capacities, ownership, and growth/error policy), then
-   clear `tools/audit_turing_whole_core.py` and lower the entire reachable core
+   lower the complete core
    as one Turing compilation product: tensor screening, exact candidate
    verification, indexes, cover construction, ordered mutation, epoch
    publication, and response assembly. Retain the fingerprint-only C/LLVM gate
@@ -147,7 +147,6 @@ python -m compileall -q token_orchard tests benchmarks tools
 python tools/test_turing_compile.py
 python tools/test_turing_ssa_api.py --backend all
 python tools/test_turing_retention.py --backend all
-python tools/audit_turing_whole_core.py  # expected failure until arena ABI lands
 python -m benchmarks.reference_baseline
 python -m benchmarks.tensor_preflight_baseline
 ```

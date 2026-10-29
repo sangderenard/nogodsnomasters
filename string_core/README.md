@@ -1,17 +1,5 @@
 # Token Orchard
 
-## Live native core workbench
-
-Run `python -u demos/live_core.py`, choose **Compile whole core**, then
-**Run live** or **Try all methods**. The window shows native-checked storage
-invariants, exact Python/native agreement, timings, and compiler/runtime failures.
-The tracked manager runs interning, deduplication and validation. Additional
-collision, expansion, cover, slice, concat and atom lookup probes are attempted
-through the actual core source; their remaining compiler refusals stay visible.
-See [the demo guide](demos/LIVE_CORE.md) for the invocation lifetime, verification
-command and compiler requirements. A refusal is displayed; there is no Python
-fallback.
-
 Compile and execute the token-derived `Linear -> Tanh -> Linear` Adam demo:
 
 ```powershell
@@ -174,12 +162,8 @@ LLVM. Token Orchard's logical identifiers remain unsigned by contract, while
 the currently proven native ProgramABI is deliberately `int64`: unsupported
 unsigned declarations must be refused, not silently type-erased.
 
-Attempt the live whole-core lowering (currently expected to stop at the
-receipted native arena-ownership frontier) with:
-
-```powershell
-python tools/audit_turing_whole_core.py
-```
+The partial manager acceptance and live workbench have been removed. Complete
+String Core Python/native equivalence and timing remain unverified.
 
 Run the explicitly non-native reference baseline with:
 

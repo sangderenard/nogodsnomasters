@@ -172,9 +172,9 @@ native pointer cells, an explicit heap owner, and support for arena replacement
 
 That refusal describes the persistent vocabulary arrays grown by aggregate
 minting. It is the correct next boundary: define capacity-bearing owned native
-arenas and pass their counts/capacities through the program ABI. The audit is
-retained at `tools/audit_turing_whole_core.py` and deliberately exits nonzero
-until holistic lowering succeeds; it does not substitute a reduced algorithm.
+arenas and pass their counts/capacities through the program ABI. The partial
+manager audit has since been removed at the user's request. Its historical
+results do not establish complete-core equivalence.
 
 The padded AbstractTensor preflight was remeasured after removing per-length
 Python buckets. At 16,384 strings of 16 atoms, the observed eager ratios against
