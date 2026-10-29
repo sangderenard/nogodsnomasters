@@ -46,7 +46,17 @@ The extended interning telemetry product remains refused by concordance:
 Its failed receipt is `build/live_core/20261029T010008Z-62bbd7f1/run.json`.
 The query product also remains refused. No fallback is used.
 
-The substantial five-size native check uses:
+The substantial five-size native check also completed, exit 0: C and LLVM
+each matched at 0, 1, 17, 300 and 3000 rounds (10 frames), with 650 lowered
+functions and zero concordance findings. Receipt:
+`build/live_core/20261029T012044Z-3c8784b4/run.json`.
+At 3000 rounds the checksum is 21027516000; the program checks 6000 rows,
+15000 atoms and 15000 cover entries. Median Python time was 208.741 ms;
+C was 43.016 ms (43.074 including workspace), LLVM 46.310 ms
+(46.389 including workspace). This is one workload, not a general speed claim.
+The live observer window was visually checked displaying those actual results.
+
+Reproduce with:
 
 ```powershell
 python -u demos/live_core.py --verify --methods 0 --collision-modes 0 --verify-rounds 0,1,17,300,3000 --backends c,llvm

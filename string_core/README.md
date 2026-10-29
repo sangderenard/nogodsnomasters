@@ -3,10 +3,11 @@
 ## Live native core workbench
 
 Run `python -u demos/live_core.py`, choose **Compile whole core**, then
-**Run live** or **Try all methods**. The window shows real native storage
-growth, exact Python/native agreement, timings, and compiler/runtime failures.
-It exercises interning, deduplication, collision handling, expansion, covers,
-slice, concat and atom lookup through the actual core source.
+**Run live** or **Try all methods**. The window shows native-checked storage
+invariants, exact Python/native agreement, timings, and compiler/runtime failures.
+The tracked manager runs interning, deduplication and validation. Additional
+collision, expansion, cover, slice, concat and atom lookup probes are attempted
+through the actual core source; their remaining compiler refusals stay visible.
 See [the demo guide](demos/LIVE_CORE.md) for the invocation lifetime, verification
 command and compiler requirements. A refusal is displayed; there is no Python
 fallback.

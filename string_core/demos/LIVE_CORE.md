@@ -91,7 +91,7 @@ core** starts a separate interactive worker if desired. Observed results are
 the real native run's published frames, not generated sample data.
 
 At main `09e36ef7`, the tracked manager compiled and matched on C and LLVM
-at 0, 1 and 3 rounds (six native frames). The extended telemetry and
+at 0, 1, 17, 300 and 3000 rounds (ten native frames). The extended telemetry and
 query/composition paths expose compiler gaps.
 [Turing PR #1111](https://github.com/sangderenard/Turing/pull/1111) contains
 the existing materialized-list-return fix and the observed correction that
