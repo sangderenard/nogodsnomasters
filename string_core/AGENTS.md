@@ -61,8 +61,7 @@ agents. Anything a later run or another agent must reproduce is authored
 outside it and tracked.
 
 - Acceptance workloads, extraction configs, case files, and golden values
-  (for example the native manager workload and its five golden results)
-  live in `acceptance/`, not in `build/native_manager_acceptance/`.
+  must be tracked outside `build/`.
 - A build directory may *consume* tracked inputs by copying or referencing
   them; it must never be their only copy. If a script or run writes an input
   into `build/` first, move it out and commit it before reporting a result.

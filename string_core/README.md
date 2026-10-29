@@ -162,12 +162,8 @@ LLVM. Token Orchard's logical identifiers remain unsigned by contract, while
 the currently proven native ProgramABI is deliberately `int64`: unsupported
 unsigned declarations must be refused, not silently type-erased.
 
-Attempt the live whole-core lowering (currently expected to stop at the
-receipted native arena-ownership frontier) with:
-
-```powershell
-python tools/audit_turing_whole_core.py
-```
+The partial manager acceptance and live workbench have been removed. Complete
+String Core Python/native equivalence and timing remain unverified.
 
 Run the explicitly non-native reference baseline with:
 
