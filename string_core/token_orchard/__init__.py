@@ -2,6 +2,7 @@
 
 from .contract import *
 from .core import Vocabulary
+from .str_value import TokenOrchardStr, TokenOrchardStrError
 from .encoding import decode_bytes, encode_scalars, intern_encoded, encode_text_token
 from .snapshot import from_snapshot_bytes, snapshot_digest, to_snapshot_bytes
 from .service import RequestTicket, TokenService
