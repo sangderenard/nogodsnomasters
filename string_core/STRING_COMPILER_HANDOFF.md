@@ -90,6 +90,33 @@ depth four; ingress depth zero must not depend on that repair.
 
 ## Measured current behavior
 
+### Integrated consumer compile, 2026-10-31
+
+The tracked `acceptance/native_string_program.py` is one program using all
+four public `String` methods. It requests byte and text tokens through the
+same vocabulary and returns their integer receipts. Its compile driver uses
+Turing's public `lower_ast_source_to_ssa` entry, then requests a native C
+artifact. The driver refuses any execution contract that admits a Python host,
+Python-resident unlowered work, or Python callbacks.
+
+From `C:/dev/Powershell/string_core`, with the current Turing worktree:
+
+```powershell
+python -u tools/compile_native_string_program.py --turing-root C:\Users\alber\.codex\worktrees\exception-admission\turing --output C:\dev\Powershell\string_core\build\native_string_program_20261031
+```
+
+The 2026-10-31 run selected `host_runtime: native`, `whole_program`,
+`unlowered_behavior: reject`, `require_full_native: true`, and
+`python_callbacks: reject`. Source closure nevertheless pursued the Python
+`String.bytes`, `bytes_batch`, `decode_receipt`, and `decode` bodies, then
+`_one_token`, `_byte_values`, `_global_runtime`, and `_GlobalTokenRuntime`.
+Reduction refused before SSA emission: `SOURCE_VALUE_CLASS` for
+`('token_orchard.api', '_byte_values')` value 3 was recorded as
+`builtins.bytes` from the builtin aggregate result, while a propagated
+`String.bytes` call result proposed `builtins.int`. No native artifact was
+produced. The exact `String` component boundary remains the cause to fix;
+changing `_byte_values`'s type would not implement that boundary.
+
 Run from `C:/dev/Powershell/string_core`:
 
 ```powershell
