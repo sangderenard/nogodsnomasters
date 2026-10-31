@@ -85,6 +85,8 @@ class TokenOrchardStr:
         if isinstance(key, slice):
             start, stop, step = key.indices(length)
             if step == 1:
+                if stop < start:
+                    stop = start
                 return self._result(self.vocabulary.slice(self.token, start, stop))
             atoms = self._atoms()
             return TokenOrchardStr.from_atoms(
