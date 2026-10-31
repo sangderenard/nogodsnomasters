@@ -39,9 +39,12 @@ class TokenOrchardStrTests(unittest.TestCase):
             self.assertEqual(value[index].to_text(), source[index])
         for span in (
             slice(None), slice(1, 3), slice(None, None, -1),
-            slice(3, 0, -2), slice(-20, 20, 2),
+            slice(3, 0, -2), slice(-20, 20, 2), slice(3, 1),
+            slice(10, 1), slice(-1, -3), slice(2, 2),
         ):
             self.assertEqual(value[span].to_text(), source[span])
+        empty = self.text("")
+        self.assertEqual(empty[10:1].to_text(), ""[10:1])
         self.assertEqual([part.to_text() for part in value], list(source))
         with self.assertRaises(IndexError):
             value[4]
