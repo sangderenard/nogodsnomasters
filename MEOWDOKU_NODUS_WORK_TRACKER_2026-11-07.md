@@ -18,12 +18,13 @@ This is the current queue for the requests made in this chat. "Live" means check
 | WebGPU build now; Wasm only on actual fallback need or server idle | Root | WebGPU toy small and 4k built in scratch. No Wasm build ran. On-demand/idle Wasm scheduling remains to implement; do not eagerly compile it. |
 | Flip beside Rock/Rotate; choose axis; move actual case; share mechanism with Studio hourglass loading | Studio agent | In progress in isolated branch. Use one deterministic finite case trajectory for physics and render, with existing case-frame inertial inputs. Respect law angular speed/acceleration caps; never render a turn faster than the physics accepts. |
 | Loading screen visible before Meowdoku, with brief indication for each real startup step | Material agent, root integration | Stage timing fix merged and exported, but browser check still showed prolonged black canvas and tiny overlapping "loading..." text. Agent is fixing panel visibility; do not mark done yet. |
-| Dedicated close-up marble designer with full Phong materials, color choices, and rerollable dye shape | Marble agent | In progress for dev 8767; independent of playable course and toy product. |
+| Dedicated close-up marble designer with full Phong materials, color choices, and rerollable dye shape | Marble agent, root integration | Live at `/marble_studio.html` on 8766; headless Chrome screenshot confirmed the layered marble and controls render. Independent of playable course and toy product; no Wasm build. |
+| Remove the long instruction block from the visible game layout while keeping it in page source | Root | Live: `#help` has `hidden` and `aria-hidden`, with no visible layout styles. |
 | Shift server backbone to Nodus KPN, with clearly marked CPython-only nodes | Root / future Nodus lane | Architecture audit saved. Implementation has not begun; first step is to map server duties to graph nodes and identify existing Nodus Python hosting and runtime boundaries. |
 
 ## Order and integration gates
 
-1. Put the close-up marble designer on dev 8767 and inspect it in a browser. Check the live loading panel visually as part of that pass.
+1. Recheck the live loading panel through the entire startup after the first-frame hold fix. Review the marble studio's material appearance and controls with the user.
 2. Review and land the shared case Flip implementation only after its physical timing, 2D/3D law inputs, Studio preview, and case mesh agree. A law/source change may require approved WebGPU rebuilds; Wasm stays lazy.
 3. Reconcile the Claude layout branch with main's dirty chess file without discarding local work. Rebuild affected products in scratch, then deploy the 3D toy and browser-test the marble course. The marble game commit depends on this gate.
 4. Measure 256k recording on the target browser/device; adjust the existing budget/path only from observed failures.
