@@ -17,12 +17,13 @@ This is the current queue for the requests made in this chat. "Live" means check
 | Finish 2D/3D hourglass toy | Root | 3D `sdf_toy` code in `turing-claude-integration-20261107`; scratch WebGPU small and 4k built. Layout merge, live product build/deploy, and 2D peg-filter clog remain. |
 | WebGPU build now; Wasm only on actual fallback need or server idle | Root | WebGPU toy small and 4k built in scratch. No Wasm build ran. On-demand/idle Wasm scheduling remains to implement; do not eagerly compile it. |
 | Flip beside Rock/Rotate; choose axis; move actual case; share mechanism with Studio hourglass loading | Studio agent | In progress in isolated branch. Use one deterministic finite case trajectory for physics and render, with existing case-frame inertial inputs. Respect law angular speed/acceleration caps; never render a turn faster than the physics accepts. |
-| Loading screen visible before Meowdoku, with brief indication for each real startup step | Material agent | Investigating and implementing in isolated branch. Integrate and check on live 8766 when ready. |
+| Loading screen visible before Meowdoku, with brief indication for each real startup step | Material agent, root integration | Fix merged and exported to live 8766; each real stage has a 700 ms minimum. Browser appearance check remains. |
+| Dedicated close-up marble designer with full Phong materials, color choices, and rerollable dye shape | Marble agent | In progress for dev 8767; independent of playable course and toy product. |
 | Shift server backbone to Nodus KPN, with clearly marked CPython-only nodes | Root / future Nodus lane | Architecture audit saved. Implementation has not begun; first step is to map server duties to graph nodes and identify existing Nodus Python hosting and runtime boundaries. |
 
 ## Order and integration gates
 
-1. Land the loading visibility fix after focused checks and a live page check.
+1. Put the close-up marble designer on dev 8767 and inspect it in a browser. Check the live loading panel visually as part of that pass.
 2. Review and land the shared case Flip implementation only after its physical timing, 2D/3D law inputs, Studio preview, and case mesh agree. A law/source change may require approved WebGPU rebuilds; Wasm stays lazy.
 3. Reconcile the Claude layout branch with main's dirty chess file without discarding local work. Rebuild affected products in scratch, then deploy the 3D toy and browser-test the marble course. The marble game commit depends on this gate.
 4. Measure 256k recording on the target browser/device; adjust the existing budget/path only from observed failures.
