@@ -1,0 +1,36 @@
+# Meowdoku / Nodus work tracker — 2026-11-07
+
+This is the current queue for the requests made in this chat. "Live" means checked on HTTPS port 8766. Worktrees and branches named here are separate from canonical `C:/dev/Powershell/turing` main. Keep unrelated dirty compiler and chess files in main intact.
+
+| Request | Owner | State / next gate |
+|---|---|---|
+| Audit Python server, compile choices, client paths, shader/Wasm/GPU routes, bespoke human/AI steps, and Nodus migration from systems/graph/chaos perspective | Root | Audits saved at this level, in `speaktome`, `nodus`, `turing`, and Meowdoku. Revisit against new case-motion and game code before planning Nodus extraction. |
+| Trace recent Claude branches and continue their work | Root | Layout stages and handoff are integrated in `turing-claude-integration-20261107`; not landed because main's dirty `search.py` intersects its move and product digests change. Continue from `examples/meowdoku/CLAUDE_BRANCH_CONTINUATION_2026-11-07.md`. |
+| Client and server logs on a page | Root | Live on `/log.html`; server restarted on 8766 and `/api/log` checked. |
+| Browser settings reset button | Root | Restored and live; do not remove. It is distinct from restarting the Python server. |
+| Restart live server | Root | Completed by stopping and relaunching recorded Python configuration on 8766. New process and `/api/ready` checked. |
+| Studio can select every fountain size | Studio agent, root integration | Live: small, 4k, 16k, 64k, 256k, 1M, 4M, 10M; availability checked against deployed manifest. |
+| Large simulations, including about 200k particles, with visual-only recording when full trace is too expensive | Studio agent, root integration | 256k product is deployed; bounded visual-only capture is live. Real browser/device performance at 256k remains to be measured. |
+| Rich Phong material catalogue, several distinct metals | Material agent, root integration | 19 catalogue additions, 11 metals, 22 exported material IDs live. |
+| Cat-eye marble layered mesh and designer | Marble agent, root integration | Designer and layered mesh live. Verify visual result in browser. |
+| Playable Marble Madness course | Marble agent | Commit `2bea8071` in `turing-marble-game-20261107`; tested in isolation, not live. Depends on 3D `sdf_toy` product and a browser play pass. |
+| Finish 2D/3D hourglass toy | Root | 3D `sdf_toy` code in `turing-claude-integration-20261107`; scratch WebGPU small and 4k built. Layout merge, live product build/deploy, and 2D peg-filter clog remain. |
+| WebGPU build now; Wasm only on actual fallback need or server idle | Root | WebGPU toy small and 4k built in scratch. No Wasm build ran. On-demand/idle Wasm scheduling remains to implement; do not eagerly compile it. |
+| Flip beside Rock/Rotate; choose axis; move actual case; share mechanism with Studio hourglass loading | Studio agent | In progress in isolated branch. Use one deterministic finite case trajectory for physics and render, with existing case-frame inertial inputs. Respect law angular speed/acceleration caps; never render a turn faster than the physics accepts. |
+| Loading screen visible before Meowdoku, with brief indication for each real startup step | Material agent | Investigating and implementing in isolated branch. Integrate and check on live 8766 when ready. |
+| Shift server backbone to Nodus KPN, with clearly marked CPython-only nodes | Root / future Nodus lane | Architecture audit saved. Implementation has not begun; first step is to map server duties to graph nodes and identify existing Nodus Python hosting and runtime boundaries. |
+
+## Order and integration gates
+
+1. Land the loading visibility fix after focused checks and a live page check.
+2. Review and land the shared case Flip implementation only after its physical timing, 2D/3D law inputs, Studio preview, and case mesh agree. A law/source change may require approved WebGPU rebuilds; Wasm stays lazy.
+3. Reconcile the Claude layout branch with main's dirty chess file without discarding local work. Rebuild affected products in scratch, then deploy the 3D toy and browser-test the marble course. The marble game commit depends on this gate.
+4. Measure 256k recording on the target browser/device; adjust the existing budget/path only from observed failures.
+5. Convert the Nodus audit into a graph of service responsibilities and begin Nodus ownership of one real server duty at a time, retaining explicit CPython nodes where lowering is unavailable.
+
+## Evidence locations
+
+- Root and per-repository `NODUS_MEOWDOKU_SERVICE_BACKBONE_AUDIT_2026-11-07.md` files.
+- `speaktome/AGENTS/experience_reports/` for cross-repository receipts.
+- `turing-claude-integration-20261107/examples/meowdoku/CLAUDE_BRANCH_CONTINUATION_2026-11-07.md` for layout and toy gates.
+- `turing-marble-game-20261107/examples/meowdoku/MARBLE_MADNESS_HANDOFF.md` for the playable course dependency and limitations.
