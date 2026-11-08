@@ -1,15 +1,20 @@
 # C:\dev\Powershell workspace
 
 This directory is a collection of independent repositories and experiments, not a
-monorepo. The parent Git repository exists only to back up root-level orientation
-and cross-repository coordination documents.
+monorepo. The parent Git repository tracks root-level files and three deliberate
+child projects: `site/`, `engine_toy/`, and `string_core/`.
 
 ## Parent Git boundary
 
-The root [`.gitignore`](.gitignore) ignores every immediate child directory.
-Consequently, even `git add -A` at this level can stage only eligible root files;
-it cannot recurse into `nodus/`, `turing/`, `speaktome/`, `spectral-analyzer/`,
-`research/`, `_quarantine/`, or any other child tree.
+The root [`.gitignore`](.gitignore) ignores immediate child directories by default,
+with explicit exceptions for `site/`, `engine_toy/`, and `string_core/`. Those
+three trees are owned by this repository. `git add -A` at this level can therefore
+stage changes in those trees as well as eligible root files. Prefer explicit paths
+and inspect the staged diff before committing.
+
+Other child directories, including `nodus/`, `turing/`, `speaktome/`,
+`spectral-analyzer/`, `research/`, and `_quarantine/`, remain opaque to this
+repository. Do not force-add them or broaden the exceptions.
 
 This boundary prevents the parent repository from accidentally absorbing,
 replacing, or publishing local-only files in child workspaces. It does **not**

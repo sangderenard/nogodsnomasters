@@ -1,14 +1,14 @@
-# This repository tracks only coordination files located directly at its root.
+# This repository tracks root-level files and the three child trees named below.
 #
-# Every immediate child directory is an independent repository, experiment,
-# local-only workspace, generated tree, or archive. The parent repository must
-# treat those directories as opaque and must never recursively stage them.
+# Other immediate child directories are independent repositories, experiments,
+# local-only workspaces, generated trees, or archives. The parent repository
+# treats those directories as opaque; do not force-add them.
 /*/
 
-# The versioned GitHub Pages runtime is the one deliberate child directory:
+# The versioned GitHub Pages runtime is a deliberate tracked child directory:
 # index.html owns the public API while versioned WASM and source artifacts are
 # fetched lazily from site/v3/. Older versions remain additive history. All
-# project/workspace directories remain opaque.
+# other child directories remain opaque unless explicitly listed below.
 !/site/
 /site/programs/*/versions/.building-*/
 
