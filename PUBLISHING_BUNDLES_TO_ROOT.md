@@ -15,16 +15,19 @@ There are two separate Git repositories in play:
 - **`C:\dev\Powershell\`** (this directory) — the coordination repository,
   remote [`sangderenard/nogodsnomasters`](https://github.com/sangderenard/nogodsnomasters),
   branch `nogodsnomasters`. Its `.gitignore` treats every child directory as
-  opaque **except one**:
+  opaque except for three explicitly tracked trees:
 
   ```gitignore
   /*/
   !/site/
+  !/engine_toy/
+  !/string_core/
   ```
 
   `/site/` (i.e. `C:\dev\Powershell\site\`) is "the versioned GitHub Pages
-  runtime" — the one deliberate child directory this repo tracks. The root
-  `index.html` plus everything under `site/` is what actually gets served.
+  runtime". `engine_toy/` and `string_core/` are separately tracked projects,
+  not bundle destinations. The root `index.html` plus the published artifacts
+  under `site/` form the runtime discussed here.
 
 A bundle built into `turing/site/...` is real, but it's invisible to
 anyone checking the live page: nothing under `turing/` is served, and
