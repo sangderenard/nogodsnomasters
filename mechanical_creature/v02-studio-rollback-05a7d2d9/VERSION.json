@@ -1,0 +1,33 @@
+{
+  "version": "v02-studio-rollback-05a7d2d9",
+  "page": "mechanical_creature",
+  "built": "2026-11-10T01:24:00",
+  "entries": [
+    "mechanical_creature_studio.html"
+  ],
+  "copied_from": "turing/build/meowdoku/web",
+  "notes": "v01 plus appearance hook; served as the home Creature studio page (site-nav.js:889)",
+  "known_limitations": [
+    "Suspected: the driveshaft vibrates at an unstable frequency. It does not drive well; the machine is slow and underpowered. (Owner, 2026-11-26, observed on the live Creature studio page of the home Meowdoku server. Ticket 8c875cf6.)"
+  ],
+  "not_in_archive": [],
+  "changed_after_build": [],
+  "sha256": {
+    "mechanical_creature_studio.html": "05a7d2d913004a36cda78e57d256c3de7a23a4d391bc972d60a4c4269b05dac3",
+    "studio-game-transfer/marble_bubbles.js": "a84aa676069fb6c7e80f3bb06dd89421ff83197eb716a26d06b30db21c44ee19",
+    "studio-game-transfer/marble_chase_camera.js": "8be73aa754961cdb95a3722e02669e7a3d96801201c1955aaba2952db10d2cdf",
+    "studio-game-transfer/marble_game_asset.js": "638004fa876e6aed4afbf2dbd43384c96df3dd47f4bb62d75bb9330d3fcfe7c7",
+    "studio-game-transfer/marble_glass_preview.js": "0bb295a2e8614def05b9616bd41edc60f439434bc9a85a0d6ecf08fdbcead7b7",
+    "studio-game-transfer/marble_mesh.js": "02542285c7ccb1cd2c660335540c5b72550cfb48c52e634ecefc67aaedd79d85",
+    "studio-game-transfer/marble_roll.js": "b19c0727dcc2a91b7a1603284cb2ab10f54f64fc3fa5e41b3bd6b4b933bfafe2",
+    "studio-game-transfer/marble_studio_subject_renderer.js": "84be8380963502758449d43643e8563db6c4f4165f594fadd7f67cd98ed25607",
+    "studio-game-transfer/marble_studio_subject_thumbnail.js": "1aaf86666d5b5b20eb279f8815c3caf23a27e7530bc34726c31f454c4abc0355",
+    "studio-game-transfer/mechanical_creature_instances.js": "5f61ea7213adb288e0b331bbdc042697254f2a771a102bc1a48d033a59bfc10e",
+    "studio-game-transfer/mechanical_creature_studio_camera.js": "5272776fe1b3b255a2e8995187e24a6098c035a2bccdd761cbc427cfb7f7f6a7",
+    "studio-game-transfer/mechanical_creature_studio_collection.js": "aecdf2ea5ae040459dca0f3f6d9f41cc994c91ee51b944bec409dfdca15e4ab1",
+    "studio-game-transfer/mechanical_creature_studio_demo.js": "0e992c117022b7a959506c6ae2fd64962476df8c5fd897554e02edc8e02114a6",
+    "studio-game-transfer/particle_styles.js": "6d69094395d2ddf1c2c1cec792421916bdcc2f82118e86510a05f0e22fb259e8",
+    "studio-game-transfer/world_curve.js": "7baa03fd0516938861c55369a7160d0ee16e56f81abad79e746778070d03aad4",
+    "studio-game-transfer/world_zoom.js": "b4d36899e0a9f154c10f72a9d2bdc95cf90e3a3c2c05134df44220f01c3dc411"
+  }
+}
