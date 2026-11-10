@@ -1,0 +1,39 @@
+{
+  "schema": "turing.client-sphere-query.v1",
+  "scope": "sphere-only-distance-query",
+  "source_owner": "Spectral SphericalSurface.glsl_intercept_fn",
+  "source_sha256": "2bf17befb8484ec4fa8fdf9543877466ef0a93cfceed052075c1757e2b3dc35a",
+  "compiler": "src.compiler.glsl_project_ir.compile_glsl_project_to_webgl",
+  "numeric": "WebGL2 highp float32",
+  "maximum_spheres": 65,
+  "maximum_batch": 4096,
+  "ray_stride": 8,
+  "ray_fields": [
+    "origin_x",
+    "origin_y",
+    "origin_z",
+    "min_distance",
+    "direction_x",
+    "direction_y",
+    "direction_z",
+    "max_distance"
+  ],
+  "hit_fields": [
+    "distance",
+    "owner_id",
+    "valid",
+    "sphere_index"
+  ],
+  "normal": "face-forward geometric normal",
+  "unit": "caller-declared common length unit; normalized direction internally",
+  "artifacts": {
+    "vert": {
+      "file": "client_ray_sphere.vert.glsl",
+      "sha256": "49f7bed446e77898d6b7d8609a0b9934b952d7803ac9615268fd214fbb8228d4"
+    },
+    "frag": {
+      "file": "client_ray_sphere.frag.glsl",
+      "sha256": "9af45590db154b9288abfd994f0f3000387a30f8a754dd915ee68829d9769287"
+    }
+  }
+}
