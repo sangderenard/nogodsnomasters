@@ -868,6 +868,64 @@ def _register(fn):
 
 
 @_register
+def hub_lock_posts(hub_positions=None) -> Machine:
+    """Four passive parking-boot posts, authored in the normal machine graph.
+
+    Positions are the actual hub attachment faces in the machine frame. The
+    default is a compact display/spawn fixture, not a fit inferred for a car.
+    A host must mate the structural ports to the selected hubs and anchor the
+    feet before this fixture restrains anything. No validator preload, engine
+    power, hidden brake command or second physics loop is introduced here.
+    """
+    import numpy as np
+    from assembly_ports import PartPort
+
+    positions = dict(hub_positions) if hub_positions is not None else {
+        "fl": (-0.9, 0.55, 1.4), "fr": (0.9, 0.55, 1.4),
+        "rl": (-0.9, 0.55, -1.4), "rr": (0.9, 0.55, -1.4),
+    }
+    if set(positions) != {"fl", "fr", "rl", "rr"}:
+        raise ValueError("hub lock posts require fl, fr, rl and rr hub faces")
+    m = Machine(identity="hub-lock-posts", label="Parking boot hub-lock posts",
+                power="self-contained", medium="mechanical",
+                note="Passive four-post hub fixture; mate hub and ground ports before use.")
+    for corner in ("fl", "fr", "rl", "rr"):
+        point = tuple(float(v) for v in positions[corner])
+        if len(point) != 3 or not all(math.isfinite(v) for v in point) or point[1] <= 0.20:
+            raise ValueError("hub faces must be finite triples above the post foot")
+        x, y, z = point
+        side = -1.0 if corner.endswith("l") else 1.0
+        stem_x = x + side * 0.24
+        root = f"hub_lock.{corner}"
+        specs = (
+            ("foot", (stem_x, 0.035, z), (0.20, 0.035, 0.22), 5.0),
+            ("post", (stem_x, (y + 0.07) / 2, z), (0.055, (y - 0.07) / 2, 0.055), 3.0),
+            ("arm", (x + side * 0.12, y, z), (0.12, 0.045, 0.045), 1.1),
+            ("jaw", (x + side * 0.025, y, z), (0.025, 0.14, 0.14), 2.0),
+            ("latch", (stem_x + side * 0.065, y - 0.09, z), (0.025, 0.045, 0.035), 0.25),
+        )
+        for name, position, extent, mass in specs:
+            part = MachinePart(f"{root}.{name}", "structural-member", position,
+                               extent, mass_kg=mass, part_role="structure")
+            if name in ("foot", "jaw"):
+                port_point = (stem_x, 0.0, z) if name == "foot" else point
+                direction = (0.0, -1.0, 0.0) if name == "foot" else (-side, 0.0, 0.0)
+                part.ports.append(PartPort(
+                    identity=f"{root}.{name}.mount", part=part.identity,
+                    kind="structural-mount", position=np.asarray(port_point),
+                    direction=np.asarray(direction), radius_m=0.045, mating=True,
+                    fluid="", joint="bolted-flange",
+                    role="ground-anchor" if name == "foot" else "hub-lock"))
+            m.parts.append(part)
+        for a, b in (("foot", "post"), ("post", "arm"), ("arm", "jaw"), ("post", "latch")):
+            m.lines.append(MachineLine(
+                f"{root}.{a}_to_{b}", f"{root}.{a}", f"{root}.{b}",
+                constraint="rigid-distance", radius=0.012,
+                circuit_identity="structure", material="steel-plate"))
+    return m
+
+
+@_register
 def hydraulic_power_pack() -> Machine:
     """The simplest real machine: a motor, a pump, a tank and a cooler.
 
