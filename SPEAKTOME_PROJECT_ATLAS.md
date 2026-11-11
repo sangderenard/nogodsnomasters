@@ -192,7 +192,7 @@ that state without guessing from a directory name.
 | `socratic/` | Experimental concept/precept extraction and graph visualization | NLP/semantic-graph branch. No `origin` remote configured in the captured local database. |
 | `tensor-calculator/` | Persistent native tensor/instruction prototype | Explicitly superseded. Its README says active calculation belongs to Nodus TensorMath and Turing's own FusedProgram lowering. Do not resurrect it as shared substrate. |
 | `lfsavoider/` | LFS-removal/archive tooling | Repository-management support, not the application's compiler or graph engine. Never run destructive migration tools merely to investigate history. |
-| `wheelhouse/` | Package-wheel preparation template | Environment/distribution support with its own submodule and notice obligations. |
+| `wheelhouse/` | Package-wheel preparation template | Environment/distribution support with its own submodule and notice obligations. On indefinite hiatus by the owner's decision of 2026-11-11. |
 | `pcb/` | Electrofluid PCB/fluid GUI | Independent Git owner; historically confused with the outer remote. Relationship to overall ideas requires evidence, not a claim that this is the parent repository. |
 
 ### Tracked components, untracked material, and aliases

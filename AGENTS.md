@@ -100,7 +100,7 @@ rules that actually govern it.
 | `string_core/` | Tracked design and future implementation home of **Token Orchard**, a graph-native integer string core, batched service, and compiler target. Start at `string_core/README.md`. |
 | `transmogrifier/` | Legacy standalone snapshot of graph/tensor and `BindingMembrane` experiments. Active Transmogrifier code is integrated into `turing/src/transmogrifier/`; see `transmogrifier/README.md`. |
 | `turing/` | Python compiler/runtime research spanning managed scientific time, abstract tensors, SSA and graph compilation, analog tape execution, cellular simulation, Riemannian blocks, and the integrated Transmogrifier package. Has its own `AGENTS.md`. |
-| `wheelhouse/` | Self-contained template for building a Git-LFS-free pip wheelhouse; companion to `lfsavoider/`. |
+| `wheelhouse/` | **On indefinite hiatus (owner, 2026-11-11).** Self-contained template for building a Git-LFS-free pip wheelhouse; companion to `lfsavoider/`. Do not start work here, and do not try to bring it to a pushed state: its local default branch holds two commits that cancel each other (`e37f6a0`, `c34733f`) and reference Git LFS objects that are not on this machine, so its push is refused. It is not in the branch policy and is not cleaned. |
 
 If you land in this directory and aren't sure which subfolder you should be
 in, ask — the number of repositories and linked worktrees makes choosing the wrong one easy.
