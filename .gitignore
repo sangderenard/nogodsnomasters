@@ -21,6 +21,9 @@
 # engine_toy, it is intentionally owned directly by this repository.
 !/string_core/
 
+# The repository's own GitHub workflows (the review gate check). Not a project directory.
+!/.github/
+
 # Archive/quarantine names are called out explicitly for human readers. These
 # rules are redundant with /*/ at the root, but document the safety boundary.
 /_quarantine/
