@@ -1,0 +1,18 @@
+{
+  "version": "v06-living-island-22bd27e7",
+  "page": "mechanical_creature",
+  "built": "2026-11-10T20:12:00",
+  "entries": [
+    "living_island_inside.html",
+    "living_island_outside.html"
+  ],
+  "copied_from": "turing/build/meowdoku/web",
+  "notes": "build_living_island_demo.py Lot world; engine near v05 plus doors; no Studio",
+  "known_limitations": [],
+  "not_in_archive": [],
+  "changed_after_build": [],
+  "sha256": {
+    "living_island_inside.html": "22bd27e74b6c3559f1fd8922d973e81bc02f1f8e1f1df723a7deed9f72922059",
+    "living_island_outside.html": "66d78014ddd643fb4afcaa843f3e6fdf2c1b319fd62901ad61a44ce591fadded"
+  }
+}
