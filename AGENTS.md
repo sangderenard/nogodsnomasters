@@ -4,25 +4,47 @@ Compiler handoff (2026-10-11): canonical Turing is the independent repository
 at C:/dev/Powershell/turing. Compiler repairs and profiling are integrated there;
 read turing/TEST_BASELINE_AND_HAZARDS.md's current opening receipt. The
 native-fallback-link parent worktree contains only an ignored copied Turing
-child; merging this root-only repo will not transfer compiler source.
+child; merging this outer repository will not transfer ignored compiler source.
 
-**This is not a project. It's a junk drawer.** `C:\dev\Powershell` is a personal
-scratch workspace where dozens of unrelated projects live side by side in
-whatever state they were last left in — active, abandoned, half-migrated,
-duplicated, or zipped up as a backup. There is no single product, no shared
-build system, and no shared purpose across the subfolders below. Treat each
-one as its own independent repo that happens to share a parent directory,
-not as parts of a monorepo.
+## Project identity: one history, separate repositories
+
+**This workspace is the historical and architectural document of the SpeakToMe
+project.** The owner's 2026-11-11 UTC clarification supersedes the old description
+of an unrelated "junk drawer" with no shared purpose. SpeakToMe is the originating
+application; many engines and subsystems developed here are both independent
+engineering projects and machinery needed to realize it. Demonstrations show
+those systems, not a replacement purpose for the whole project.
+
+Do not turn that shared purpose into a claim that every directory is one Git
+repository, every interface is implemented, or every piece of source has a proven
+common ancestor. Read these layers before making that judgment:
+
+- [README.md](README.md): purpose, current routing, ownership and limits.
+- [SPEAKTOME_PROJECT_ATLAS.md](SPEAKTOME_PROJECT_ATLAS.md): systems, contracts,
+  repository/worktree classification and licensing boundaries.
+- [SPEAKTOME_HISTORY.md](SPEAKTOME_HISTORY.md): dated history and project intent.
+- [SPEAKTOME_FORENSICS.md](SPEAKTOME_FORENSICS.md): evidence grades, claim register,
+  reproducible investigation, exclusions and continuation queue.
+- [SPEAKTOME_REPOSITORIES.json](SPEAKTOME_REPOSITORIES.json) and
+  [SPEAKTOME_COMMIT_TIMELINE.csv](SPEAKTOME_COMMIT_TIMELINE.csv): pinned initial
+  evidence, not a live status monitor.
+
+Treat source transfers, implemented boundaries, conceptual continuity, and the
+owner's intentions as different kinds of evidence. Retain dates and hashes when
+quoting old success/failure receipts. A source-emission pass is not a successful
+binary, and a working isolated demonstration is not proof of an integrated
+SpeakToMe product. Do not erase unsuccessful experiments: they explain why the
+current systems have their shape.
 
 ## Git status of this directory
 
-This folder is primarily a root-level coordination repository on branch
-`nogodsnomasters`, with `origin` at
+This folder is the outer integration and coordination repository, whose default
+branch is `nogodsnomasters` (verify the active worktree separately), with `origin` at
 `https://github.com/sangderenard/nogodsnomasters.git`. The repository tracks
 coordination files located directly at this level and a few deliberate,
 narrowly whitelisted child projects (`site/`, `engine_toy/`, and
 `string_core/`). `.gitignore` treats every other child directory as opaque.
-The unrelated Electrofluid repository and remote belong to `pcb/`.
+The separate Electrofluid repository and remote belong to `pcb/`.
 
 Do not force-add ignored directories or broaden the child-directory ignore
 rule. A new tracked child must be named explicitly beside the existing
@@ -49,7 +71,7 @@ for prior agents' reports. It's `speaktome`'s own guest book, but past
 agents have used it to record findings, decisions, and prompt history for
 work that touched other subfolders too (`turing/`, `nodus/`, cross-project
 handoffs) — it's the closest thing this workspace has to a shared memory
-across the junk drawer. Skim it for anything relevant to the folder you're
+across the independently versioned workspace. Skim it for anything relevant to the folder you're
 about to work in, then defer to that folder's own `AGENTS.md` for the local
 rules that actually govern it.
 
@@ -59,10 +81,10 @@ rules that actually govern it.
 |---|---|
 | `.claude/` | Claude Code local settings for this directory. |
 | `.git/` | Git metadata for this folder's repo (see remote note above). |
-| `NODUS_PLUCK_HANDOFF.md` | Cross-project coordination doc for the active `nodus` ↔ `spectral-analyzer` integration effort — the one file at this level that's actually meant to tie two subfolders together. |
+| `NODUS_PLUCK_HANDOFF.md` | Cross-project coordination doc for the active `nodus` ↔ `spectral-analyzer` integration effort — one of the historical contracts connecting component repositories. |
 | `NODUS_TENSOR_CORE_EXTRACTION_HANDOFF.md` | Resolved `nodus_tensor_core` substrate-extraction record (2026-07-25, green update 2026-07-26). The historical linker failure is retained for archaeology; its opening status block describes the current tensor/calculator boundary. |
 | `research/` | Cross-repo research library on abstract-tensor→any-language translation (turing ↔ nodus), the tensor-subsystem substrate, and the UI-as-structure architecture rationale. Start at `research/README.md`. |
-| `_quarantine/` | Noise, orphaned archives, third-party tool checkouts, and superseded duplicates moved out of the way (2026-07-25). Not part of the ecosystem — see the section below. Nothing depends on it; it can be deleted once you're sure you don't want any of it back. |
+| `_quarantine/` | Noise, orphaned archives, third-party tool checkouts, and superseded duplicates moved out of the way (2026-07-25). Not part of the ecosystem — see the section below. The historical classification below is not a current deletion authorization; verify uniqueness and dependencies before proposing changes. |
 | `amp/` | Python/C audio graph runtime ("AudioGraph" control-history driven). Has its own `AGENTS.md` with a strict no-ad-hoc-smoke-test policy. |
 | `fftfree/` | Header-only C++ FFT library (Eigen-based, Cooley–Tukey/Stockham, C API). |
 | `geometry/` | "Guardian Geometry Engine" — C++ vectorized geometry/DEC (Discrete Exterior Calculus) library. Has its own `AGENTS.md`. |
@@ -81,7 +103,7 @@ rules that actually govern it.
 | `wheelhouse/` | Self-contained template for building a Git-LFS-free pip wheelhouse; companion to `lfsavoider/`. |
 
 If you land in this directory and aren't sure which subfolder you should be
-in, ask — the sprawl here is real and getting the wrong one is easy.
+in, ask — the number of repositories and linked worktrees makes choosing the wrong one easy.
 
 ## What's in `_quarantine/` (moved 2026-07-25, reversible)
 
