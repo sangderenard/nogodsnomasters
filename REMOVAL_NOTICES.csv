@@ -1,0 +1,60 @@
+removed_at_utc,repository,branch,head,removed_by,reason
+2026-11-11T18:43:00Z,nodus,backtrack,cdf9df309cc56de7d3622829c7e22f834442f319,,in the live source and its last commit is 319 days old
+2026-11-11T18:43:00Z,nodus,codex/extract-toys,c803d85143c6c4b59cd6c344937632f68b887d7b,,"has commits of its own, is registered to nobody, and its last commit is 245 days old"
+2026-11-11T18:43:00Z,speaktome,codex/coupled-fluid-webgl-radar,d9180908349c9037d73cb6e8b07fca4bfb2fcb18,,in the live source and its last commit is 100 days old
+2026-11-11T18:43:00Z,turing,codex/exception-graph-bridge,cf57b8c1d937b1b4bacfbe85dd9266e4e22e82d7,,in the live source and its last commit is 10 days old
+2026-11-11T18:43:00Z,turing,fix/break-edge-value,fd122682277cc12d43a364e50610fe2d0b2d1e3d,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/closure-build-costs,5d0760c77a966ea455cb60780ab091e1946cd8c5,,in the live source and its last commit is 35 days old
+2026-11-11T18:43:00Z,turing,fix/conditional-field-store,7f345f2483fb0df7480bf702ecf2c74f9f996f9e,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/cross-book-stamps,129c20fae763b1329b2c7237cc23aea5743b83e2,,in the live source and its last commit is 35 days old
+2026-11-11T18:43:00Z,turing,fix/dead-metadata-worklist,8abd49972926dfddb4eb1d50cc0c5b53245afe09,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/ellipsis-store-ingestion,1e7f040c72c7f2afe714581067b064ccc53e4dc6,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/float32-result-dtype,6a9ca4469d7fb98ec469a4dd34dc9252664a9d1d,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/fork-read-scope-projection,ae88b9878acfbb13a22df221be6bc8ea3889db96,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/host-layout-rows,52e76de166a79f5505191c9ed0a95e7d9a0d92d5,,in the live source and its last commit is 35 days old
+2026-11-11T18:43:00Z,turing,fix/per-copy-shape-proofs,33b135c41e35820bc76abc907fe4f349b93f09ec,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/progress-and-memory-budget,81be1e800188cfdff48651e419a92ef1c1288979,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/raw-primitive-posts,f71bc75050013b70c1d7ed70e3be04e7376faa32,,in the live source and its last commit is 34 days old
+2026-11-11T18:43:00Z,turing,fix/region-metadata-copy,9df413c734e98e92aaa45cf9bca81b13bf8dbd93,,in the live source and its last commit is 36 days old
+2026-11-11T18:43:00Z,turing,fix/state-machine-tick-rows,b643e4f3a33cc9f62d5eddcd154f655092b8003a,,in the live source and its last commit is 35 days old
+2026-11-11T18:43:00Z,turing,piece-link-stub,2b28e675711cb3918cf71e10009a91180e61eb63,,in the live source and its last commit is 37 days old
+2026-11-11T18:43:00Z,turing,split/glsl-leaves,6e800b390c225cdbaddd5ca8d166be4fe819f467,,in the live source and its last commit is 36 days old
+2026-11-11T18:43:00Z,turing,split/shell-leaves,9baaa133b0042e5b0e8fdbf15a9a2c475b203c59,,in the live source and its last commit is 36 days old
+2026-11-11T18:43:00Z,turing,tests-copy-on-read-sourced,960753753dddc009a6693046762e00f502866d7a,,in the live source and its last commit is 25 days old
+2026-11-11T18:43:00Z,workspace,agent/publish-segmented-wasm-site,90cd1ac91fb9321009bfeea55c01b9a4aa3ac085,,in the live source and its last commit is 102 days old
+2026-11-11T18:43:00Z,workspace,agents/atmospheric-simulation-dewer-engine,1e8acdfa1d49bf93761b0bf2f9e444b54833e00d,,in the live source and its last commit is 63 days old
+2026-11-11T18:43:00Z,workspace,agents/diagnosing-graph-sim-mechanics,e2c27d1eebdbde2f898ce909d0628390a02cb6de,,in the live source and its last commit is 62 days old
+2026-11-11T18:43:00Z,workspace,agents/engine-code-review-and-separation,59fbb84ff76f418aadc4021a3d5643d73fcd2eb6,,in the live source and its last commit is 75 days old
+2026-11-11T18:43:00Z,workspace,agents/engine-naming-documentation,b8b7c88bfe6213c3e5103b5e64e28200c0437b72,,in the live source and its last commit is 50 days old
+2026-11-11T18:43:00Z,workspace,agents/fix-cumsum-shape-propagation,c087244ccd324d62fbe7a4f30903deb6829ffaf6,,in the live source and its last commit is 51 days old
+2026-11-11T18:43:00Z,workspace,agents/high-fidelity-simulation-coordinator,c087244ccd324d62fbe7a4f30903deb6829ffaf6,,in the live source and its last commit is 51 days old
+2026-11-11T18:43:00Z,workspace,agents/mechanism-clarification-piece-state,1e8acdfa1d49bf93761b0bf2f9e444b54833e00d,,in the live source and its last commit is 63 days old
+2026-11-11T18:43:00Z,workspace,agents/pasted-text-processing,59fbb84ff76f418aadc4021a3d5643d73fcd2eb6,,in the live source and its last commit is 75 days old
+2026-11-11T18:43:00Z,workspace,agents/pasted-text-processing-d292ac35,1e8acdfa1d49bf93761b0bf2f9e444b54833e00d,,in the live source and its last commit is 63 days old
+2026-11-11T18:43:00Z,workspace,agents/sympy-derivative-compiler-path,c087244ccd324d62fbe7a4f30903deb6829ffaf6,,in the live source and its last commit is 51 days old
+2026-11-11T18:43:00Z,workspace,agents/this-aggregate-index-dedup-mismatch-is-the-same,a0018b0233624eade1fd8f0f8690f4cd7c10ebf2,,in the live source and its last commit is 88 days old
+2026-11-11T18:43:00Z,workspace,claude/unruffled-robinson-4157bd,8bfd5f7d6a528c1512dbf73e250c3774004612b4,,in the live source and its last commit is 56 days old
+2026-11-11T18:50:14Z,turing,agent/segmented-wasm-homepage,d531ba0d8254cd82b5ffdef071ce1c2d6f540436,,in the live source and its last commit is 102 days old
+2026-11-11T18:50:14Z,turing,agent/versioned-wasm-assets,8c8cf580a88a32b5ddd4ac75b2100a92ba3b3972,,in the live source and its last commit is 102 days old
+2026-11-11T18:50:14Z,turing,codex/bootstrap-format-spec-closure,c17188c2bded98bcb569c62c49e9b3162442d6c8,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/columnar-webgl-surface,4fcd7090a7b5132ce999bde1424c957d6565f35f,,in the live source and its last commit is 100 days old
+2026-11-11T18:50:14Z,turing,codex/exact-mixed-integer-comparisons,3c1fd1833c3f9ad06c8150c23f13d5765bc88201,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/local-state-2026-10-14,96edd51c14a1344f8319db5f745726f388285439,,in the live source and its last commit is 28 days old
+2026-11-11T18:50:14Z,turing,codex/native-type-audit,36bfd8d8b76e89d2c50956184a1abb43dce23226,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/native-type-completeness,2b9e1f2aa6f288635792c2c7035f50837c3423b7,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/owned-array-record-heap,6e91dcaaa5f784a6b9ddae52e775cf6a796334a5,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/python-bool-integer-results,4f9940e543f4d96d9686c0c519cd4954b2a2a724,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/recursive-reduction-bridge,56255f42026328ed2559292e472c6ea12ad33151,,in the live source and its last commit is 46 days old
+2026-11-11T18:50:14Z,turing,codex/string-core-return-identities,3defac09a915b1bcf4cb40d5ffed66d551d97171,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/token-orchard-call-result-slots,77195eb486f020a40cb2ece29c2be953246a99e5,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/token-orchard-demo-compile,74dbd043a89f2cdd567197ef678e46d935dbf68e,,in the live source and its last commit is 18 days old
+2026-11-11T18:50:14Z,turing,codex/token-orchard-native-fortran,fbdabdfc0547d6e916724207619e58a1b1ed136f,,in the live source and its last commit is 18 days old
+2026-11-11T18:50:14Z,turing,codex/token-orchard-region-scalar,666df3d83d919f35034df7b0568e6376534037e8,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,codex/token-orchard-return-spans,edf0dd8fcd8c02eb56e641fa8a6ec5487c40b890,,in the live source and its last commit is 16 days old
+2026-11-11T18:50:14Z,turing,fix/audit-findings-zero,7162f7fc1524e207a86ada242b32d0a735e9bea9,,"has commits of its own, is registered to nobody, and its last commit is 34 days old"
+2026-11-11T18:50:14Z,turing,fix/field-write-leftovers,f1753bceecaa2a48de3f49179357aea778bf02ad,,"has commits of its own, is registered to nobody, and its last commit is 34 days old"
+2026-11-11T18:50:14Z,turing,id-identity-sweep,f1e50fd3359ea5740fde1406fee2699a9c5a7b91,,"has commits of its own, is registered to nobody, and its last commit is 86 days old"
+2026-11-11T18:50:14Z,turing,panic_edits_temp,b994fff284e3fa34482dae67176561a4d6aebd43,,in the live source and its last commit is 434 days old
+2026-11-11T18:50:14Z,turing,split/glsl-leaves-2,78033d8e60a5a49172c9c58e1f8e116952561b28,,"has commits of its own, is registered to nobody, and its last commit is 34 days old"
+2026-11-11T18:50:14Z,turing,split/shell-leaves-2,83d44979a0b4864ce62d650f1f9f27f0ba602e25,,"has commits of its own, is registered to nobody, and its last commit is 34 days old"
+2026-11-11T18:50:14Z,turing,split/shell-leaves-2-pre-rebase,73732cca09f56af237c35c455b6dcebe12a90452,,"has commits of its own, is registered to nobody, and its last commit is 34 days old"
