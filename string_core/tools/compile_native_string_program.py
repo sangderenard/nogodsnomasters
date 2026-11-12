@@ -32,7 +32,14 @@ def main() -> None:
     ).with_sources((
         ("token_orchard.api", PROJECT_ROOT / "token_orchard" / "api.py"),
         ("token_orchard.__init__", PROJECT_ROOT / "token_orchard" / "__init__.py"),
-    ))
+    )).with_execution_file(
+        # Turing's program_extraction.yaml runs the Python host by default; a
+        # full-native product selects the full-native execution sheet the way
+        # Turing's own native callers do (native_law_kernels.batch_contract).
+        # Without it this tool's own check below refused on Turing main, whose
+        # default never was native (measured 2026-11-12).
+        turing_root / "extraction_contracts" / "vehicle_full_native_execution.yaml"
+    )
     execution = contract.execution
     if not (
         execution.host_runtime == "native"
