@@ -583,6 +583,51 @@ class Vocabulary:
         count = self.exact_count[row]
         return STATUS_OK, list(self.exact_atoms[begin : begin + count])
 
+    def comparable_tokens(self, token: int) -> tuple[int, int, list[int]]:
+        """Return status, domain, and an exact unpadded ordered atom key.
+
+        One existing arithmetic token per scalar/octet; no hash, aggregate
+        cover, terminator, or padding. Only keys in the same domain order.
+        Empty keys have zero elements but retain their domain receipt.
+        """
+        if not isinstance(token, int) or isinstance(token, bool):
+            return STATUS_INVALID_TOKEN, 0, []
+        domain = self.token_domain(token)
+        status, atoms = self.expand(token)
+        if status != STATUS_OK:
+            return status, 0, []
+        values = [0] * len(atoms)
+        index = 0
+        while index < len(atoms):
+            values[index] = self._atom_token(domain, atoms[index])
+            index += 1
+        return STATUS_OK, domain, values
+
+    def comparable_tokens_batch(
+        self, tokens: list[int]
+    ) -> tuple[int, list[int], list[int], list[int], list[int]]:
+        """Read-only flat keys: envelope status, statuses, domains, values, offsets.
+
+        Invalid items have domain zero and an empty span, distinguished from
+        valid empty strings by their status and domain. Input order is retained.
+        """
+        count = len(tokens)
+        if count > self.max_batch_items:
+            return STATUS_LIMIT_EXCEEDED, [], [], [], []
+        statuses = [STATUS_OK] * count
+        domains = [0] * count
+        offsets = [0] * (count + 1)
+        values = []
+        index = 0
+        while index < count:
+            status, domain, key = self.comparable_tokens(tokens[index])
+            statuses[index] = status
+            domains[index] = domain
+            values.extend(key)
+            offsets[index + 1] = len(values)
+            index += 1
+        return STATUS_OK, statuses, domains, values, offsets
+
     def cover(self, token):
         kind = self.token_kind(token)
         if kind == TOKEN_KIND_INVALID:

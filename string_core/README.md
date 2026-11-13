@@ -187,3 +187,11 @@ training mipmaps without changing identity.
 Turing, Nodus, and Spectral Analyzer contain valuable existing string, token,
 glyph, and asset machinery. They are evidence and behavioral oracles for this
 project, not runtime dependencies and not code to be casually replaced.
+
+### Comparable per-character tokens
+
+`Vocabulary.comparable_tokens(token)` exposes the existing arithmetic atom IDs
+as an exact unpadded ordered key, with its domain. The batch form returns flat
+values and offsets. `TokenOrchardStr` ordering uses these keys. See the
+architecture's "Exact comparable atom keys" section for ordering, minimality,
+and the boundary with Turing's distinct hashed glyph representation.

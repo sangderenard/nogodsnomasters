@@ -141,7 +141,16 @@ class TokenOrchardStr:
     def _ordering(self, other, relation):
         if not isinstance(other, TokenOrchardStr):
             return NotImplemented
-        left, right = self._atoms(), other._atoms()
+        left_status, unused_left_domain, left = self.vocabulary.comparable_tokens(
+            self.token
+        )
+        right_status, unused_right_domain, right = other.vocabulary.comparable_tokens(
+            other.token
+        )
+        if left_status != STATUS_OK:
+            raise TokenOrchardStrError(left_status)
+        if right_status != STATUS_OK:
+            raise TokenOrchardStrError(right_status)
         if relation == 0:
             return left < right
         if relation == 1:
