@@ -85,6 +85,22 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(status, STATUS_INVALID_SNAPSHOT)
         self.assertIsNone(loaded)
 
+    def test_snapshot_rejects_atom_length_disagreeing_with_exact_expansion(self):
+        for fingerprint_mode in (0, FINGERPRINT_CONSTANT):
+            for row in (0, 1, 2):
+                for claimed_length in (0, 1, 4, (1 << 64) - 1):
+                    with self.subTest(mode=fingerprint_mode, row=row,
+                                      claimed_length=claimed_length):
+                        vocabulary = self.populated(fingerprint_mode)
+                        vocabulary.atom_length[row] = claimed_length
+                        # Serialization recomputes the digest: this tests semantic
+                        # validation, not detection of accidental byte corruption.
+                        snapshot = to_snapshot_bytes(vocabulary)
+                        self.assertEqual(snapshot_digest(snapshot)[0], STATUS_OK)
+                        status, loaded = from_snapshot_bytes(snapshot)
+                        self.assertEqual(status, STATUS_INVALID_SNAPSHOT)
+                        self.assertIsNone(loaded)
+
     def test_unknown_schema_is_distinct_from_corruption(self):
         snapshot = to_snapshot_bytes(self.populated())
         body = bytearray(snapshot[:-DIGEST_BYTES])

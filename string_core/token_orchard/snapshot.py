@@ -140,6 +140,8 @@ def _validate_and_reindex(vocabulary):
             return False
         exact_count = vocabulary.exact_count[row]
         cover_count = vocabulary.cover_count[row]
+        if vocabulary.atom_length[row] != exact_count:
+            return False
         if exact_count < 2 or cover_count == 0:
             return False
         expected_exact_begin += exact_count
