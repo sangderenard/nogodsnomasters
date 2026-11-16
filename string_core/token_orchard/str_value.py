@@ -85,6 +85,8 @@ class TokenOrchardStr:
         if isinstance(key, slice):
             start, stop, step = key.indices(length)
             if step == 1:
+                if stop < start:
+                    stop = start
                 return self._result(self.vocabulary.slice(self.token, start, stop))
             atoms = self._atoms()
             return TokenOrchardStr.from_atoms(
@@ -141,7 +143,16 @@ class TokenOrchardStr:
     def _ordering(self, other, relation):
         if not isinstance(other, TokenOrchardStr):
             return NotImplemented
-        left, right = self._atoms(), other._atoms()
+        left_status, unused_left_domain, left = self.vocabulary.comparable_tokens(
+            self.token
+        )
+        right_status, unused_right_domain, right = other.vocabulary.comparable_tokens(
+            other.token
+        )
+        if left_status != STATUS_OK:
+            raise TokenOrchardStrError(left_status)
+        if right_status != STATUS_OK:
+            raise TokenOrchardStrError(right_status)
         if relation == 0:
             return left < right
         if relation == 1:

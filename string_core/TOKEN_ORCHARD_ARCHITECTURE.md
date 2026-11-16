@@ -781,3 +781,39 @@ If those separations survive implementation, compiler constants, graph labels,
 glyph manufacture, render caches, tensor batches, training corpora, and services
 can share one exact substrate without sharing one monolithic application. The
 groundwork is now explicit. The next task is to make the laws executable.
+## Exact comparable atom keys (2026-11-13)
+
+`Vocabulary.comparable_tokens(token)` returns `(status, domain, values)`.
+`values` contains the existing arithmetic atom tokens, one per Unicode scalar
+or byte, in source order. It is a read-only expansion, not another identity
+scheme. `comparable_tokens_batch(tokens)` returns
+`(batch_status, statuses, domains, values, offsets)` with flat integer values
+and `N+1` offsets. Failed items have domain zero and an empty span; successful
+empty text and bytes retain their distinct domains. Over-limit batches fail
+without mutation. These are reference helpers, not a new native SSA opcode.
+
+Compare keys lexicographically as integer arrays **within the same domain**:
+first unequal atom decides, otherwise the shorter prefix comes first. Keep
+lengths/offsets: zero is a legitimate source scalar/octet, not an end marker.
+The existing `TokenOrchardStr` ordering operators now consume these keys,
+including comparisons between independently populated vocabularies.
+
+"Minimal length" here means exactly one token per scalar/octet, with no
+padding, terminator, digest, or duplicated prefix. It does not mean a globally
+minimal compressed representation, variable-width packed bytes, graphemes, or
+shortest distinguishing prefixes against a closed comparison set. Aggregate
+IDs and minimum-piece covers are not ordered keys: mint order is unrelated to
+text order, and variable covers can cross the first differing character.
+
+Unicode ordering is exact scalar ordering, with the established surrogate hole
+removed in arithmetic IDs. There is no normalization, case folding, locale
+collation, or bytes-to-text coercion. Preserve the domain alongside a key;
+empty text and empty bytes both have zero values but are not interchangeable.
+
+Turing's `compiler.string_table.string_token(character)` hashed glyph IDs are
+not these arithmetic atom IDs. Do not numerically order those hashes, reinterpret
+them as Orchard IDs, or infer a conversion from a coincident integer value.
+Compiler ingress must recover exact scalar/octet content from its authoritative
+representation before using Orchard's existing ingress. Existing hashed-array
+equality is unaffected. This change does not wire compiler lowering or claim
+native C/LLVM support for the helper's dynamically allocated result buffers.

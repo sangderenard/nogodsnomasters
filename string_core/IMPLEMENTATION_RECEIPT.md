@@ -295,3 +295,35 @@ and LLVM without a second implementation. That same limb code now also runs
 as vector lanes through AbstractTensor; performance honesty requires fusing
 those operations during whole-core lowering rather than promoting the partial
 gate as an independent high-throughput service.
+
+## Comparable token helper verification (2026-11-13)
+
+Request: "you'll need to make the helper in token orchard that provides
+comparable minimal length tokens", following the instruction to compare
+per-letter token arrays rather than host strings.
+
+Implemented `Vocabulary.comparable_tokens` and its flat batch form, reusing
+arithmetic atom IDs and routing existing `TokenOrchardStr` ordering through
+them. No new token encoding, compiler change, service deployment, or native
+support claim. The architecture section records exact minimality and the
+boundary with Turing's separate hashed glyph IDs.
+
+Paired verification on Windows, Python 3.11.7:
+
+- Untouched outer-repo HEAD `1c79442`: 76/76 tests passed.
+- Changed tree: 82/82 tests passed (six new comparison laws).
+- Command in each worktree's `string_core`: `python -m unittest discover -s tests`.
+- Environment: `PYTHONPATH=C:\dev\Powershell\turing`, existing development
+  dependency at HEAD `d587fdad2888b7331132fa238bb2e9d030f3a7df` (shared working
+  tree, not claimed pristine). No dependency files were copied or changed.
+- Initial runs without that path could not find AbstractTensor because the
+  isolated outer worktrees do not contain sibling repositories. The changed
+  run reported 9 failures/13 errors; the initial baseline also hit the missing
+  dependency and was stopped. Both corrected paired runs above passed.
+- `git diff --check` passed. Only ignored Python bytecode caches were generated;
+  all authored implementation, tests, and documentation are tracked inputs.
+
+The tests cover both domains, prefix/NUL/empty behavior, Unicode surrogate-gap
+boundaries, all-pairs random order under constant fingerprint collisions,
+aggregate allocation-order inversion, cover independence, invalid batch items,
+batch limits, and existing string operators across independent vocabularies.

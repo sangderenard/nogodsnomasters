@@ -3,6 +3,30 @@
 Written 2026-07-25 for whichever agent picks this up next from this coordinating folder
 (`C:\dev\Powershell`). This is the "start here" briefing — read this before touching either repo.
 
+## Current source status (checked 2026-10-30)
+
+The progress list later in this document is the historical 2026-07-25 snapshot, not the current
+implementation state. At Nodus commit
+[`3c793cc`](https://github.com/sangderenard/Nodus/tree/3c793cc966845e06b236241914083ae39b85b62b),
+the repo-package tier now has
+[`include/repo_package.h`](https://github.com/sangderenard/Nodus/blob/3c793cc966845e06b236241914083ae39b85b62b/include/repo_package.h),
+[`src/repo_package.cpp`](https://github.com/sangderenard/Nodus/blob/3c793cc966845e06b236241914083ae39b85b62b/src/repo_package.cpp),
+and CMake-wired tests for manifest read/write and package ingest/list/unload in
+[`tests/repo_package_test.cpp`](https://github.com/sangderenard/Nodus/blob/3c793cc966845e06b236241914083ae39b85b62b/tests/repo_package_test.cpp).
+Nodus also contains the same-repo kpath kernel-transform and scatter plugin wrappers under
+[`plugins/kpath_raster_tool/`](https://github.com/sangderenard/Nodus/tree/3c793cc966845e06b236241914083ae39b85b62b/plugins/kpath_raster_tool)
+and their CMake-wired wrapper test in
+[`tests/kpath_raster_tool_test.cpp`](https://github.com/sangderenard/Nodus/blob/3c793cc966845e06b236241914083ae39b85b62b/tests/kpath_raster_tool_test.cpp).
+
+That source presence is not a complete integration receipt. Both tests skip on non-Windows;
+contract building/loading is Windows-only; `register_types()` remains local to the contract DLL
+rather than registering with the host; and the kpath wrappers are loaded as same-repo plugin DLLs,
+not through a repo-package manifest. At spectral-analyzer commit
+[`ffe5150`](https://github.com/sangderenard/spectral-analyzer/tree/ffe5150eedbd35326b5f92f2be967730f00f9b22),
+there is still no `nodus_package/` directory. The Pluck-owned package, its four
+`base_rasterizer_c` wrappers, and end-to-end cross-repo runtime verification therefore remain to
+be done.
+
 ## Where things are
 
 - **nodus** — `C:\dev\Powershell\nodus`. C++ node-graph editor/runtime, git repo, branch
