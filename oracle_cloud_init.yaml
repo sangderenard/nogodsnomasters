@@ -1,0 +1,12 @@
+#cloud-config
+# Oracle Cloud: the SpeakToMe workspace on a fresh instance, the same layout as C:\dev\Powershell, built on first boot by
+# bootstrap_linux.sh (the same script proven in a WSL2 Ubuntu 24.04 distro on the server).
+# Console: Compute -> Instances -> Create instance. Image: "Canonical Ubuntu 24.04" (or Oracle Linux 9). Shape:
+# VM.Standard.A1.Flex (Always Free: up to 4 OCPU / 24 GB in total, ARM; Nodus builds for arm64-linux there).
+# The x86 VM.Standard.E2.1.Micro (1 GB) is too small to build Nodus. Under "Show advanced options" -> Management ->
+# "Paste cloud-init script", paste this file.
+# Progress: ssh in as ubuntu (or opc on Oracle Linux) and run `sudo tail -f /var/log/speaktome-bootstrap.log`.
+# Result: /srv/powershell with every public repository in place, Nodus built in /srv/powershell/nodus/build-linux,
+# Turing's Python in /srv/powershell/turing/.venv, all owned by the service account `nodus`.
+runcmd:
+  - [bash, -c, "curl -fsSL https://raw.githubusercontent.com/sangderenard/nogodsnomasters/nogodsnomasters/bootstrap_linux.sh -o /root/bootstrap_linux.sh && bash /root/bootstrap_linux.sh > /var/log/speaktome-bootstrap.log 2>&1"]
