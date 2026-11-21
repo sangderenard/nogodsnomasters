@@ -59,20 +59,38 @@ fi
 id "$USER_NAME" >/dev/null 2>&1 || useradd --system --create-home --home-dir "/home/$USER_NAME" --shell /bin/bash "$USER_NAME"
 as_user() { sudo -u "$USER_NAME" -H "$@"; }
 
+# Is HEAD an ancestor of origin/<branch>? On a shallow clone, deepen (200 commits at a time, at most 25 rounds, then
+# the whole history) until git can answer. Refuses, naming why, when HEAD has commits of its own or the remote rewound.
+ensure_ancestry() {
+  local dir="$1" branch="$2" round
+  for round in $(seq 1 26); do
+    if as_user git -C "$dir" merge-base --is-ancestor HEAD "origin/$branch" 2>/dev/null; then return 0; fi
+    if [ "$(as_user git -C "$dir" rev-parse --is-shallow-repository)" != true ]; then
+      echo "REFUSED $(basename "$dir"): HEAD $(as_user git -C "$dir" rev-parse --short HEAD) is not an ancestor of origin/$branch" \
+           "(local commits, or the remote was rewound); left as it is" >&2
+      return 1
+    fi
+    if [ "$round" -lt 26 ]; then
+      as_user git -C "$dir" fetch --quiet --deepen=200 origin "$branch"
+    else
+      as_user git -C "$dir" fetch --quiet --unshallow origin "$branch"
+    fi
+  done
+  return 1
+}
+
 # Clone or fast-forward one repository into a folder.
 sync_repo() {
   local dir="$1" url="$2" branch="$3"
   if [ -d "$dir/.git" ]; then
     as_user git -C "$dir" fetch --quiet "${DEPTH[@]}" origin "$branch"
     as_user git -C "$dir" checkout --quiet "$branch"
-    # A shallow clone's old tip and a depth-1 fetch of the new one share no history, so a fast-forward merge is
-    # refused ("unrelated histories", second Oracle run, 2026-11-21). Move a shallow clone to the fetched tip with
-    # reset --keep, which refuses rather than discard a local change; a full clone still only fast-forwards.
-    if [ "$(as_user git -C "$dir" rev-parse --is-shallow-repository)" = true ]; then
-      as_user git -C "$dir" reset --keep --quiet "origin/$branch"
-    else
-      as_user git -C "$dir" merge --ff-only --quiet "origin/$branch"
-    fi
+    # A shallow clone's old tip and a depth-1 fetch of the new one share no history, so a fast-forward merge was refused
+    # ("unrelated histories", second Oracle run, 2026-11-21). The rule stays a fast-forward: deepen the fetch until the
+    # local commit is provably an ancestor of the remote tip (or the clone is complete), then merge --ff-only. Local
+    # commits, or a remote that was rewound, are refused by name and the checkout is left as it is (review 7a445b56).
+    ensure_ancestry "$dir" "$branch" || return 1
+    as_user git -C "$dir" merge --ff-only --quiet "origin/$branch"
   else
     as_user git clone --quiet "${DEPTH[@]}" --branch "$branch" "$url" "$dir"
   fi
