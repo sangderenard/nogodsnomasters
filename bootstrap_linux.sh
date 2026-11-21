@@ -65,7 +65,14 @@ sync_repo() {
   if [ -d "$dir/.git" ]; then
     as_user git -C "$dir" fetch --quiet "${DEPTH[@]}" origin "$branch"
     as_user git -C "$dir" checkout --quiet "$branch"
-    as_user git -C "$dir" merge --ff-only --quiet "origin/$branch"
+    # A shallow clone's old tip and a depth-1 fetch of the new one share no history, so a fast-forward merge is
+    # refused ("unrelated histories", second Oracle run, 2026-11-21). Move a shallow clone to the fetched tip with
+    # reset --keep, which refuses rather than discard a local change; a full clone still only fast-forwards.
+    if [ "$(as_user git -C "$dir" rev-parse --is-shallow-repository)" = true ]; then
+      as_user git -C "$dir" reset --keep --quiet "origin/$branch"
+    else
+      as_user git -C "$dir" merge --ff-only --quiet "origin/$branch"
+    fi
   else
     as_user git clone --quiet "${DEPTH[@]}" --branch "$branch" "$url" "$dir"
   fi
