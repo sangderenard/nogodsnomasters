@@ -116,7 +116,16 @@ as_user env VCPKG_DEFAULT_BINARY_CACHE=/srv/nodus-vcpkg-cache VCPKG_FORCE_SYSTEM
 as_user env VCPKG_FORCE_SYSTEM_BINARIES="$FORCE" cmake --build "$ROOT/nodus/build-linux" --target nodus_headless
 
 echo "== Turing's Python environment"
-as_user python3 -m venv "$ROOT/turing/.venv"
+# The interpreter is checked, not assumed. The frozen service list and the compile path are proven on 3.11 (Windows
+# service) and 3.12 (Ubuntu 24.04, Oracle A1, 2026-11-21); a newer minor may lack wheels for the exact pins and an
+# older one (Oracle Linux 9 ships 3.9) is too old. Name another interpreter with PYTHON=/path/to/python3.x.
+PYTHON="${PYTHON:-python3}"
+PY_MINOR="$("$PYTHON" -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")')"
+case "$PY_MINOR" in
+  3.11|3.12) echo "  python: $PYTHON ($PY_MINOR)" ;;
+  *) echo "REFUSED: $PYTHON is Python $PY_MINOR; only 3.11 and 3.12 are proven. Set PYTHON to one of those." >&2; exit 2 ;;
+esac
+as_user "$PYTHON" -m venv "$ROOT/turing/.venv"
 as_user "$ROOT/turing/.venv/bin/pip" install --quiet --upgrade pip
 # Beyond requirements.txt, the compile path needs three packages (first Oracle run of the dt-system compile,
 # 2026-11-21: each was a wall before any compiling):
