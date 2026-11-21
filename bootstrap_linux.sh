@@ -10,7 +10,7 @@
 #   2. the machine: nodus/tools/build_service/provision_linux.sh (packages for Ubuntu/Debian or Oracle Linux, vcpkg,
 #      the service account);
 #   3. the compiles, as the service account: Nodus (CMake + vcpkg, this machine's own triplet, Torch off) and Turing's
-#      Python environment (turing/.venv: requirements.txt + llvmlite).
+#      Python environment (turing/.venv: requirements.txt + llvmlite, setuptools, ziglang).
 # Everything belongs to the service account. Clones are shallow unless --full. A second run fetches and fast-forwards
 # what is already there, then builds again. The log of a cloud-init run is /var/log/speaktome-bootstrap.log.
 #
@@ -111,7 +111,13 @@ as_user env VCPKG_FORCE_SYSTEM_BINARIES="$FORCE" cmake --build "$ROOT/nodus/buil
 echo "== Turing's Python environment"
 as_user python3 -m venv "$ROOT/turing/.venv"
 as_user "$ROOT/turing/.venv/bin/pip" install --quiet --upgrade pip
-as_user "$ROOT/turing/.venv/bin/pip" install --quiet -r "$ROOT/turing/requirements.txt" llvmlite
-as_user "$ROOT/turing/.venv/bin/python" -c "import llvmlite, sympy, numpy; print('  turing env: llvmlite', llvmlite.__version__)"
+# Beyond requirements.txt, the compile path needs three packages (first Oracle run of the dt-system compile,
+# 2026-11-21: each was a wall before any compiling):
+#   llvmlite   -- the LLVM lane's IR builder;
+#   setuptools -- cffi builds the C backend through it, and a Python 3.12+ venv no longer ships it or distutils;
+#   ziglang    -- the bundled clang the LLVM and C lanes link with (`python -m ziglang cc`), on every platform.
+as_user "$ROOT/turing/.venv/bin/pip" install --quiet -r "$ROOT/turing/requirements.txt" llvmlite setuptools ziglang
+as_user "$ROOT/turing/.venv/bin/python" -c "import llvmlite, setuptools, sympy, numpy, ziglang; print('  turing env: llvmlite', llvmlite.__version__, 'setuptools', setuptools.__version__)"
+as_user "$ROOT/turing/.venv/bin/python" -m ziglang version
 
 echo "== done: $ROOT (Nodus in nodus/build-linux, Turing in turing/.venv)"
