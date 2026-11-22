@@ -126,6 +126,9 @@ A forced change drops the old at once and accepts the breakage (sessions and tic
 - **Site root**: to be made by the owner offline; until it exists, forced changes are done by hand (replace keys and
   peer files on every machine).
 - **Class S, T, X**: by the steps above, run manually today; the service SQL record of each change is to be added.
+- **Change records (principle 8)**: not built, for any class, mesh keys included. Until the service SQL holds them, each
+  rotation, revocation and suite change is recorded by hand in an experience report (old and new kids, reason, who
+  ordered it), and principle 8 is a requirement on the next step, not a description of today.
 
 ## 8. Drills
 
