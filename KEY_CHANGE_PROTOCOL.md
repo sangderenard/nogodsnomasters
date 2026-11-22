@@ -94,8 +94,15 @@ Used when a key may be exposed, a suite is broken, or a holder is unreachable.
    out is refused everywhere, every key of it with it: a forced crypto change), the replacement public block if there
    is one, and the time. No grace period.
 2. Orchestration delivers it to every holder (and it travels the mesh like any record).
-3. Each holder checks the root signature against its `root.pub` and the record's newness, then at once refuses the
-   revoked kids or suite and installs the replacement as the lineage's next epoch.
+3. Each holder checks the root signature against its `root.pub` and the record's newness, then refuses the revoked
+   kids or suite and installs the replacement as the lineage's next epoch. **Pending: the cutover is not yet
+   simultaneous within a holder.** Today the native accept (nodus `src/headless/nodus_mesh_crypto.cpp`, accept of an
+   NMF2 record) writes each `revoked/<kid>`, then `suites`, then the replacement, as separate files, and `known()` reads
+   `revoked` and `suites` independently, with no shared lock or policy snapshot. A verification running during the
+   accept can see a partly applied record (a kid revoked but its suite still allowed, or the reverse). The newness
+   marker written last makes an interrupted accept retriable; it does not make the switch atomic. Until the holder
+   switches policy atomically (one policy snapshot replaced by one rename, read once per verification), a forced
+   change is safe only with the holder quiesced: stop the rows that verify and open, apply the record, then resume.
 4. Everything the revoked key ever sealed is treated as readable by an attacker: the owner of that data re-seals or
    re-issues it under the replacement (for regions, a fresh generation packed to the new keys).
 5. The root key itself is changed the same way: a new root public block signed by the old root; if the old root is
@@ -120,7 +127,8 @@ A forced change drops the old at once and accepts the breakage (sessions and tic
   `tests/mesh_keys_test.cpp` (a rotation stopped after its key set and after its record, then finished, while another
   thread signed throughout: no failed signature; an accept interrupted before its marker applied again; a replay
   refused; a force allowing only suite 2 refusing every suite-1 key, a newer one restoring it, the older one refused)
-  and `tests/mesh_secure_test.cpp` across processes. Not yet built or drilled on Windows.
+  and `tests/mesh_secure_test.cpp` across processes. Not yet built or drilled on Windows. Pending: an atomic
+  policy switch for force records (§5 step 3); until then a forced change is applied to a quiesced holder.
 - **Region keys** (turing `state_broadcast.py`): Ed25519 / X25519, no suite or epoch yet. Next: carry suite ids and
   epochs, move to suite 1 (the same hybrid keys), and accept rotation and force records from the same root.
 - **Site root**: to be made by the owner offline; until it exists, forced changes are done by hand (replace keys and
