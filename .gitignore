@@ -21,10 +21,10 @@
 # engine_toy, it is intentionally owned directly by this repository.
 !/string_core/
 
-# dev_pages holds every published build of the site's dev pages (one folder,
-# commit and tag per version) and the version index whose default the
+# creature_builds holds every build of the mechanical creature game (one
+# folder, commit and tag per version) and the version index whose default the
 # speaktome.dev landing page follows. Owned directly by this repository.
-!/dev_pages/
+!/creature_builds/
 
 # The repository's own GitHub workflows (the review gate check). Not a project directory.
 !/.github/

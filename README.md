@@ -43,7 +43,7 @@ The continuation plan is part of [the forensic record](SPEAKTOME_FORENSICS.md).
 | [Nodus](https://github.com/sangderenard/nodus) | Native graph identity, typed ports, graph execution, host/plugin contracts, inspection | Graph composition and execution boundary; not a replacement language-model search policy |
 | [Pluck / spectral-analyzer](https://github.com/sangderenard/spectral-analyzer) | Audio, instruments, optics, cameras, sensors, rendering | Physical and sensory systems through which computation can be perceived and manipulated |
 | [Guardian Geometry Engine](https://github.com/sangderenard/geometry) | Vectorized geometry, discrete exterior calculus, parametric and discrete representations | Geometric research branch and historical substrate; integration must be proved per boundary |
-| [dev_pages](dev_pages/) | Every published build of the site's dev pages, one folder and tag per version, and the version index the speaktome.dev landing follows | Generated pages kept as history; fix the generator in Turing, never the copies |
+| [creature_builds](creature_builds/) | Every build of the mechanical creature game, one folder and tag per version, and the version index the speaktome.dev landing follows | Generated pages kept as history; fix the generator in Turing, never the copies |
 | [engine_toy](engine_toy/) | Machines, parts, lines, ports, engines, physical laws and simulations | Real machine implementation owned by this outer repository, consuming existing Turing systems |
 | [Token Orchard](string_core/README.md) | Graph-native integer string core and compiler-target work | Another substantive outer-repository component, not an ignored scratch directory |
 | [Published artifacts](site/) | Versioned program bundles, compiler outputs, inspection pages | Evidence and delivery surfaces for the systems that generated them, not the whole project's identity |
@@ -81,7 +81,7 @@ owner-stated intent. They are not flattened into one invented inheritance tree.
 ## Git ownership and default branches
 
 The root [`.gitignore`](.gitignore) ignores immediate child directories **except
-explicitly tracked children**: `site/`, `engine_toy/`, `string_core/`, and `dev_pages/`.
+explicitly tracked children**: `site/`, `engine_toy/`, `string_core/`, and `creature_builds/`.
 Root-level documents, the loopback server, and these exceptions belong here.
 Other children remain opaque to the parent. Do not force-add them or assume a
 root commit backs them up. Even here, inspect the index before staging: the

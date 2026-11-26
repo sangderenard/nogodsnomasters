@@ -43,7 +43,7 @@ branch is `nogodsnomasters` (verify the active worktree separately), with `origi
 `https://github.com/sangderenard/nogodsnomasters.git`. The repository tracks
 coordination files located directly at this level and a few deliberate,
 narrowly whitelisted child projects (`site/`, `engine_toy/`,
-`string_core/`, and `dev_pages/`). `.gitignore` treats every other child directory as opaque.
+`string_core/`, and `creature_builds/`). `.gitignore` treats every other child directory as opaque.
 The separate Electrofluid repository and remote belong to `pcb/`.
 
 Do not force-add ignored directories or broaden the child-directory ignore
@@ -86,7 +86,7 @@ rules that actually govern it.
 | `research/` | Cross-repo research library on abstract-tensor→any-language translation (turing ↔ nodus), the tensor-subsystem substrate, and the UI-as-structure architecture rationale. Start at `research/README.md`. |
 | `_quarantine/` | Noise, orphaned archives, third-party tool checkouts, and superseded duplicates moved out of the way (2026-07-25). Not part of the ecosystem — see the section below. The historical classification below is not a current deletion authorization; verify uniqueness and dependencies before proposing changes. |
 | `amp/` | Python/C audio graph runtime ("AudioGraph" control-history driven). Has its own `AGENTS.md` with a strict no-ad-hoc-smoke-test policy. |
-| `dev_pages/` | Versioned dev pages for the site: `<page>/<vNN-label-sha8>/` holds every file a build loads, never edited after its commit (tags `dev_pages/<page>/<version>`). `versions.json` names each page's `default`; the speaktome.dev landing redirects to it, and `/pages/` on Oracle serves this folder. Start at `dev_pages/README.md`. |
+| `creature_builds/` | Every build of the mechanical creature game: `<page>/<vNN-label-sha8>/` holds every file a build loads, never edited after its commit (tags `creature_builds/<page>/<version>`). `versions.json` names the `default` the speaktome.dev landing redirects to; Oracle serves this folder at `/creature_builds/`. Not dev pages (user-made pages in the site map). Start at `creature_builds/README.md`. |
 | `fftfree/` | Header-only C++ FFT library (Eigen-based, Cooley–Tukey/Stockham, C API). |
 | `geometry/` | "Guardian Geometry Engine" — C++ vectorized geometry/DEC (Discrete Exterior Calculus) library. Has its own `AGENTS.md`. |
 | `lfsavoider/` | PowerShell/bash tooling to strip Git LFS from a repo and archive large binaries to GCS instead. |
