@@ -1,0 +1,16 @@
+{
+  "version": "v01-play-aa6cb6fb",
+  "page": "mechanical_creature",
+  "built": "2026-11-09T22:48:00",
+  "entries": [
+    "mechanical_creature_play.html"
+  ],
+  "copied_from": "turing/build/meowdoku/web",
+  "notes": "Aug 27 pre-glass game (outer aa0b8de); oldest physics; starts mounted",
+  "known_limitations": [],
+  "not_in_archive": [],
+  "changed_after_build": [],
+  "sha256": {
+    "mechanical_creature_play.html": "aa6cb6fb897d24e6bf769ca2dbfde3a0d3d0dbcdd64ddb87fd30173bc0f0d5e2"
+  }
+}

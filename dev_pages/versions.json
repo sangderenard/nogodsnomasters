@@ -1,0 +1,78 @@
+{
+  "schema": "dev-pages-index-v0",
+  "landing": "mechanical_creature",
+  "pages": {
+    "mechanical_creature": {
+      "default": "v03-site-2cd5c5e2",
+      "versions": [
+        {
+          "version": "v01-play-aa6cb6fb",
+          "entries": [
+            "mechanical_creature_play.html"
+          ],
+          "built": "2026-11-09T22:48:00",
+          "notes": "Aug 27 pre-glass game (outer aa0b8de); oldest physics; starts mounted",
+          "known_limitations": []
+        },
+        {
+          "version": "v02-studio-rollback-05a7d2d9",
+          "entries": [
+            "mechanical_creature_studio.html"
+          ],
+          "built": "2026-11-10T01:24:00",
+          "notes": "v01 plus appearance hook; served as the home Creature studio page (site-nav.js:889)",
+          "known_limitations": [
+            "Suspected: the driveshaft vibrates at an unstable frequency. It does not drive well; the machine is slow and underpowered. (Owner, 2026-11-26, observed on the live Creature studio page of the home Meowdoku server. Ticket 8c875cf6.)"
+          ]
+        },
+        {
+          "version": "v03-site-2cd5c5e2",
+          "entries": [
+            "index.html"
+          ],
+          "built": "2026-08-28T12:56:00",
+          "notes": "Aug 28 glass shell, loop track, torus tires, volume ground support (outer site/ 38b0b6e); live on speaktome.dev",
+          "known_limitations": [
+            "Owner's words: \"a non conservative glitch causing the machine to flip and fly all over the place\". (Owner, 2026-11-26, observed on the live speaktome.dev copy: the loop track with toroidal tires.)"
+          ]
+        },
+        {
+          "version": "v04-layer-47b7d7e8",
+          "entries": [
+            "mechanical_creature_studio_layer.html",
+            "marble_studio_layer.html"
+          ],
+          "built": "2026-11-10T15:07:00",
+          "notes": "base a7b75ff0; qualification gate, tire_reaction_torque, Marble Studio layer; starts on foot",
+          "known_limitations": [
+            "Hazard 20261110T212000Z: a positive pedal can drive the car backward; tire_reaction_torque inputs are near zero.",
+            "Static hosting (speaktome.dev/pages, 2026-11-26): the game page loads with no missing files, but marble_studio_layer.html needs the Meowdoku server API (/api/whoami, /api/ready, /api/marble_photo/*, /api/marble_objects) and stops at marble_photo.js:710 (null addEventListener). Its marble_*.js dependencies were copied as they are now (see changed_after_build), not as they were at build time."
+          ]
+        },
+        {
+          "version": "v05-layer-dev-4dc7b488",
+          "entries": [
+            "mechanical_creature_studio_layer.html",
+            "marble_studio_layer.html"
+          ],
+          "built": "2026-11-10T16:24:00",
+          "notes": "Most advanced: base 297cda67 (oriented-awake-v2); v04 plus oriented closed-solid contact and 6 bridge slabs",
+          "known_limitations": [
+            "Hazard 20261110T212000Z: a positive pedal can drive the car backward; tire_reaction_torque inputs are near zero.",
+            "Static hosting (speaktome.dev/pages, 2026-11-26): the game page loads with no missing files, but marble_studio_layer.html needs the Meowdoku server API (/api/whoami, /api/ready, /api/marble_photo/*, /api/marble_objects) and stops at marble_photo.js:710 (null addEventListener). Its marble_*.js dependencies were copied as they are now (see changed_after_build), not as they were at build time."
+          ]
+        },
+        {
+          "version": "v06-living-island-22bd27e7",
+          "entries": [
+            "living_island_inside.html",
+            "living_island_outside.html"
+          ],
+          "built": "2026-11-10T20:12:00",
+          "notes": "build_living_island_demo.py Lot world; engine near v05 plus doors; no Studio",
+          "known_limitations": []
+        }
+      ]
+    }
+  }
+}

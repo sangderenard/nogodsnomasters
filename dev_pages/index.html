@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SpeakToMe dev pages: versions</title>
+<style>
+body{margin:0;font:15px/1.5 system-ui,sans-serif;background:#07100f;color:#d8e6e2}
+main{max-width:880px;margin:0 auto;padding:32px 20px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:17px;margin:28px 0 8px}
+.v{border:1px solid #204038;border-radius:8px;padding:12px 14px;margin:10px 0;background:#0d1917}
+.v.default{border-color:#5fb39a}.tag{font-family:ui-monospace,monospace;font-size:13px;color:#9fc7bb}
+a{color:#7fd6bb}.lim{color:#f0b37a;margin:6px 0 0;padding-left:18px}.muted{color:#86a39b}
+</style></head><body><main>
+<h1>Dev pages: every version</h1>
+<p class="muted">Each version is served exactly as it was archived. The site's landing page shows the default.</p>
+<div id="list">Loading…</div>
+</main>
+<script>
+fetch('versions.json',{cache:'no-cache'}).then(r=>r.json()).then(index=>{
+  const list=document.getElementById('list');list.textContent='';
+  for(const [page,info] of Object.entries(index.pages)){
+    const h=document.createElement('h2');h.textContent=page;list.append(h);
+    for(const v of [...info.versions].reverse()){
+      const box=document.createElement('div');box.className='v'+(v.version===info.default?' default':'');
+      const tag=document.createElement('div');tag.className='tag';
+      tag.textContent=v.version+(v.version===info.default?'  (default)':'')+' · built '+v.built.slice(0,10);
+      const notes=document.createElement('div');notes.textContent=v.notes;
+      const links=document.createElement('div');
+      v.entries.forEach((e,i)=>{if(i)links.append(' · ');const a=document.createElement('a');
+        a.href=`${page}/${v.version}/${e}`;a.textContent=e;links.append(a);});
+      box.append(tag,notes,links);
+      if(v.known_limitations.length){const ul=document.createElement('ul');ul.className='lim';
+        for(const l of v.known_limitations){const li=document.createElement('li');li.textContent=l;ul.append(li);}box.append(ul);}
+      list.append(box);
+    }
+  }
+}).catch(e=>{document.getElementById('list').textContent='Could not read versions.json: '+e;});
+</script></body></html>
