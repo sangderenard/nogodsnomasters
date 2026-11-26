@@ -33,7 +33,7 @@
           "built": "2026-08-28T12:56:00",
           "notes": "Aug 28 glass shell, loop track, torus tires, volume ground support (outer site/ 38b0b6e); live on speaktome.dev",
           "known_limitations": [
-            "Non-conservative glitch: the machine gains energy it should not, then flips and flies all over the place. (Owner, 2026-11-26, observed on the live speaktome.dev copy: the loop track with toroidal tires.)"
+            "Owner's words: "a non conservative glitch causing the machine to flip and fly all over the place". (Owner, 2026-11-26, observed on the live speaktome.dev copy: the loop track with toroidal tires.)"
           ]
         },
         {
