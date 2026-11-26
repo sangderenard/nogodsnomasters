@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SpeakToMe</title></head><body style="background:#07100f;color:#d8e6e2;font:15px system-ui,sans-serif">
+<noscript><p><a href="/pages/">Choose a version</a></p></noscript>
+<script>
+// The site's landing page: it shows the version named by "default" in /pages/versions.json.
+// Change the default there; this file never changes.
+fetch('/pages/versions.json',{cache:'no-cache'}).then(r=>r.json()).then(index=>{
+  const page=index.landing||'mechanical_creature', info=index.pages[page];
+  const v=info.versions.find(x=>x.version===info.default);
+  location.replace(`/pages/${page}/${v.version}/${v.entries[0]}`);
+}).catch(()=>location.replace('/pages/'));
+</script></body></html>
